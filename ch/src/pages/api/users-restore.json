@@ -1,0 +1,8 @@
+{
+  "users": [
+    { "username": "alice", "password": "password1", "profile": { "displayName": "alice" }, "roles": ["admin"] },
+    { "username": "bob", "password": "password2", "profile": { "displayName": "bob" }, "roles": ["moderator"] },
+    { "username": "smiggy", "password": "noway", "profile": { "displayName": "smiggy" }, "roles": ["member"] },
+    { "username": "pissboy33", "password": "yay", "profile": { "displayName": "pissboy33" }, "roles": ["member"] }
+  ]
+}
