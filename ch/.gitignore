@@ -40,11 +40,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Sensitive app data (user/message storage)
-src/pages/api/users.json
-src/pages/api/users.json.bak
-src/pages/api/history.json
-src/pages/api/history.json.bak
-
 # backup files
 .json.bak*
