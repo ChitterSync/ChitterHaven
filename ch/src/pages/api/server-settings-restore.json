@@ -1,0 +1,13 @@
+{
+  "ChitterHaven": {
+    "name": "ChitterHaven",
+    "description": "Main server",
+    "icon": "",
+    "roles": {
+      "alice": ["admin"],
+      "bob": ["moderator"],
+      "smiggy": ["member"],
+      "pissboy33": ["member"]
+    }
+  }
+}
