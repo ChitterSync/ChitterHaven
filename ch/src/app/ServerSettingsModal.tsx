@@ -140,11 +140,15 @@ function RolesTab({ havenName }: { havenName: string }) {
   const [editPerms, setEditPerms] = useState<string[]>([]);
 
   const PERMISSIONS = [
-    "manage_channels",
-    "kick_members",
-    "ban_members",
+    "manage_server",
     "manage_roles",
-    "manage_server"
+    "manage_channels",
+    "manage_messages",
+    "pin_messages",
+    "send_messages",
+    "add_reactions",
+    "upload_files",
+    "view_channels"
   ];
 
   useEffect(() => {
@@ -336,7 +340,11 @@ function MembersTab({ havenName }: { havenName: string }) {
       setRoles(havenData.roles || {});
       // Collect all unique roles
       const uniqueRoles = new Set<string>();
-      Object.values(havenData.roles || {}).forEach((arr: string[]) => arr.forEach(r => uniqueRoles.add(r)));
+      Object.values(havenData.roles || {}).forEach((arr) => {
+        if (Array.isArray(arr)) {
+          arr.forEach((r) => uniqueRoles.add(r));
+        }
+      });
       setAllRoles(Array.from(uniqueRoles));
       setLoading(false);
     });

@@ -1,0 +1,53 @@
+// Prisma schema for Channel model
+// Save this as prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Channel {
+  id        String   @id @default(cuid())
+  name      String
+  isGroup   Boolean
+  members   String   // Comma-separated user IDs
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  email     String?
+  roles     String?  // Comma-separated roles
+  createdAt DateTime @default(now())
+}
+
+model ServerSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  userId    String
+  details   String?
+  createdAt DateTime @default(now())
+}
+
+model MessageHistory {
+  id        String   @id @default(cuid())
+  room      String
+  user      String
+  text      String
+  timestamp DateTime
+  edited    Boolean? @default(false)
+  readBy    String?  // Comma-separated user IDs
+}

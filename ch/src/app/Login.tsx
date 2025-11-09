@@ -25,30 +25,49 @@ export default function Login({ onLogin }: { onLogin: (username: string) => void
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ maxWidth: 320, margin: "2rem auto", background: "#23232a", padding: 24, borderRadius: 8, color: "#fff", border: "1px solid #333" }}>
-      <h2 style={{ marginBottom: 16 }}>{mode === "login" ? "Login" : "Create Account"}</h2>
-      <input
-        value={username}
-        onChange={e => setUsername(e.target.value)}
-        placeholder="Username"
-        style={{ width: "100%", marginBottom: 12, padding: 8, background: "#18181b", color: "#fff", border: "1px solid #333", borderRadius: 4 }}
-      />
-      <input
-        type="password"
-        value={password}
-        onChange={e => setPassword(e.target.value)}
-        placeholder="Password"
-        style={{ width: "100%", marginBottom: 12, padding: 8, background: "#18181b", color: "#fff", border: "1px solid #333", borderRadius: 4 }}
-      />
-      {error && <div style={{ color: "#f87171", marginBottom: 8 }}>{error}</div>}
-      <button type="submit" style={{ width: "100%", background: "#333", color: "#fff", border: "none", borderRadius: 4, padding: 8, marginBottom: 8 }}>
-        {mode === "login" ? "Login" : "Create Account"}
+    <form
+      onSubmit={handleSubmit}
+      className="glass w-full max-w-[360px] mx-auto mt-6 p-6 rounded-2xl"
+    >
+      <h2 className="text-xl font-semibold mb-4">
+        {mode === "login" ? "Welcome back" : "Create your account"}
+      </h2>
+      <div className="space-y-3">
+        <input
+          value={username}
+          onChange={e => setUsername(e.target.value)}
+          placeholder="Username"
+          className="input-dark w-full px-3 py-2"
+        />
+        <input
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          placeholder="Password"
+          className="input-dark w-full px-3 py-2"
+        />
+      </div>
+      {error && <div className="text-red-400 text-sm mt-3">{error}</div>}
+      <button type="submit" className="btn-primary w-full mt-4 py-2 text-sm font-medium">
+        {mode === "login" ? "Sign in" : "Create account"}
       </button>
-      <div style={{ textAlign: "center" }}>
+      <div className="text-center mt-4 text-sm">
         {mode === "login" ? (
-          <span style={{ cursor: "pointer", color: "#60a5fa" }} onClick={() => { setMode("register"); setError(""); }}>Create an account</span>
+          <button
+            type="button"
+            className="text-indigo-400 hover:text-indigo-300"
+            onClick={() => { setMode("register"); setError(""); }}
+          >
+            Create an account
+          </button>
         ) : (
-          <span style={{ cursor: "pointer", color: "#60a5fa" }} onClick={() => { setMode("login"); setError(""); }}>Back to login</span>
+          <button
+            type="button"
+            className="text-indigo-400 hover:text-indigo-300"
+            onClick={() => { setMode("login"); setError(""); }}
+          >
+            Back to login
+          </button>
         )}
       </div>
     </form>
