@@ -1,41 +1,28 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import cookie from "cookie";
+import { verifyJWT } from "./jwt";
 
 export interface AuthPayload {
-  userId: string;
   username: string;
   [key: string]: any;
 }
 
-const AUTH_BASE_URL = process.env.AUTH_BASE_URL || "https://auth.chittersync.com";
-
+// Local-only auth helper: trusts the legacy chitter_token JWT.
+// This keeps all existing API routes working while we iterate on the new auth service.
 export async function requireUser(req: NextApiRequest, res: NextApiResponse): Promise<AuthPayload | null> {
   try {
-    const cookie = req.headers.cookie || "";
-    if (!cookie || !cookie.includes("cs_auth_session=")) {
+    const cookies = cookie.parse(req.headers.cookie || "");
+    const token = cookies.chitter_token;
+    if (!token) {
       res.status(401).json({ error: "Not authenticated" });
       return null;
     }
-    const url = `${AUTH_BASE_URL.replace(/\/$/, "")}/api/me`;
-    const r = await fetch(url, {
-      method: "GET",
-      headers: {
-        cookie,
-      },
-    });
-    if (!r.ok) {
-      res.status(401).json({ error: "Not authenticated" });
+    const payload = verifyJWT(token) as any;
+    if (!payload || typeof payload !== "object" || !payload.username) {
+      res.status(401).json({ error: "Invalid or expired token" });
       return null;
     }
-    const data = await r.json().catch(() => null);
-    if (!data?.user || !data.user.username) {
-      res.status(401).json({ error: "Not authenticated" });
-      return null;
-    }
-    return {
-      userId: data.user.userId,
-      username: data.user.username,
-      ...data.user,
-    } as AuthPayload;
+    return payload as AuthPayload;
   } catch {
     res.status(401).json({ error: "Not authenticated" });
     return null;
