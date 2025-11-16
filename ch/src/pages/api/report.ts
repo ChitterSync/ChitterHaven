@@ -47,8 +47,8 @@ function writeReports(reports: ReportEntry[]) {
   fs.writeFileSync(REPORTS_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const payload = requireUser(req, res);
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const payload = await requireUser(req, res);
   if (!payload) return;
   const me = payload.username as string;
 
@@ -78,4 +78,3 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   return res.status(200).json({ success: true });
 }
-

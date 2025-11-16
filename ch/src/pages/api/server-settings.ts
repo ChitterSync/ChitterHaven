@@ -49,7 +49,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method === "POST") return res.status(200).json({ success: true, settings: {} });
   }
   if (req.method === "GET") {
-    const payload = requireUser(req, res);
+    const payload = await requireUser(req, res);
     if (!payload) return;
     // Try Prisma; if table missing, fallback to local encrypted JSON store
     try {
@@ -66,7 +66,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   if (req.method === "POST") {
     // Auth + permission check (manage_server)
-    const payload = requireUser(req, res);
+    const payload = await requireUser(req, res);
     if (!payload) return;
     const me = payload.username;
 

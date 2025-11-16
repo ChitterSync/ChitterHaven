@@ -145,7 +145,7 @@ function pinMessage(room: string, messageId: string, pin: boolean): Message | nu
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
-    const payload = requireUser(req, res);
+    const payload = await requireUser(req, res);
     if (!payload) return;
     const { room } = req.query;
     res.status(200).json({ messages: getHistory(room as string) });
@@ -159,7 +159,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const haven = isChannelRoom ? String(room).split('__')[0] : null;
 
     // Authenticated username (required)
-    const payload = requireUser(req, res);
+    const payload = await requireUser(req, res);
     if (!payload) return;
     const me = payload.username as string;
 

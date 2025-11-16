@@ -99,9 +99,10 @@ export async function resolveCH(token: CHToken): Promise<CHResolve> {
       const { havenId, channelId } = token.channel!;
       const res = await fetch(`/api/channels-api?haven=${encodeURIComponent(havenId)}`);
       const data = await res.json().catch(() => null);
-      const ch = Array.isArray(data?.channels)
-        ? data.channels.find((c: any) => c.id === channelId || c.name === channelId)
-        : null;
+      const channels = Array.isArray(data?.channels)
+        ? (data.channels as Array<{ id?: string; name?: string; iconUrl?: string; url?: string }>)
+        : [];
+      const ch = channels.find(c => c.id === channelId || c.name === channelId) || null;
       if (!ch) return { kind: 'text', source: token, text: '[Unknown channel]' };
       if (opt === 'PFP') {
         return { kind: 'url', source: token, url: ch.iconUrl || '', mediaType: 'image' };
@@ -175,7 +176,10 @@ export async function resolveCH(token: CHToken): Promise<CHResolve> {
       const id = token.id || '';
       const res = await fetch('/api/dms');
       const data = await res.json().catch(() => null);
-      const dm = Array.isArray(data?.dms) ? data.dms.find((d: any) => d.id === id) : null;
+      const dms = Array.isArray(data?.dms)
+        ? (data.dms as Array<{ id?: string; title?: string; users?: string[]; iconUrl?: string; url?: string }>)
+        : [];
+      const dm = dms.find(d => d.id === id) || null;
       if (!dm) return { kind: 'text', source: token, text: '[Unknown DM]' };
       const title = dm.title || (dm.users ? dm.users.join(', ') : '[Direct Message]');
       if (opt === 'PFP') {
@@ -199,8 +203,8 @@ export async function resolveCH(token: CHToken): Promise<CHResolve> {
     }
 
     return { kind: 'error', source: token, code: 'InvalidFetch', message: `Unsupported fetch: ${token.fetch}` };
-  } catch (e: any) {
-    return { kind: 'error', source: token, code: 'Network', message: String(e?.message ?? e) };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { kind: 'error', source: token, code: 'Network', message };
   }
 }
-

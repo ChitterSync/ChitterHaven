@@ -25,8 +25,8 @@ function readSettings(): SettingsData {
   }
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const payload = requireUser(req, res);
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const payload = await requireUser(req, res);
   if (!payload) return;
 
   const data = readSettings();

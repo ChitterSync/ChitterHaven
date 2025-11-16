@@ -4,7 +4,7 @@ import { prisma } from "./prismaClient";
 import { requireUser } from "./auth";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const payload = requireUser(req, res);
+  const payload = await requireUser(req, res);
   if (!payload) return;
   const me = payload.username as string;
 

@@ -23,9 +23,7 @@ export default function GlobalTooltip() {
     const findTooltipTarget = (start: EventTarget | null): HTMLElement | null => {
       let el = start as HTMLElement | null;
       while (el && el !== document.body) {
-        if (el.getAttribute) {
-          if (el.hasAttribute("data-tooltip") || el.hasAttribute("title")) return el;
-        }
+        if (el.hasAttribute("data-tooltip") || el.hasAttribute("title")) return el;
         el = el.parentElement;
       }
       return null;
@@ -128,4 +126,3 @@ export default function GlobalTooltip() {
     document.body
   );
 }
-

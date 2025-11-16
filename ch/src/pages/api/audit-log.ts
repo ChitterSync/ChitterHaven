@@ -37,13 +37,13 @@ function writeLog(entries: AuditEntry[]) {
   fs.writeFileSync(LOG_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const payload = requireUser(req, res);
+  const payload = await requireUser(req, res);
   if (!payload) return;
   const me = payload.username;
 

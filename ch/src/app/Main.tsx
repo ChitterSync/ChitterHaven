@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import io, { Socket } from "socket.io-client";
 import ReactMarkdown from "react-markdown";
@@ -1812,7 +1813,7 @@ export default function Main({ username }: { username: string }) {
                       : null;
                     const keys = (havenPreset && havenPreset.length ? havenPreset : base) || [];
                     const uniqueKeys = Array.from(new Set(keys));
-                    const buttons: JSX.Element[] = [];
+                    const buttons: React.ReactElement[] = [];
                     uniqueKeys.forEach(key => {
                       if (key === 'reply') {
                         buttons.push(
@@ -1938,6 +1939,8 @@ export default function Main({ username }: { username: string }) {
                     const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
                     return (
                   <ReactMarkdown
+                    // `breaks` is supported at runtime but missing in the type defs
+                    // @ts-expect-error `breaks` is a valid react-markdown prop
                     breaks
                     components={{
                       a: (props: any) => {
@@ -1968,19 +1971,23 @@ export default function Main({ username }: { username: string }) {
                       strong: (props) => <strong {...props} style={{ color: boldColor }} />,
                       em: (props) => <em {...props} style={{ color: italicColor }} />,
                       blockquote: (props) => <blockquote {...props} style={{ borderLeft: `3px solid ${accent}`, margin: 0, paddingLeft: 12, color: "#a1a1aa" }} />,
-                      img: (props: any) => (
+                      img: (props) => {
+                        const { alt, ...rest } = props as React.ImgHTMLAttributes<HTMLImageElement>;
                         // Right-click images in markdown to set avatar/banner
-                        <img
-                          {...props}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            const src = props.src || '';
-                            const alt = props.alt || '';
-                            openCtx(e as any, { type: 'attachment', data: { url: src, name: alt, type: 'image/*' } });
-                          }}
-                          style={{ maxWidth: '360px', borderRadius: 6, border: '1px solid #1f2937', background: '#0b1222' }}
-                        />
-                      ),
+                        return (
+                          <img
+                            {...rest}
+                            alt={alt ?? ""}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              const src = (rest.src as string) || "";
+                              const name = alt || "";
+                              openCtx(e as any, { type: "attachment", data: { url: src, name, type: "image/*" } });
+                            }}
+                            style={{ maxWidth: "360px", borderRadius: 6, border: "1px solid #1f2937", background: "#0b1222" }}
+                          />
+                        );
+                      },
                       li: (props) => <li {...props} style={{ marginLeft: 16 }} />,
                     }}
                   >

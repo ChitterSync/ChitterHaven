@@ -53,13 +53,13 @@ function isExpired(inv: Invite, now: number) {
   return false;
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  const payload = requireUser(req, res);
+  const payload = await requireUser(req, res);
   if (!payload) return;
   const me = payload.username;
 

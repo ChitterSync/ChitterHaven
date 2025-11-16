@@ -181,8 +181,9 @@ export function createCHResolver(api: CHApi = {}): CHResolver {
           default:
             return { kind: 'error', source: token, code: 'InvalidFetch', message: `Unsupported fetch: ${String(token.fetch)}` };
         }
-      } catch (e: any) {
-        return { kind: 'error', source: token, code: 'Network', message: String(e?.message ?? e) };
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return { kind: 'error', source: token, code: 'Network', message };
       }
     }
   }
@@ -193,7 +194,7 @@ export async function resolveCHInline(text: string, resolver: CHResolver, base =
   const ast = parseCHInline(text, base);
   const out: (InlineNode | CHResolve)[] = [];
   for (const node of ast) {
-    if ((node as any).type === 'token') {
+    if (node.type === 'token') {
       out.push(await resolver.resolve(node as CHToken));
     } else {
       out.push(node);
@@ -201,4 +202,3 @@ export async function resolveCHInline(text: string, resolver: CHResolver, base =
   }
   return out;
 }
-

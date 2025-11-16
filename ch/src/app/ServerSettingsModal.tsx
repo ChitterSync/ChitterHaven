@@ -413,7 +413,6 @@ function MembersTab({ havenName }: { havenName: string }) {
   const handleSetOwner = async (user: string) => {
     if (!user) return;
     const confirmText = `Transfer ownership of ${havenName} to ${user}?`;
-    // eslint-disable-next-line no-alert
     const ok = typeof window !== 'undefined' ? window.confirm(confirmText) : true;
     if (!ok) return;
     setStatus(null);
