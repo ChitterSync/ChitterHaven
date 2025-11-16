@@ -4,8 +4,7 @@ import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import { prisma } from "./prismaClient";
-import cookie from "cookie";
-import { verifyJWT } from "./jwt";
+import { requireUser } from "./auth";
 
 const HISTORY_PATH = path.join(process.cwd(), "src/pages/api/history.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
@@ -40,6 +39,7 @@ export type Message = {
   pinned?: boolean;
   attachments?: { url: string; name: string; type?: string; size?: number }[];
   editHistory?: { text: string; timestamp: number }[];
+  systemType?: string;
 };
 
 function encryptHistory(data: Record<string, Message[]>) {
@@ -145,6 +145,8 @@ function pinMessage(room: string, messageId: string, pin: boolean): Message | nu
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
+    const payload = requireUser(req, res);
+    if (!payload) return;
     const { room } = req.query;
     res.status(200).json({ messages: getHistory(room as string) });
     return;
@@ -156,11 +158,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const isChannelRoom = typeof room === 'string' && room.includes('__');
     const haven = isChannelRoom ? String(room).split('__')[0] : null;
 
-    // Authenticated username (fallback to provided user if present)
-    const cookies = cookie.parse(req.headers.cookie || "");
-    const token = cookies.chitter_token;
-    const payload: any = token ? verifyJWT(token) : null;
-    const me = payload?.username || user;
+    // Authenticated username (required)
+    const payload = requireUser(req, res);
+    if (!payload) return;
+    const me = payload.username as string;
 
     const ensurePermissions = async (havenName: string) => {
       // Load server settings via Prisma and ensure a default permissions scaffold exists
@@ -218,11 +219,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return;
     }
     if (action === "edit") {
+      const dataAll: Record<string, Message[]> = decryptHistory();
+      const msgArrAll = dataAll[room] || [];
+      const targetEdit = msgArrAll.find(m => m.id === messageId);
+      if (targetEdit && targetEdit.systemType === 'call-summary') {
+        return res.status(403).json({ success: false, error: "Cannot edit call summary messages" });
+      }
       if (isChannelRoom) {
-        const data: Record<string, Message[]> = decryptHistory();
-        const msgArr = data[room] || [];
-        const target = msgArr.find(m => m.id === messageId);
-        const isOwn = target && target.user === me;
+        const isOwn = targetEdit && targetEdit.user === me;
         if (!isOwn) {
           const allowed = await checkPerm(me, haven!, 'manage_messages');
           if (!allowed) return res.status(403).json({ error: 'Forbidden' });
@@ -237,11 +241,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return;
     }
     if (action === "react") {
-      if (!emoji || !user) {
-        res.status(400).json({ success: false, error: "emoji and user required" });
+      if (!emoji) {
+        res.status(400).json({ success: false, error: "emoji required" });
         return;
       }
-      const updated = reactMessage(room, messageId, emoji, user);
+      const updated = reactMessage(room, messageId, emoji, me);
       if (updated) {
         res.status(200).json({ success: true, message: updated });
       } else {
@@ -270,7 +274,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json({ success: true, history: found.editHistory || [] });
     }
     // Default: add message
-    const message = saveMessage(room, msg);
+    const message = saveMessage(room, { ...msg, user: me });
     res.status(200).json({ success: true, message });
     return;
   }

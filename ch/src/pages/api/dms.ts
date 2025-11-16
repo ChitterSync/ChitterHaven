@@ -9,7 +9,7 @@ const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const DMS_PATH = path.join(process.cwd(), "src/pages/api/dms.json");
 
-export type DM = { id: string; users: string[] };
+export type DM = { id: string; users: string[]; title?: string; group?: boolean };
 type DMData = { dms: DM[] };
 
 function readDMs(): DMData {
@@ -40,6 +40,26 @@ export function ensureDMForUsers(a: string, b: string): DM {
   return dm;
 }
 
+function ensureGroupDM(me: string, others: string[], title?: string): DM {
+  const data = readDMs();
+  const unique = Array.from(new Set([me, ...others])).sort();
+  const found = data.dms.find(dm => {
+    const u = (dm.users || []).slice().sort();
+    if (u.length !== unique.length) return false;
+    return u.every((val, idx) => val === unique[idx]);
+  });
+  if (found) return found;
+  const dm: DM = {
+    id: crypto.randomUUID(),
+    users: unique,
+    title: title && title.trim() ? title.trim().slice(0, 64) : undefined,
+    group: true,
+  };
+  data.dms.push(dm);
+  writeDMs(data);
+  return dm;
+}
+
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const cookies = cookie.parse(req.headers.cookie || "");
   const token = cookies.chitter_token;
@@ -60,10 +80,19 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       const dm = ensureDMForUsers(me, target);
       return res.status(200).json({ success: true, dm });
     }
+    if (action === "group") {
+      const rawTargets = Array.isArray((req.body as any).targets) ? (req.body as any).targets : [];
+      const clean = Array.from(new Set(rawTargets.filter((t: any) => typeof t === "string" && t.trim() && t !== me))) as string[];
+      if (clean.length < 2) {
+        return res.status(400).json({ error: "Select at least two other users for a group DM" });
+      }
+      const title = typeof (req.body as any).title === "string" ? (req.body as any).title : "";
+      const dm = ensureGroupDM(me, clean, title);
+      return res.status(200).json({ success: true, dm });
+    }
     return res.status(400).json({ error: "Unknown action" });
   }
 
   res.setHeader("Allow", ["GET", "POST"]);
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
-

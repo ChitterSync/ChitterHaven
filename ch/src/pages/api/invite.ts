@@ -1,0 +1,112 @@
+import type { NextApiRequest, NextApiResponse } from "next";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { requireUser } from "./auth";
+
+type Invite = {
+  code: string;
+  haven: string;
+  createdAt: number;
+  createdBy?: string;
+  maxUses: number | null;
+  uses: number;
+  expiresAt: number | null;
+};
+
+const INVITE_PATH = path.join(process.cwd(), "src/pages/api/invites.json");
+const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
+const KEY = crypto.createHash("sha256").update(SECRET).digest();
+const IV_LENGTH = 16;
+
+function decryptInvites(): Invite[] {
+  if (!fs.existsSync(INVITE_PATH)) return [];
+  const buf = fs.readFileSync(INVITE_PATH);
+  if (buf.length <= IV_LENGTH) return [];
+  const iv = buf.slice(0, IV_LENGTH);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+  const json = Buffer.concat([
+    decipher.update(buf.slice(IV_LENGTH)),
+    decipher.final(),
+  ]).toString();
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed.invites) ? parsed.invites : [];
+  } catch {
+    return [];
+  }
+}
+
+function encryptInvites(invites: Invite[]) {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
+  const body = Buffer.concat([
+    cipher.update(JSON.stringify({ invites })),
+    cipher.final(),
+  ]);
+  fs.writeFileSync(INVITE_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
+}
+
+function isExpired(inv: Invite, now: number) {
+  if (inv.expiresAt && now > inv.expiresAt) return true;
+  if (inv.maxUses != null && inv.uses >= inv.maxUses) return true;
+  return false;
+}
+
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST"]);
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
+  const payload = requireUser(req, res);
+  if (!payload) return;
+  const me = payload.username;
+
+  const { action } = req.body || {};
+  const now = Date.now();
+  const invites = decryptInvites();
+
+  if (action === "consume") {
+    const rawCode = String(req.body.code || "").trim().toUpperCase();
+    if (!rawCode) return res.status(400).json({ error: "Missing code" });
+    const idx = invites.findIndex((inv) => inv.code.toUpperCase() === rawCode);
+    if (idx < 0) return res.status(404).json({ error: "Invite not found" });
+    const invite = invites[idx];
+    if (isExpired(invite, now)) {
+      return res.status(410).json({ error: "Invite expired or exhausted" });
+    }
+    invites[idx] = { ...invite, uses: invite.uses + 1 };
+    encryptInvites(invites);
+    return res.status(200).json({ haven: invite.haven, code: invite.code });
+  }
+
+  // Default: create invite
+  const haven = String(req.body.haven || "").trim();
+  if (!haven) return res.status(400).json({ error: "Missing haven" });
+
+  const days = typeof req.body.days === "number" ? req.body.days : 1;
+  const maxUses =
+    typeof req.body.maxUses === "number" && req.body.maxUses > 0
+      ? Math.floor(req.body.maxUses)
+      : null;
+
+  const expiresAt =
+    typeof days === "number" && days > 0 ? now + days * 24 * 60 * 60 * 1000 : null;
+
+  const rand = crypto.randomBytes(4).toString("hex").toUpperCase();
+  const code = `CHINV-${rand}`;
+
+  const invite: Invite = {
+    code,
+    haven,
+    createdAt: now,
+    createdBy: me,
+    maxUses,
+    uses: 0,
+    expiresAt,
+  };
+  invites.push(invite);
+  encryptInvites(invites);
+  return res.status(200).json({ code, invite });
+}

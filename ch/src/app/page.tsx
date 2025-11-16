@@ -4,7 +4,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Login from "./Login";
-import ChatDemo from "./ChatDemo";
+import Main from "./Main";
 
 export default function Home() {
   const [user, setUser] = useState<string | null>(null);
@@ -22,7 +22,7 @@ export default function Home() {
       </h1>
       {loading ? (
         <div className="text-gray-400">Loading...</div>
-      ) : user ? <ChatDemo username={user} /> : <Login onLogin={setUser} />}
+      ) : user ? <Main username={user} /> : <Login onLogin={setUser} />}
       <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
         <p>ChitterSync © {new Date().getFullYear()}</p>
         <p className="opacity-80">This is a temporary demo version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>

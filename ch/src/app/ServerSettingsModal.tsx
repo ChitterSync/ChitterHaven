@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faServer,
@@ -128,7 +128,6 @@ function OverviewTab({ havenName }: { havenName: string }) {
     </div>
   );
 }
-import { useEffect } from "react";
 function RolesTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [roles, setRoles] = useState<{ [user: string]: string[] }>({});
@@ -153,11 +152,12 @@ function RolesTab({ havenName }: { havenName: string }) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`)
+    fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`)
       .then(res => res.json())
       .then(data => {
-        setRoles(data.roles || {});
-        setRolePerms(data.rolePerms || {});
+        const perms = data.permissions || {};
+        setRoles(perms.members || {});
+        setRolePerms(perms.roles || {});
         setLoading(false);
       });
   }, [havenName]);
@@ -170,10 +170,10 @@ function RolesTab({ havenName }: { havenName: string }) {
     const updatedRoles = { ...roles };
     if (!updatedRoles[newUser]) updatedRoles[newUser] = [];
     if (!updatedRoles[newUser].includes(newRole)) updatedRoles[newUser].push(newRole);
-    const res = await fetch("/api/server-settings", {
+    const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, roles: updatedRoles, rolePerms })
+      body: JSON.stringify({ haven: havenName, action: 'assign-role', user: newUser, role: newRole })
     });
     setLoading(false);
     if (res.ok) {
@@ -192,10 +192,10 @@ function RolesTab({ havenName }: { havenName: string }) {
     const updatedRoles = { ...roles };
     updatedRoles[user] = updatedRoles[user].filter(r => r !== role);
     if (updatedRoles[user].length === 0) delete updatedRoles[user];
-    const res = await fetch("/api/server-settings", {
+    const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, roles: updatedRoles, rolePerms })
+      body: JSON.stringify({ haven: havenName, action: 'revoke-role', user, role })
     });
     setLoading(false);
     if (res.ok) {
@@ -222,10 +222,10 @@ function RolesTab({ havenName }: { havenName: string }) {
     setStatus(null);
     setLoading(true);
     const updatedRolePerms = { ...rolePerms, [editRole]: editPerms };
-    const res = await fetch("/api/server-settings", {
+    const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, roles, rolePerms: updatedRolePerms })
+      body: JSON.stringify({ haven: havenName, action: 'define-role', role: editRole, permissions: editPerms })
     });
     setLoading(false);
     if (res.ok) {
@@ -299,16 +299,42 @@ function RolesTab({ havenName }: { havenName: string }) {
               <div className="bg-[#23232a] p-6 rounded-lg shadow-lg w-full max-w-md">
                 <h3 className="text-xl font-bold mb-4">Edit Permissions for <span className="text-blue-400">{editRole}</span></h3>
                 <div className="flex flex-col gap-2 mb-4">
-                  {PERMISSIONS.map((perm) => (
-                    <label key={perm} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={editPerms.includes(perm)}
-                        onChange={() => handlePermChange(perm)}
-                      />
-                      <span>{perm.replace(/_/g, " ")}</span>
-                    </label>
-                  ))}
+                  {PERMISSIONS.map((perm) => {
+                    const on = editPerms.includes(perm);
+                    const offset = on ? 14 : 0;
+                    return (
+                      <label key={perm} className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handlePermChange(perm)}
+                          className="relative inline-flex items-center justify-start"
+                          style={{ padding: 2, borderRadius: 999, border: `1px solid ${on ? '#22c55e' : '#4b5563'}`, background: '#020617', width: 32, height: 18 }}
+                        >
+                          <span
+                            style={{
+                              position: 'absolute',
+                              left: 2,
+                              top: 2,
+                              width: 14,
+                              height: 14,
+                              borderRadius: 999,
+                              background: on ? '#16a34a' : '#4b5563',
+                              color: '#0b1120',
+                              fontSize: 10,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              transform: `translateX(${offset}px)`,
+                              transition: 'transform 140ms ease-out'
+                            }}
+                          >
+                            {on ? '✔' : '✕'}
+                          </span>
+                        </button>
+                        <span>{perm.replace(/_/g, " ")}</span>
+                      </label>
+                    );
+                  })}
                 </div>
                 <div className="flex gap-2 justify-end">
                   <button onClick={() => setEditRole(null)} className="px-4 py-2 rounded bg-gray-700 text-white">Cancel</button>
@@ -334,18 +360,12 @@ function MembersTab({ havenName }: { havenName: string }) {
     setLoading(true);
     Promise.all([
       fetch("/api/users-restore.json").then(res => res.json()),
-      fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`).then(res => res.json())
-    ]).then(([userData, havenData]) => {
+      fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`).then(res => res.json())
+    ]).then(([userData, permData]) => {
       setUsers(userData.users.map((u: any) => u.username));
-      setRoles(havenData.roles || {});
-      // Collect all unique roles
-      const uniqueRoles = new Set<string>();
-      Object.values(havenData.roles || {}).forEach((arr) => {
-        if (Array.isArray(arr)) {
-          arr.forEach((r) => uniqueRoles.add(r));
-        }
-      });
-      setAllRoles(Array.from(uniqueRoles));
+      const perms = permData.permissions || {};
+      setRoles(perms.members || {});
+      setAllRoles(Object.keys(perms.roles || {}));
       setLoading(false);
     });
   }, [havenName]);
@@ -356,10 +376,10 @@ function MembersTab({ havenName }: { havenName: string }) {
     const updatedRoles = { ...roles };
     if (!updatedRoles[user]) updatedRoles[user] = [];
     if (!updatedRoles[user].includes(role)) updatedRoles[user].push(role);
-    const res = await fetch("/api/server-settings", {
+    const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, roles: updatedRoles })
+      body: JSON.stringify({ haven: havenName, action: 'assign-role', user, role })
     });
     setLoading(false);
     if (res.ok) {
@@ -376,10 +396,10 @@ function MembersTab({ havenName }: { havenName: string }) {
     const updatedRoles = { ...roles };
     updatedRoles[user] = updatedRoles[user].filter(r => r !== role);
     if (updatedRoles[user].length === 0) delete updatedRoles[user];
-    const res = await fetch("/api/server-settings", {
+    const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, roles: updatedRoles })
+      body: JSON.stringify({ haven: havenName, action: 'revoke-role', user, role })
     });
     setLoading(false);
     if (res.ok) {
@@ -387,6 +407,28 @@ function MembersTab({ havenName }: { havenName: string }) {
       setStatus("Saved!");
     } else {
       setStatus("Error removing role");
+    }
+  };
+
+  const handleSetOwner = async (user: string) => {
+    if (!user) return;
+    const confirmText = `Transfer ownership of ${havenName} to ${user}?`;
+    // eslint-disable-next-line no-alert
+    const ok = typeof window !== 'undefined' ? window.confirm(confirmText) : true;
+    if (!ok) return;
+    setStatus(null);
+    setLoading(true);
+    const res = await fetch("/api/permissions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ haven: havenName, action: 'set-owner', user })
+    });
+    setLoading(false);
+    if (res.ok) {
+      setRoles(prev => ({ ...prev, [user]: Array.from(new Set([...(prev[user] || []), 'Owner'])) }));
+      setStatus("Saved!");
+    } else {
+      setStatus("Error setting owner");
     }
   };
 
@@ -439,6 +481,7 @@ function MembersTab({ havenName }: { havenName: string }) {
                   </select>
                 </td>
                 <td className="py-1 px-2 flex gap-2">
+                  <button onClick={() => handleSetOwner(user)} className="text-blue-400 hover:text-blue-600">Set Owner</button>
                   <button onClick={() => handleKick(user)} className="text-yellow-400 hover:text-yellow-600">Kick</button>
                   <button onClick={() => handleBan(user)} className="text-red-400 hover:text-red-600">Ban</button>
                 </td>
