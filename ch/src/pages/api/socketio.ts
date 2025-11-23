@@ -88,14 +88,13 @@ export default function handler(req: NextApiRequest, res: any) {
       // --- Voice call signaling events ---
       socket.on("call-offer", ({ room, offer, from, targets }: { room: string; offer: any; from: string; targets?: string[] }) => {
         if (!room || !offer) return;
-        // If we have explicit targets, fan out to their user rooms so they can receive the call
-        // even when not currently viewing the DM.
+        // Fan out to the room (DM) so active listeners get the offer.
+        socket.to(room).emit("call-offer", { room, offer, from });
+        // Also push directly to per-user rooms if provided, so users not currently in the DM still receive it.
         if (targets && targets.length) {
           targets.forEach((t) => {
             io?.to(`user:${t}`).emit("call-offer", { room, offer, from });
           });
-        } else {
-          socket.to(room).emit("call-offer", { room, offer, from });
         }
       });
       socket.on("call-answer", ({ room, answer, from }: { room: string; answer: any; from: string }) => {
@@ -105,6 +104,19 @@ export default function handler(req: NextApiRequest, res: any) {
       socket.on("ice-candidate", ({ room, candidate, from }: { room: string; candidate: any; from: string }) => {
         if (!room || !candidate) return;
         socket.to(room).emit("ice-candidate", { room, candidate, from });
+      });
+      // Broadcast generic call state so all clients (and other user sockets) stay in sync.
+      socket.on("call-state", ({ room, state, from, startedAt, participants }: { room: string; state: string; from: string; startedAt?: number; participants?: any }) => {
+        if (!room || !state) return;
+        socket.to(room).emit("call-state", { room, state, from, startedAt, participants });
+      });
+      socket.on("call-decline", ({ room, from }: { room: string; from: string }) => {
+        if (!room || !from) return;
+        socket.to(room).emit("call-decline", { room, from });
+      });
+      socket.on("call-ended", ({ room, from, startedAt, endedAt }: { room: string; from: string; startedAt?: number; endedAt?: number }) => {
+        if (!room) return;
+        socket.to(room).emit("call-ended", { room, from, startedAt, endedAt });
       });
     });
   }

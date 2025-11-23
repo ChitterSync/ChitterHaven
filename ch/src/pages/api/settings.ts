@@ -12,9 +12,27 @@ const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/settings.json");
 type UserSettings = {
   theme?: "dark" | "light" | "system";
   compact?: boolean;
+  compactSidebar?: boolean;
   showTimestamps?: boolean;
-  notifications?: { mentions?: boolean; pins?: boolean };
+  chatStyle?: string;
+  messageFontSize?: string;
+  accentHex?: string;
+  boldColorHex?: string;
+  italicColorHex?: string;
+  pinColorHex?: string;
+  mentionColorHex?: string;
+  callHavensServers?: boolean;
+  showTips?: boolean;
+  reduceMotion?: boolean;
+  showOnlineCount?: boolean;
+  callsEnabled?: boolean;
+  callRingSound?: boolean;
+  callRingtone?: string;
+  quickButtonsOwn?: string[];
+  quickButtonsOthers?: string[];
+  notifications?: { mentions?: boolean; pins?: boolean; soundEnabled?: boolean; volume?: number };
   status?: "online" | "idle" | "dnd" | "offline";
+  autoIdleEnabled?: boolean;
 };
 type SettingsData = { users: Record<string, UserSettings> };
 
@@ -59,4 +77,3 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("Allow", ["GET", "POST"]);
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
-

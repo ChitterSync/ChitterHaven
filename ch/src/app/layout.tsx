@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ChitterHaven",
-  description: "A messaging platform by ChitterSync. IN OPEN BETA.",
+  description: "A messaging platform for ChitterSync. IN OPEN BETA.",
 };
 
 export const viewport = {

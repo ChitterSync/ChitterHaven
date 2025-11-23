@@ -33,7 +33,7 @@ export default function ServerSettingsModal({
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60">
-      <div className="bg-[#18181b] rounded-lg shadow-lg w-full max-w-3xl flex min-h-[500px]">
+      <div className="bg-[#18181b] rounded-lg shadow-lg w-full max-w-3xl flex min-h-[520px] relative">
         {/* Sidebar */}
         <nav className="w-56 border-r border-gray-800 flex flex-col py-6 px-2 gap-2 bg-[#23232a]">
           {TABS.map((t) => (
@@ -49,6 +49,7 @@ export default function ServerSettingsModal({
             </button>
           ))}
         </nav>
+
         {/* Main Content */}
         <div className="flex-1 p-8 overflow-y-auto">
           <button
@@ -71,7 +72,7 @@ export default function ServerSettingsModal({
   );
 }
 
-// --- Tab Components (stubs, to be implemented) ---
+// --- Overview ---
 function OverviewTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState(havenName);
@@ -82,13 +83,14 @@ function OverviewTab({ havenName }: { havenName: string }) {
   useEffect(() => {
     setLoading(true);
     fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         setName(data.name || havenName);
         setIcon(data.icon || "");
         setDescription(data.description || "");
         setLoading(false);
-      });
+      })
+      .catch(() => setLoading(false));
   }, [havenName]);
 
   const handleSave = async () => {
@@ -97,37 +99,67 @@ function OverviewTab({ havenName }: { havenName: string }) {
     const res = await fetch("/api/server-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, name, icon, description })
+      body: JSON.stringify({ haven: havenName, name, icon, description }),
     });
     setLoading(false);
-    if (res.ok) setStatus("Saved!");
-    else setStatus("Error saving settings");
+    setStatus(res.ok ? "Saved!" : "Error saving settings");
   };
 
   return (
     <div className="text-gray-200 max-w-lg mx-auto">
       <h2 className="text-2xl font-bold mb-4">Server Overview</h2>
-      {loading ? <div>Loading...</div> : (
-        <form onSubmit={e => { e.preventDefault(); handleSave(); }} className="flex flex-col gap-4">
+      {loading ? (
+        <div>Loading...</div>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSave();
+          }}
+          className="flex flex-col gap-4"
+        >
           <label className="flex flex-col gap-1">
             <span className="text-sm text-gray-400">Server Name</span>
-            <input value={name} onChange={e => setName(e.target.value)} className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white" />
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white"
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-gray-400">Icon URL</span>
-            <input value={icon} onChange={e => setIcon(e.target.value)} className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white" />
+            <input
+              value={icon}
+              onChange={(e) => setIcon(e.target.value)}
+              className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white"
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-gray-400">Description</span>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white" />
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="bg-[#23232a] border border-gray-700 rounded px-3 py-2 text-white"
+            />
           </label>
-          <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 mt-2 self-end">Save</button>
-          {status && <div className={status === "Saved!" ? "text-green-400" : "text-red-400"}>{status}</div>}
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 mt-2 self-end"
+          >
+            Save
+          </button>
+          {status && (
+            <div className={status === "Saved!" ? "text-green-400" : "text-red-400"}>
+              {status}
+            </div>
+          )}
         </form>
       )}
     </div>
   );
 }
+
+// --- Roles ---
 function RolesTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [roles, setRoles] = useState<{ [user: string]: string[] }>({});
@@ -147,19 +179,20 @@ function RolesTab({ havenName }: { havenName: string }) {
     "send_messages",
     "add_reactions",
     "upload_files",
-    "view_channels"
+    "view_channels",
   ];
 
   useEffect(() => {
     setLoading(true);
     fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         const perms = data.permissions || {};
         setRoles(perms.members || {});
         setRolePerms(perms.roles || {});
         setLoading(false);
-      });
+      })
+      .catch(() => setLoading(false));
   }, [havenName]);
 
   const handleAddRole = async (e: React.FormEvent) => {
@@ -173,7 +206,7 @@ function RolesTab({ havenName }: { havenName: string }) {
     const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'assign-role', user: newUser, role: newRole })
+      body: JSON.stringify({ haven: havenName, action: "assign-role", user: newUser, role: newRole }),
     });
     setLoading(false);
     if (res.ok) {
@@ -190,12 +223,12 @@ function RolesTab({ havenName }: { havenName: string }) {
     setStatus(null);
     setLoading(true);
     const updatedRoles = { ...roles };
-    updatedRoles[user] = updatedRoles[user].filter(r => r !== role);
+    updatedRoles[user] = (updatedRoles[user] || []).filter((r) => r !== role);
     if (updatedRoles[user].length === 0) delete updatedRoles[user];
     const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'revoke-role', user, role })
+      body: JSON.stringify({ haven: havenName, action: "revoke-role", user, role }),
     });
     setLoading(false);
     if (res.ok) {
@@ -212,24 +245,21 @@ function RolesTab({ havenName }: { havenName: string }) {
   };
 
   const handlePermChange = (perm: string) => {
-    setEditPerms((prev) =>
-      prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm]
-    );
+    setEditPerms((prev) => (prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm]));
   };
 
   const handleSavePerms = async () => {
     if (!editRole) return;
     setStatus(null);
     setLoading(true);
-    const updatedRolePerms = { ...rolePerms, [editRole]: editPerms };
     const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'define-role', role: editRole, permissions: editPerms })
+      body: JSON.stringify({ haven: havenName, action: "define-role", role: editRole, permissions: editPerms }),
     });
     setLoading(false);
     if (res.ok) {
-      setRolePerms(updatedRolePerms);
+      setRolePerms((prev) => ({ ...prev, [editRole]: editPerms }));
       setStatus("Saved!");
       setEditRole(null);
     } else {
@@ -240,22 +270,28 @@ function RolesTab({ havenName }: { havenName: string }) {
   return (
     <div className="text-gray-200 max-w-lg mx-auto">
       <h2 className="text-2xl font-bold mb-4">Roles & Permissions</h2>
-      {loading ? <div>Loading...</div> : (
+      {loading ? (
+        <div>Loading...</div>
+      ) : (
         <>
-          <form onSubmit={handleAddRole} className="flex gap-2 mb-4">
+          <form onSubmit={handleAddRole} className="flex flex-col gap-2 mb-4">
             <input
               value={newUser}
-              onChange={e => setNewUser(e.target.value)}
+              onChange={(e) => setNewUser(e.target.value)}
               placeholder="Username"
-              className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white flex-1"
+              className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white"
             />
-            <input
-              value={newRole}
-              onChange={e => setNewRole(e.target.value)}
-              placeholder="Role (e.g. admin)"
-              className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white flex-1"
-            />
-            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1">Add</button>
+            <div className="flex gap-2">
+              <input
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value)}
+                placeholder="Role (e.g. admin)"
+                className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white flex-1"
+              />
+              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1">
+                Add
+              </button>
+            </div>
           </form>
           <table className="w-full text-left border-separate border-spacing-y-2 mb-6">
             <thead>
@@ -284,7 +320,7 @@ function RolesTab({ havenName }: { havenName: string }) {
                           title="Edit permissions"
                           onClick={() => handleEditPerms(role)}
                         >
-                          ⚙️
+                          Edit
                         </button>
                       </span>
                     ))}
@@ -293,52 +329,35 @@ function RolesTab({ havenName }: { havenName: string }) {
               ))}
             </tbody>
           </table>
-          {/* Edit permissions modal */}
           {editRole && (
             <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-60 z-50">
               <div className="bg-[#23232a] p-6 rounded-lg shadow-lg w-full max-w-md">
-                <h3 className="text-xl font-bold mb-4">Edit Permissions for <span className="text-blue-400">{editRole}</span></h3>
+                <h3 className="text-xl font-bold mb-4">
+                  Edit Permissions for <span className="text-blue-400">{editRole}</span>
+                </h3>
                 <div className="flex flex-col gap-2 mb-4">
                   {PERMISSIONS.map((perm) => {
                     const on = editPerms.includes(perm);
-                    const offset = on ? 14 : 0;
                     return (
                       <label key={perm} className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handlePermChange(perm)}
-                          className="relative inline-flex items-center justify-start"
-                          style={{ padding: 2, borderRadius: 999, border: `1px solid ${on ? '#22c55e' : '#4b5563'}`, background: '#020617', width: 32, height: 18 }}
-                        >
-                          <span
-                            style={{
-                              position: 'absolute',
-                              left: 2,
-                              top: 2,
-                              width: 14,
-                              height: 14,
-                              borderRadius: 999,
-                              background: on ? '#16a34a' : '#4b5563',
-                              color: '#0b1120',
-                              fontSize: 10,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transform: `translateX(${offset}px)`,
-                              transition: 'transform 140ms ease-out'
-                            }}
-                          >
-                            {on ? '✔' : '✕'}
-                          </span>
-                        </button>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => handlePermChange(perm)}
+                          className="w-4 h-4"
+                        />
                         <span>{perm.replace(/_/g, " ")}</span>
                       </label>
                     );
                   })}
                 </div>
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => setEditRole(null)} className="px-4 py-2 rounded bg-gray-700 text-white">Cancel</button>
-                  <button onClick={handleSavePerms} className="px-4 py-2 rounded bg-blue-600 text-white">Save</button>
+                  <button onClick={() => setEditRole(null)} className="px-4 py-2 rounded bg-gray-700 text-white">
+                    Cancel
+                  </button>
+                  <button onClick={handleSavePerms} className="px-4 py-2 rounded bg-blue-600 text-white">
+                    Save
+                  </button>
                 </div>
               </div>
             </div>
@@ -349,6 +368,8 @@ function RolesTab({ havenName }: { havenName: string }) {
     </div>
   );
 }
+
+// --- Members ---
 function MembersTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<string[]>([]);
@@ -358,32 +379,33 @@ function MembersTab({ havenName }: { havenName: string }) {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      fetch("/api/users-restore.json").then(res => res.json()),
-      fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`).then(res => res.json())
-    ]).then(([userData, permData]) => {
-      setUsers(userData.users.map((u: any) => u.username));
-      const perms = permData.permissions || {};
-      setRoles(perms.members || {});
-      setAllRoles(Object.keys(perms.roles || {}));
-      setLoading(false);
-    });
+    fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`)
+      .then((res) => res.json())
+      .then((permData) => {
+        const perms = permData.permissions || {};
+        const members = perms.members || {};
+        setUsers(Object.keys(members));
+        setRoles(members);
+        setAllRoles(Object.keys(perms.roles || {}));
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, [havenName]);
 
   const handleAssignRole = async (user: string, role: string) => {
     setStatus(null);
     setLoading(true);
-    const updatedRoles = { ...roles };
-    if (!updatedRoles[user]) updatedRoles[user] = [];
-    if (!updatedRoles[user].includes(role)) updatedRoles[user].push(role);
+    const updated = { ...roles };
+    if (!updated[user]) updated[user] = [];
+    if (!updated[user].includes(role)) updated[user].push(role);
     const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'assign-role', user, role })
+      body: JSON.stringify({ haven: havenName, action: "assign-role", user, role }),
     });
     setLoading(false);
     if (res.ok) {
-      setRoles(updatedRoles);
+      setRoles(updated);
       setStatus("Saved!");
     } else {
       setStatus("Error assigning role");
@@ -393,106 +415,95 @@ function MembersTab({ havenName }: { havenName: string }) {
   const handleRemoveRole = async (user: string, role: string) => {
     setStatus(null);
     setLoading(true);
-    const updatedRoles = { ...roles };
-    updatedRoles[user] = updatedRoles[user].filter(r => r !== role);
-    if (updatedRoles[user].length === 0) delete updatedRoles[user];
+    const updated = { ...roles };
+    updated[user] = (updated[user] || []).filter((r) => r !== role);
+    if (updated[user].length === 0) delete updated[user];
     const res = await fetch("/api/permissions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'revoke-role', user, role })
+      body: JSON.stringify({ haven: havenName, action: "revoke-role", user, role }),
     });
     setLoading(false);
     if (res.ok) {
-      setRoles(updatedRoles);
+      setRoles(updated);
       setStatus("Saved!");
     } else {
       setStatus("Error removing role");
     }
   };
 
-  const handleSetOwner = async (user: string) => {
-    if (!user) return;
-    const confirmText = `Transfer ownership of ${havenName} to ${user}?`;
-    const ok = typeof window !== 'undefined' ? window.confirm(confirmText) : true;
-    if (!ok) return;
-    setStatus(null);
-    setLoading(true);
-    const res = await fetch("/api/permissions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, action: 'set-owner', user })
-    });
-    setLoading(false);
-    if (res.ok) {
-      setRoles(prev => ({ ...prev, [user]: Array.from(new Set([...(prev[user] || []), 'Owner'])) }));
-      setStatus("Saved!");
-    } else {
-      setStatus("Error setting owner");
-    }
-  };
-
-  // UI for kick/ban (no backend yet)
-  const handleKick = (user: string) => {
-    alert(`Kick user: ${user} (not implemented)`);
-  };
-  const handleBan = (user: string) => {
-    alert(`Ban user: ${user} (not implemented)`);
-  };
-
   return (
-    <div className="text-gray-200 max-w-lg mx-auto">
+    <div className="text-gray-200">
       <h2 className="text-2xl font-bold mb-4">Members</h2>
-      {loading ? <div>Loading...</div> : (
-        <table className="w-full text-left border-separate border-spacing-y-2">
-          <thead>
-            <tr className="text-gray-400">
-              <th className="py-1">User</th>
-              <th className="py-1">Roles</th>
-              <th className="py-1">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(user => (
-              <tr key={user} className="bg-[#23232a]">
-                <td className="py-1 px-2 font-mono">{user}</td>
-                <td className="py-1 px-2 flex flex-wrap gap-2">
-                  {(roles[user] || []).map(role => (
-                    <span key={role} className="inline-flex items-center bg-[#28283a] px-2 py-1 rounded text-xs">
-                      {role}
-                      <button
-                        className="ml-2 text-red-400 hover:text-red-600"
-                        title="Remove role"
-                        onClick={() => handleRemoveRole(user, role)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  <select
-                    className="ml-2 bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-xs text-white"
-                    value=""
-                    onChange={e => handleAssignRole(user, e.target.value)}
-                  >
-                    <option value="">+ Add role</option>
-                    {allRoles.filter(r => !(roles[user] || []).includes(r)).map(role => (
-                      <option key={role} value={role}>{role}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="py-1 px-2 flex gap-2">
-                  <button onClick={() => handleSetOwner(user)} className="text-blue-400 hover:text-blue-600">Set Owner</button>
-                  <button onClick={() => handleKick(user)} className="text-yellow-400 hover:text-yellow-600">Kick</button>
-                  <button onClick={() => handleBan(user)} className="text-red-400 hover:text-red-600">Ban</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {loading ? (
+        <div>Loading...</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {users.length === 0 && <div className="text-gray-400">No members found.</div>}
+          {users.map((u) => (
+            <div key={u} className="bg-[#23232a] border border-gray-800 rounded px-3 py-2">
+              <div className="font-mono text-sm mb-2">{u}</div>
+              <div className="flex flex-wrap gap-2">
+                {(roles[u] || []).map((r) => (
+                  <span key={r} className="inline-flex items-center bg-[#28283a] px-2 py-1 rounded text-xs">
+                    {r}
+                    <button
+                      className="ml-2 text-red-400 hover:text-red-600"
+                      onClick={() => handleRemoveRole(u, r)}
+                      title="Remove role"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <RoleSelect
+                  roles={allRoles}
+                  onSelect={(r) => handleAssignRole(u, r)}
+                  label="Add role"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
       )}
       {status && <div className={status === "Saved!" ? "text-green-400" : "text-red-400"}>{status}</div>}
     </div>
   );
 }
+
+function RoleSelect({ roles, onSelect, label }: { roles: string[]; onSelect: (r: string) => void; label: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        className="text-blue-400 hover:text-blue-200 text-xs underline"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 bg-[#1f2937] border border-gray-700 rounded shadow-lg p-2">
+          {roles.length === 0 && <div className="text-gray-400 text-sm">No roles defined</div>}
+          {roles.map((r) => (
+            <button
+              key={r}
+              className="block w-full text-left text-sm text-gray-200 hover:text-blue-400"
+              onClick={() => {
+                onSelect(r);
+                setOpen(false);
+              }}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Channels ---
 function ChannelsTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [channels, setChannels] = useState<string[]>([]);
@@ -504,11 +515,12 @@ function ChannelsTab({ havenName }: { havenName: string }) {
   useEffect(() => {
     setLoading(true);
     fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`)
-      .then(res => res.json())
-      .then(data => {
-        setChannels(data.channels || []);
+      .then((res) => res.json())
+      .then((data) => {
+        setChannels(Array.isArray(data.channels) ? data.channels : []);
         setLoading(false);
-      });
+      })
+      .catch(() => setLoading(false));
   }, [havenName]);
 
   const saveChannels = async (updated: string[]) => {
@@ -517,7 +529,7 @@ function ChannelsTab({ havenName }: { havenName: string }) {
     const res = await fetch("/api/server-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ haven: havenName, channels: updated })
+      body: JSON.stringify({ haven: havenName, channels: updated }),
     });
     setLoading(false);
     if (res.ok) {
@@ -561,16 +573,20 @@ function ChannelsTab({ havenName }: { havenName: string }) {
   return (
     <div className="text-gray-200 max-w-lg mx-auto">
       <h2 className="text-2xl font-bold mb-4">Channels</h2>
-      {loading ? <div>Loading...</div> : (
+      {loading ? (
+        <div>Loading...</div>
+      ) : (
         <>
           <form onSubmit={handleAddChannel} className="flex gap-2 mb-4">
             <input
               value={newChannel}
-              onChange={e => setNewChannel(e.target.value)}
+              onChange={(e) => setNewChannel(e.target.value)}
               placeholder="New channel name"
               className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white flex-1"
             />
-            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1">Add</button>
+            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1">
+              Add
+            </button>
           </form>
           <ul className="flex flex-col gap-2">
             {channels.map((ch, idx) => (
@@ -579,19 +595,31 @@ function ChannelsTab({ havenName }: { havenName: string }) {
                   <>
                     <input
                       value={editName}
-                      onChange={e => setEditName(e.target.value)}
+                      onChange={(e) => setEditName(e.target.value)}
                       className="bg-[#18181b] border border-gray-700 rounded px-2 py-1 text-white flex-1"
                     />
-                    <button onClick={() => handleEditChannel(idx)} className="bg-blue-600 text-white rounded px-2 py-1">Save</button>
-                    <button onClick={() => { setEditIndex(null); setEditName(""); }} className="bg-gray-700 text-white rounded px-2 py-1">Cancel</button>
+                    <button onClick={() => handleEditChannel(idx)} className="bg-blue-600 text-white rounded px-2 py-1">
+                      Save
+                    </button>
+                    <button onClick={() => { setEditIndex(null); setEditName(""); }} className="bg-gray-700 text-white rounded px-2 py-1">
+                      Cancel
+                    </button>
                   </>
                 ) : (
                   <>
-                    <span className="font-mono">#{ch}</span>
-                    <button onClick={() => { setEditIndex(idx); setEditName(ch); }} className="text-yellow-400 hover:text-yellow-600">Rename</button>
-                    <button onClick={() => handleDeleteChannel(idx)} className="text-red-400 hover:text-red-600">Delete</button>
-                    <button onClick={() => handleMove(idx, -1)} disabled={idx === 0} className="text-gray-400 hover:text-blue-400">↑</button>
-                    <button onClick={() => handleMove(idx, 1)} disabled={idx === channels.length - 1} className="text-gray-400 hover:text-blue-400">↓</button>
+                    <span className="font-mono flex-1">#{ch}</span>
+                    <button onClick={() => { setEditIndex(idx); setEditName(ch); }} className="text-yellow-400 hover:text-yellow-600">
+                      Rename
+                    </button>
+                    <button onClick={() => handleDeleteChannel(idx)} className="text-red-400 hover:text-red-600">
+                      Delete
+                    </button>
+                    <button onClick={() => handleMove(idx, -1)} disabled={idx === 0} className="text-gray-400 hover:text-blue-400">
+                      ↑
+                    </button>
+                    <button onClick={() => handleMove(idx, 1)} disabled={idx === channels.length - 1} className="text-gray-400 hover:text-blue-400">
+                      ↓
+                    </button>
                   </>
                 )}
               </li>
@@ -603,12 +631,71 @@ function ChannelsTab({ havenName }: { havenName: string }) {
     </div>
   );
 }
+
+// --- Audit ---
 function AuditTab({ havenName }: { havenName: string }) {
-  return <div className="text-gray-200">Audit log for <b>{havenName}</b></div>;
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    fetch("/api/audit-log")
+      .then((r) => r.json())
+      .then((d) => {
+        const arr = Array.isArray(d) ? d : Array.isArray(d?.entries) ? d.entries : [];
+        setLogs(arr);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  return (
+    <div className="text-gray-200">
+      <h2 className="text-2xl font-bold mb-4">Audit Log</h2>
+      {loading ? (
+        <div>Loading...</div>
+      ) : logs.length === 0 ? (
+        <div className="text-gray-400">No audit entries.</div>
+      ) : (
+        <div className="max-h-80 overflow-auto space-y-2">
+          {logs.slice(-100).reverse().map((e, idx) => (
+            <div key={idx} className="bg-[#23232a] border border-gray-800 rounded px-3 py-2 text-sm">
+              <div className="text-gray-400">{new Date(e.ts || Date.now()).toLocaleString()}</div>
+              <div>{e.user || "unknown"}: {e.type || "event"}</div>
+              {e.message && <div className="text-gray-300">{e.message}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="text-xs text-gray-500 mt-3">Audit log is global; per-haven scoping not implemented yet.</div>
+    </div>
+  );
 }
+
+// --- Integrations ---
 function IntegrationsTab({ havenName }: { havenName: string }) {
-  return <div className="text-gray-200">Integrations for <b>{havenName}</b></div>;
+  return (
+    <div className="text-gray-200 max-w-lg">
+      <h2 className="text-2xl font-bold mb-2">Integrations</h2>
+      <div className="text-gray-400 text-sm mb-4">
+        No integrations are configured yet. Future: webhooks, bots, external service links.
+      </div>
+      <div className="bg-[#23232a] border border-gray-800 rounded px-3 py-2 text-sm">
+        Haven: <span className="text-blue-400">{havenName}</span>
+      </div>
+    </div>
+  );
 }
+
+// --- Danger Zone ---
 function DangerZoneTab({ havenName }: { havenName: string }) {
-  return <div className="text-gray-200">Danger Zone (delete server, transfer ownership, etc.) for <b>{havenName}</b></div>;
+  return (
+    <div className="text-gray-200">
+      <h2 className="text-2xl font-bold mb-4 text-red-400">Danger Zone</h2>
+      <div className="bg-[#2a1a1a] border border-red-900 text-sm text-red-100 rounded p-4 space-y-3">
+        <div>Delete server and transfer ownership are not implemented yet.</div>
+        <div>For now, manage ownership via Roles & Permissions.</div>
+        <div className="text-gray-400">Haven: {havenName}</div>
+      </div>
+    </div>
+  );
 }

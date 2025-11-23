@@ -55,11 +55,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const setting = await prisma.serverSetting.findUnique({ where: { key: haven } });
       let value = setting ? JSON.parse(setting.value) : {};
+      if (!Array.isArray(value.channels)) value.channels = [];
       res.status(200).json(value);
       return;
     } catch (e: any) {
       const local = decryptSettings();
       const value = (local && typeof local === 'object' && (local as any)[haven]) ? (local as any)[haven] : {};
+      if (!Array.isArray((value as any).channels)) (value as any).channels = [];
       res.status(200).json(value);
       return;
     }
@@ -120,7 +122,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const everyone: string[] = (perms.defaults?.everyone || []) as string[];
     const has = memberRoles.some(r => (rolesMap[r] || []).includes('*') || (rolesMap[r] || []).includes('manage_server')) || everyone.includes('manage_server') || everyone.includes('*');
     if (!has) return res.status(403).json({ error: 'Forbidden' });
-    const { name, description, icon, ...rest } = req.body;
+    const { name, description, icon, channels, ...rest } = req.body;
     // Fetch current settings
     let setting = await prisma.serverSetting.findUnique({ where: { key: haven } });
     let value = setting ? JSON.parse(setting.value) : {};
@@ -129,6 +131,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ...(name !== undefined ? { name } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(icon !== undefined ? { icon } : {}),
+      ...(channels !== undefined ? { channels: Array.isArray(channels) ? channels : [] } : {}),
       ...rest
     };
     await prisma.serverSetting.upsert({

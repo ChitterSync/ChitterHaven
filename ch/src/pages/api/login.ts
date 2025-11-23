@@ -63,6 +63,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     );
     res.status(200).json({ success: true, username });
   } else {
-    res.status(401).json({ error: "Invalid credentials, We Recently Lost Access to Some Users Data, please make a new account if you suspect you were part of the group that lost their data" });
+    res.status(401).json({ error: "Invalid credentials" });
   }
 }

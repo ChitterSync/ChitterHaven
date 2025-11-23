@@ -25,7 +25,8 @@ export default function Home() {
       ) : user ? <Main username={user} /> : <Login onLogin={setUser} />}
       <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
         <p>ChitterSync © {new Date().getFullYear()}</p>
-        <p className="opacity-80">This is a temporary demo version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
+        <p className="opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
+        <p className="opacity-80">v0.1.0 BETA</p>
       </footer>
     </div>
   );

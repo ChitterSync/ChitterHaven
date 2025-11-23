@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Dropdown, { type DropdownOption } from "./components/Dropdown";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faCirclePlay, faCirclePause } from "@fortawesome/free-solid-svg-icons";
 
 type Props = {
   isOpen: boolean;
@@ -28,16 +31,36 @@ type Settings = {
   showOnlineCount?: boolean;
   callsEnabled?: boolean;
   callRingSound?: boolean;
+  callRingtone?: string;
    quickButtonsOwn?: string[];
    quickButtonsOthers?: string[];
   notifications?: { mentions?: boolean; pins?: boolean; soundEnabled?: boolean; volume?: number };
   status?: "online" | "idle" | "dnd" | "offline";
+  autoIdleEnabled?: boolean;
+};
+
+const RINGTONE_OPTIONS = ["Drive", "Bandwidth", "Drift", "Progress", "Spooky"];
+
+const normalizeSettings = (raw?: Settings | null): Settings => {
+  const base: Settings = { ...(raw || {}) };
+  const notif = base.notifications || {};
+  base.notifications = {
+    mentions: notif.mentions !== false,
+    pins: notif.pins !== false,
+    soundEnabled: notif.soundEnabled !== false,
+    volume: typeof notif.volume === "number" ? notif.volume : 0.6,
+  };
+  if (base.callRingSound === undefined) base.callRingSound = true;
+  if (!base.callRingtone || !RINGTONE_OPTIONS.includes(base.callRingtone)) base.callRingtone = "Drive";
+  return base;
 };
 
 export default function UserSettingsModal({ isOpen, onClose, username, onStatusChange, onSaved }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [settings, setSettings] = useState<Settings>({});
+  const [settings, setSettings] = useState<Settings>(() => normalizeSettings({}));
+  const [previewing, setPreviewing] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [tab, setTab] = useState<'appearance'|'notifications'|'status'|'guides'|'dev'|'about'>('appearance');
   const [guideChecked, setGuideChecked] = useState(true);
   const [guideLevel, setGuideLevel] = useState(60);
@@ -52,7 +75,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       try {
         const r = await fetch('/api/settings');
         const d = await r.json();
-        setSettings(d || {});
+        setSettings(normalizeSettings(d || {}));
       } catch {}
       setLoading(false);
     })();
@@ -94,6 +117,56 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     } catch {}
     onClose();
   };
+
+  const stopPreview = () => {
+    if (previewAudioRef.current) {
+      try {
+        previewAudioRef.current.pause();
+        previewAudioRef.current.currentTime = 0;
+      } catch {}
+      previewAudioRef.current = null;
+    }
+    setPreviewing(null);
+  };
+
+  const previewRingtone = (name: string) => {
+    if (previewing === name) {
+      stopPreview();
+      return;
+    }
+    stopPreview();
+    try {
+      const audio = new Audio(`/sounds/ringtones/${name}.wav`);
+      audio.volume = 0.85;
+      audio.play().catch(() => {});
+      audio.onended = stopPreview;
+      previewAudioRef.current = audio;
+      setPreviewing(name);
+    } catch {
+      setPreviewing(null);
+    }
+  };
+
+  const ringtoneOptions: DropdownOption[] = RINGTONE_OPTIONS.map((opt) => ({
+    value: opt,
+    label: opt === "Drive" ? `${opt} (Default)` : opt,
+    action: {
+      label: previewing === opt ? "Pause" : "Play",
+      icon: (
+        <FontAwesomeIcon
+          icon={previewing === opt ? faCirclePause : faCirclePlay}
+          style={{ pointerEvents: "none" }}
+        />
+      ),
+      onClick: () => previewRingtone(opt),
+    },
+  }));
+
+  useEffect(() => {
+    if (!isOpen) {
+      stopPreview();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
   const accent = settings.accentHex || '#60a5fa';
@@ -391,36 +464,45 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       <div style={{ display: 'grid', gap: 8 }}>
                         <button
                           type="button"
-                          onClick={()=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), mentions: !s.notifications?.mentions } }))}
+                          onClick={()=> setSettings(s => {
+                            const current = s.notifications?.mentions !== false;
+                            return { ...s, notifications: { ...(s.notifications||{}), mentions: !current } };
+                          })}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
                         >
                           <div style={{ textAlign: 'left' }}>
                             <div>Mentions</div>
                             <div style={{ fontSize: 11, color: '#9ca3af' }}>Show alerts and highlights when someone @mentions you.</div>
                           </div>
-                          <Switch checked={!!settings.notifications?.mentions} />
+                          <Switch checked={settings.notifications?.mentions !== false} />
                         </button>
                         <button
                           type="button"
-                          onClick={()=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), pins: !s.notifications?.pins } }))}
+                          onClick={()=> setSettings(s => {
+                            const current = s.notifications?.pins !== false;
+                            return { ...s, notifications: { ...(s.notifications||{}), pins: !current } };
+                          })}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
                         >
                           <div style={{ textAlign: 'left' }}>
                             <div>Pins</div>
                             <div style={{ fontSize: 11, color: '#9ca3af' }}>Notify when messages are pinned in your channels.</div>
                           </div>
-                          <Switch checked={!!settings.notifications?.pins} />
+                          <Switch checked={settings.notifications?.pins !== false} />
                         </button>
                         <button
                           type="button"
-                          onClick={()=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), soundEnabled: !s.notifications?.soundEnabled } }))}
+                          onClick={()=> setSettings(s => {
+                            const current = s.notifications?.soundEnabled !== false;
+                            return { ...s, notifications: { ...(s.notifications||{}), soundEnabled: !current } };
+                          })}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
                         >
                           <div style={{ textAlign: 'left' }}>
                             <div>Sound</div>
                             <div style={{ fontSize: 11, color: '#9ca3af' }}>Play notification sounds for configured events.</div>
                           </div>
-                          <Switch checked={!!settings.notifications?.soundEnabled} />
+                          <Switch checked={settings.notifications?.soundEnabled !== false} />
                         </button>
                         <button
                           type="button"
@@ -435,15 +517,27 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         </button>
                         <button
                           type="button"
-                          onClick={()=> setSettings(s => ({ ...s, callRingSound: !s.callRingSound }))}
+                          onClick={()=> setSettings(s => {
+                            const current = s.callRingSound !== false;
+                            return { ...s, callRingSound: !current };
+                          })}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
                         >
                           <div style={{ textAlign: 'left' }}>
                             <div>Incoming call sound</div>
                             <div style={{ fontSize: 11, color: '#9ca3af' }}>Play a sound when someone starts a call with you.</div>
                           </div>
-                          <Switch checked={!!settings.callRingSound} />
+                          <Switch checked={settings.callRingSound !== false} />
                         </button>
+                        <Dropdown
+                          label="Ringtone"
+                          options={ringtoneOptions}
+                          value={settings.callRingtone || "Drive"}
+                          onChange={(opt) => {
+                            stopPreview();
+                            setSettings((s) => ({ ...s, callRingtone: opt.value }));
+                          }}
+                        />
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12, minWidth: 60 }}>Volume</span>
@@ -467,6 +561,17 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <option value="dnd">Do Not Disturb</option>
                         <option value="offline">Offline</option>
                       </select>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.autoIdleEnabled !== false}
+                        onChange={(e) => setSettings(s => ({ ...s, autoIdleEnabled: e.target.checked }))}
+                      />
+                      <div style={{ display: 'grid', gap: 2 }}>
+                        <span style={{ fontWeight: 600 }}>Auto-idle</span>
+                        <span style={{ fontSize: 12, color: '#9ca3af' }}>Set status to Idle after 5 minutes of inactivity (desktop and mobile).</span>
+                      </div>
                     </label>
                   </div>
                 )}

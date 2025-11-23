@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -163,10 +163,6 @@ export default function Main({ username }: { username: string }) {
   const [selectedChannel, setSelectedChannel] = useState<string>(last.channel || "");
   const [dms, setDMs] = useState<{ id: string; users: string[] }[]>([]);
   const [selectedDM, setSelectedDM] = useState<string | null>(last.dm);
-  const lastSelectedDMRef = useRef<string | null>(last.dm);
-  useEffect(() => {
-    if (selectedDM) lastSelectedDMRef.current = selectedDM;
-  }, [selectedDM]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [newChannel, setNewChannel] = useState("");
@@ -272,30 +268,6 @@ export default function Main({ username }: { username: string }) {
     socketRef.current?.emit('call-offer', { room: selectedDM, offer: desc, from: username, targets });
   };
 
-  const declineCall = (room?: string | null) => {
-    const target = room || incomingCall?.room || activeCallDM;
-    if (!target) return;
-    try {
-      if (ringAudioRef.current) {
-        ringAudioRef.current.pause();
-        ringAudioRef.current.currentTime = 0;
-      }
-    } catch {}
-    ringAudioRef.current = null;
-    pendingOfferRef.current = null;
-    socketRef.current?.emit('call-decline', { room: target, from: username });
-    if (incomingCall?.room === target) setIncomingCall(null);
-    if (!hasJoinedCallRef.current) {
-      if (activeCallDM === target) {
-        setActiveCallDM(null);
-        setCallParticipants([]);
-      }
-      setCallState('idle');
-      setCallError(null);
-    }
-    markJoined(false);
-  };
-
   const endCall = () => {
     const endedRoom = activeCallDM;
     const startedAt = callStartedAt;
@@ -311,7 +283,6 @@ export default function Main({ username }: { username: string }) {
     setCallSummarySent(false);
     setCallElapsed(0);
     setCallParticipants([]);
-    markJoined(false);
     if (dialingAudioRef.current) {
       try {
         dialingAudioRef.current.pause();
@@ -400,7 +371,6 @@ export default function Main({ username }: { username: string }) {
       } catch {}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
-      markJoined(true);
       if (localAudioRef.current) {
         localAudioRef.current.srcObject = stream;
       }
@@ -416,7 +386,6 @@ export default function Main({ username }: { username: string }) {
       setIsMuted(false);
     } catch (e: any) {
       setCallState('idle');
-      markJoined(false);
       if (dialingAudioRef.current) {
         try {
           dialingAudioRef.current.pause();
@@ -487,13 +456,6 @@ export default function Main({ username }: { username: string }) {
   const [callStartedAt, setCallStartedAt] = useState<number | null>(null);
   const [callElapsed, setCallElapsed] = useState<number>(0);
   const [callParticipants, setCallParticipants] = useState<CallParticipant[]>([]);
-  const callParticipantsRef = useRef<CallParticipant[]>([]);
-  const [hasJoinedCall, setHasJoinedCall] = useState(false);
-  const hasJoinedCallRef = useRef(false);
-  const markJoined = (joined: boolean) => {
-    hasJoinedCallRef.current = joined;
-    setHasJoinedCall(joined);
-  };
   const [userProfileCache, setUserProfileCache] = useState<Record<string, { displayName: string; avatarUrl: string }>>({});
   const profileFetchesRef = useRef<Set<string>>(new Set());
 
@@ -505,9 +467,6 @@ export default function Main({ username }: { username: string }) {
     });
     return merged;
   };
-  useEffect(() => {
-    callParticipantsRef.current = callParticipants;
-  }, [callParticipants]);
   const [havenIcons, setHavenIcons] = useState<Record<string, string>>({});
   const [havenOrder, setHavenOrder] = useState<string[]>(() => {
     if (typeof window !== "undefined") {
@@ -551,16 +510,6 @@ export default function Main({ username }: { username: string }) {
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
   const pendingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
-  const viewingCallDM =
-    !!(
-      callState !== 'idle' &&
-      selectedHaven === '__dms__' &&
-      activeCallDM &&
-      (
-        (selectedDM && selectedDM === activeCallDM) ||
-        (!selectedDM && lastSelectedDMRef.current === activeCallDM)
-      )
-    );
   useEffect(() => {
     const missing = callParticipants
       .map((p) => p.user)
@@ -599,6 +548,13 @@ export default function Main({ username }: { username: string }) {
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
   }, [callStartedAt, callState]);
+
+  // Emit call-state updates so other clients stay in sync
+  useEffect(() => {
+    if (!socketRef.current) return;
+    if (!activeCallDM) return;
+    socketRef.current.emit('call-state', { room: activeCallDM, state: callState, from: username, startedAt: callStartedAt || undefined });
+  }, [callState, callStartedAt, activeCallDM, username]);
 
   // Persist havens to localStorage
   useEffect(() => {
@@ -940,7 +896,35 @@ export default function Main({ username }: { username: string }) {
       setCallSummarySent(false);
 
       // If we're already in this DM, auto-accept the call
-      // Show an incoming call popup and start ringtone if enabled
+      if (selectedHaven === '__dms__' && selectedDM === data.room) {
+        try {
+          setCallError(null);
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          localStreamRef.current = stream;
+          if (localAudioRef.current) {
+            localAudioRef.current.srcObject = stream;
+          }
+          const pc = setupPeer();
+          stream.getTracks().forEach(t => pc.addTrack(t, stream));
+          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socketRef.current?.emit('call-answer', { room: data.room, answer, from: username });
+          setCallState('in-call');
+          setCallStartedAt(Date.now());
+          const syncedRoster = applyParticipantUpdate([
+            { user: username, status: 'connected' },
+            { user: data.from, status: 'connected' },
+          ]);
+          socketRef.current?.emit('call-state', { room: data.room, state: 'in-call', from: username, participants: syncedRoster });
+        } catch (e: any) {
+          setCallError(e?.message || 'Could not join call');
+          setCallState('idle');
+        }
+        return;
+      }
+
+      // Otherwise, show an incoming call popup and start ringtone if enabled
       setIncomingCall({ room: data.room, from: data.from });
       try {
         if (ringAudioRef.current) {
@@ -967,8 +951,7 @@ export default function Main({ username }: { username: string }) {
         if (!activeCallDM) setActiveCallDM(room);
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
         setCallState('in-call');
-        const startedAt = Date.now();
-        setCallStartedAt(startedAt);
+        setCallStartedAt(Date.now());
         const dm = dms.find(d => d.id === room);
         const updatedRoster = applyParticipantUpdate([
           { user: data.from, status: 'connected' },
@@ -976,7 +959,7 @@ export default function Main({ username }: { username: string }) {
           ...(dm ? dm.users.map(user => ({ user, status: 'ringing' as const })) : []),
         ]);
         if (!callInitiator) setCallInitiator(username);
-        socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, startedAt, participants: updatedRoster });
+        socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, participants: updatedRoster });
         if (dialingAudioRef.current) {
           try {
             dialingAudioRef.current.pause();
@@ -1006,11 +989,6 @@ export default function Main({ username }: { username: string }) {
     const callStateHandler = (data: any) => {
       const { room, state, startedAt, from, participants } = data || {};
       if (!room) return;
-      const isTrackedRoom =
-        room === activeCallDM ||
-        room === selectedDM ||
-        (incomingCall?.room === room && callState === 'idle');
-      if (!isTrackedRoom) return;
       const normalizedList = Array.isArray(participants)
         ? (participants
             .map(normalizeParticipantPayload)
@@ -1018,37 +996,26 @@ export default function Main({ username }: { username: string }) {
         : null;
       if (normalizedList && normalizedList.length) {
         applyParticipantUpdate(normalizedList, { reset: true });
-      } else if (callParticipantsRef.current.length === 0) {
+      } else {
         const dmUsers = dms.find((d) => d.id === room)?.users || [];
         const fallback: CallParticipant[] = [];
         if (from) fallback.push({ user: from, status: state === "in-call" ? "connected" : "ringing" });
         fallback.push(
           ...dmUsers.map((user) => ({ user, status: "ringing" as const }))
         );
-        if (fallback.length) applyParticipantUpdate(fallback, { reset: true });
+        if (fallback.length) applyParticipantUpdate(fallback);
       }
-      if (state === 'in-call') {
-        setActiveCallDM(room);
-        setCallState('in-call');
-        if (startedAt) setCallStartedAt(startedAt);
-      } else if (state === 'calling') {
-        setActiveCallDM(room);
-        if (callState === 'idle') setCallState('calling');
-      } else if (state === 'idle') {
-        endCall();
-      }
-    };
-    const callDeclineHandler = (data: any) => {
-      const { room, from } = data || {};
-      if (!room || !from) return;
-      const relevant =
-        room === activeCallDM ||
-        room === selectedDM ||
-        (incomingCall?.room === room && callState === 'idle');
-      if (!relevant) return;
-      setCallParticipants((prev) => prev.filter((p) => p.user !== from));
-      if (callInitiator === username && room === activeCallDM && callState === 'calling') {
-        notify({ title: `${from} declined the call`, type: 'warn' });
+      if (room === activeCallDM || room === selectedDM) {
+        if (state === 'in-call') {
+          setActiveCallDM(room);
+          setCallState('in-call');
+          if (startedAt && !callStartedAt) setCallStartedAt(startedAt);
+        } else if (state === 'calling') {
+          setActiveCallDM(room);
+          if (callState === 'idle') setCallState('calling');
+        } else if (state === 'idle') {
+          endCall();
+        }
       }
     };
     const callEndedHandler = (data: any) => {
@@ -1062,7 +1029,6 @@ export default function Main({ username }: { username: string }) {
     socketRef.current.on('call-answer', answerHandler);
     socketRef.current.on('ice-candidate', iceHandler);
     socketRef.current.on('call-state', callStateHandler);
-    socketRef.current.on('call-decline', callDeclineHandler);
     socketRef.current.on('call-ended', callEndedHandler);
     return () => {
       socketRef.current?.off('presence', handler);
@@ -1071,10 +1037,9 @@ export default function Main({ username }: { username: string }) {
       socketRef.current?.off('call-answer', answerHandler);
       socketRef.current?.off('ice-candidate', iceHandler);
       socketRef.current?.off('call-state', callStateHandler);
-      socketRef.current?.off('call-decline', callDeclineHandler);
       socketRef.current?.off('call-ended', callEndedHandler);
     };
-  }, [selectedDM, username, activeCallDM, callState, callStartedAt, dms, incomingCall, callInitiator, notify]);
+  }, [selectedDM, username, activeCallDM, callState, callStartedAt, callParticipants, dms]);
 
   // Broadcast my current status when settings or socket change
   useEffect(() => {
@@ -1211,8 +1176,6 @@ export default function Main({ username }: { username: string }) {
     if (t.type === 'call') {
       const room = activeCallDM || selectedDM || (t.data && t.data.room);
       if (!room) return;
-      const dmUsers = dms.find(dm => dm.id === room)?.users || [];
-      const roster = callParticipants.length ? callParticipants.map(p => p.user) : dmUsers;
       if (act === 'open_dm') {
         setSelectedHaven('__dms__');
         setSelectedDM(room);
@@ -1223,8 +1186,7 @@ export default function Main({ username }: { username: string }) {
         }, 50);
       }
       if (act === 'hangup') {
-        if (hasJoinedCallRef.current) endCall();
-        else declineCall(room);
+        endCall();
       }
       if (act === 'ring_again') {
         ringAgain();
@@ -1236,18 +1198,6 @@ export default function Main({ username }: { username: string }) {
           copyText(url.toString());
           notify({ title: 'Call link copied', type: 'success' });
         } catch {}
-      }
-      if (act === 'copy_call_id') {
-        copyText(room);
-        notify({ title: 'Call ID copied', type: 'success' });
-      }
-      if (act === 'copy_participants') {
-        if (roster && roster.length) {
-          copyText(roster.join(', '));
-          notify({ title: 'Participants copied', type: 'success' });
-        } else {
-          notify({ title: 'No participants', type: 'warn' });
-        }
       }
     }
     if (t.type === 'blank') {
@@ -2035,7 +1985,7 @@ export default function Main({ username }: { username: string }) {
             overflowY: "auto",
             background: userSettings.chatStyle === 'classic' ? "#0f172a" : "linear-gradient(180deg, rgba(15,23,42,0.45), rgba(17,24,39,0.35))",
             padding: compact ? 12 : 16,
-            paddingBottom: (compact ? 12 : 16) + (viewingCallDM ? 140 : 0),
+            paddingBottom: (compact ? 12 : 16) + (callState !== 'idle' && selectedHaven === '__dms__' && selectedDM === activeCallDM ? 140 : 0),
             color: "#fff",
             borderRadius: 0,
             minHeight: 0,
@@ -2051,12 +2001,10 @@ export default function Main({ username }: { username: string }) {
           onDragOver={(e) => { e.preventDefault(); }}
           onDrop={async (e) => { e.preventDefault(); const files = Array.from(e.dataTransfer?.files || []); for (const f of files) { if (f.size > 25*1024*1024) { alert(`File ${f.name} exceeds 25MB limit`); continue; } await startUpload(f); } }}
         >
-          {viewingCallDM && (() => {
-            const dmId = selectedDM && selectedDM === activeCallDM ? selectedDM : activeCallDM;
-            const dm = dms.find(d => d.id === dmId);
-            const fallback = (dm ? dm.users : []).map(user => ({ user, status: 'ringing' as const }));
-            const participantCards = (callParticipants.length ? callParticipants : fallback).filter(p => !!p.user);
-            const label = callState === 'calling' ? 'Calling...' : 'In call';
+          {selectedHaven === "__dms__" && selectedDM && activeCallDM === selectedDM && callState !== 'idle' && (() => {
+            const dm = dms.find(d => d.id === selectedDM);
+            const list = Array.from(new Set(callParticipants.length ? callParticipants : (dm ? dm.users : [])));
+            const label = callState === 'calling' ? 'Calling…' : 'In call';
             return (
               <div
                 onContextMenu={(e) => openCtx(e, { type: 'call', data: { room: activeCallDM } })}
@@ -2084,23 +2032,18 @@ export default function Main({ username }: { username: string }) {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                  {participantCards.map(part => {
-                    const user = part.user;
-                    const profile = userProfileCache[user];
-                    const avatar = profile?.avatarUrl || '/favicon.ico';
-                    const display = profile?.displayName || user;
-                    const color = part.status === 'connected' ? '#22c55e' : '#f59e0b';
+                  {list.map(u => {
+                    const letter = u?.[0]?.toUpperCase() || '?';
+                    const color = u === username ? '#60a5fa' : '#22c55e';
                     return (
-                      <div key={user} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', display: 'flex', alignItems: 'center', gap: 8, minWidth: 160, flex: '1 1 220px' }}>
-                        <img src={avatar} alt={display} style={{ width: 32, height: 32, borderRadius: '50%', border: `2px solid ${color}` }} />
-                        <div style={{ display: 'grid', gap: 2 }}>
-                          <div style={{ fontWeight: 600 }}>{display}{user === username ? ' (you)' : ''}</div>
-                          <div style={{ fontSize: 12, color }}>{part.status === 'connected' ? 'Connected' : 'Ringing'}</div>
-                        </div>
+                      <div key={u} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ width: 28, height: 28, borderRadius: 999, background: '#0b1222', border: `1px solid ${color}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color, fontWeight: 700 }}>{letter}</span>
+                        <span style={{ fontWeight: 600 }}>{u}</span>
+                        {u === username && <span style={{ fontSize: 12, color: '#9ca3af' }}>(you)</span>}
                       </div>
                     );
                   })}
-                  {participantCards.length === 0 && (
+                  {list.length === 0 && (
                     <div style={{ color: '#9ca3af', fontSize: 12 }}>No participants yet.</div>
                   )}
                 </div>
@@ -2121,28 +2064,26 @@ export default function Main({ username }: { username: string }) {
                   >
                     <FontAwesomeIcon icon={faVolumeXmark} /> {isDeafened ? 'Undeafen' : 'Deafen'}
                   </button>
+                  {callState === 'calling' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedHaven('__dms__');
+                        if (activeCallDM) setSelectedDM(activeCallDM);
+                        setTimeout(() => {
+                          const el = chatScrollRef.current;
+                          if (el) el.scrollTop = el.scrollHeight;
+                        }, 50);
+                      }}
+                      className="btn-ghost"
+                      style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', color: '#e5e7eb' }}
+                    >
+                      <FontAwesomeIcon icon={faPhone} /> Open DM
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedHaven('__dms__');
-                      if (activeCallDM) setSelectedDM(activeCallDM);
-                      setShowMobileNav(false);
-                      setTimeout(() => {
-                        const el = chatScrollRef.current;
-                        if (el) el.scrollTop = el.scrollHeight;
-                      }, 50);
-                    }}
-                    className="btn-ghost"
-                    style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', color: '#e5e7eb' }}
-                  >
-                    <FontAwesomeIcon icon={faPhone} /> Jump to DM
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (hasJoinedCallRef.current) endCall();
-                      else declineCall(activeCallDM);
-                    }}
+                    onClick={endCall}
                     className="btn-ghost"
                     style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #7f1d1d', background: '#7f1d1d', color: '#fff', marginLeft: 'auto' }}
                   >
@@ -2769,7 +2710,15 @@ export default function Main({ username }: { username: string }) {
                     type="button"
                     className="btn-ghost"
                     onClick={() => {
-                      declineCall(incomingCall.room);
+                      try {
+                        if (ringAudioRef.current) {
+                          ringAudioRef.current.pause();
+                          ringAudioRef.current.currentTime = 0;
+                        }
+                      } catch {}
+                      ringAudioRef.current = null;
+                      setIncomingCall(null);
+                      pendingOfferRef.current = null;
                     }}
                     style={{ padding: '4px 8px', fontSize: 12 }}
                   >
@@ -2780,7 +2729,6 @@ export default function Main({ username }: { username: string }) {
                     className="btn-ghost"
                     onClick={async () => {
                       const room = incomingCall.room;
-                      const caller = incomingCall.from;
                       const offer = pendingOfferRef.current;
                       if (!offer) return;
                       setIncomingCall(null);
@@ -2799,7 +2747,6 @@ export default function Main({ username }: { username: string }) {
                         ringAudioRef.current = null;
                         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                         localStreamRef.current = stream;
-                        markJoined(true);
                         if (localAudioRef.current) {
                           localAudioRef.current.srcObject = stream;
                         }
@@ -2810,13 +2757,7 @@ export default function Main({ username }: { username: string }) {
                         await pc.setLocalDescription(answer);
                         socketRef.current?.emit('call-answer', { room, answer, from: username });
                         setCallState('in-call');
-                        const startedAt = Date.now();
-                        setCallStartedAt(startedAt);
-                        const roster = applyParticipantUpdate([
-                          { user: username, status: 'connected' },
-                          { user: caller, status: 'connected' },
-                        ]);
-                        socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, startedAt, participants: roster });
+                        setCallStartedAt(Date.now());
                       } catch (e: any) {
                         setCallError(e?.message || 'Could not join call');
                         setCallState('idle');
@@ -2832,91 +2773,49 @@ export default function Main({ username }: { username: string }) {
           })()}
         </div>
       )}
-      {/* Call dock when viewing other pages */}
-      {callState !== 'idle' && activeCallDM && !viewingCallDM && (() => {
-        const dm = dms.find(d => d.id === activeCallDM);
-        const roster = callParticipants.length
-          ? callParticipants
-          : (dm ? dm.users.map(user => ({ user, status: 'ringing' as const })) : []);
-        const preview = roster.slice(0, 3);
-        const extra = roster.length - preview.length;
-        const label = callState === 'calling' ? 'Calling...' : 'In call';
-        const title = dm ? dm.users.filter(u => u !== username).join(', ') || 'Direct Message' : 'Direct Message';
-        return (
-          <div
-            onContextMenu={(e) => openCtx(e, { type: 'call', data: { room: activeCallDM } })}
-            style={{
-              position: 'fixed',
-              bottom: isMobile ? 76 : 18,
-              left: isMobile ? 8 : 16,
-              zIndex: 80,
-              padding: 12,
-              borderRadius: 12,
-              border: '1px solid #1f2937',
-              background: 'rgba(15,23,42,0.95)',
-              color: '#e5e7eb',
-              width: isMobile ? 'calc(100vw - 16px)' : 320,
-              boxShadow: '0 12px 30px rgba(0,0,0,0.45)'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 999, background: callState === 'calling' ? '#f59e0b' : '#22c55e', display: 'inline-block' }} />
-              <div>
-                <div style={{ fontWeight: 600 }}>{label}</div>
-                <div style={{ fontSize: 12, color: '#9ca3af' }}>{title}</div>
-              </div>
-              <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
-                {preview.map((part) => {
-                  const profile = userProfileCache[part.user];
-                  const avatar = profile?.avatarUrl || '/favicon.ico';
-                  const color = part.status === 'connected' ? '#22c55e' : '#f59e0b';
-                  return (
-                    <img
-                      key={part.user}
-                      src={avatar}
-                      alt={part.user}
-                      title={`${part.user} • ${part.status === 'connected' ? 'Connected' : 'Ringing'}`}
-                      style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${color}` }}
-                    />
-                  );
-                })}
-                {extra > 0 && (
-                  <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#1f2937', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
-                    +{extra}
-                  </div>
-                )}
-              </div>
+      {/* Simple voice call overlay for DMs */}
+      {false && (
+        <div style={{ position: 'fixed', bottom: isMobile ? 76 : 16, left: isMobile ? 8 : 16, zIndex: 80, padding: 10, borderRadius: 10, border: '1px solid #1f2937', background: 'rgba(15,23,42,0.92)', color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: 10, maxWidth: isMobile ? 'calc(100vw - 16px)' : 320 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>
+              {callState === 'calling' ? 'Calling…' : 'In call'}
             </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={() => {
-                  setSelectedHaven('__dms__');
-                  setSelectedDM(activeCallDM);
-                  setActiveCallDM(activeCallDM);
-                  setShowMobileNav(false);
-                  setTimeout(() => {
-                    const el = chatScrollRef.current;
-                    if (el) el.scrollTop = el.scrollHeight;
-                  }, 50);
-                }}
-                style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', color: '#e5e7eb' }}
-              >
-                <FontAwesomeIcon icon={faPhone} /> Popup
-              </button>
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={endCall}
-                style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: '1px solid #7f1d1d', background: '#7f1d1d', color: '#fff' }}
-              >
-                Hang Up
-              </button>
-            </div>
+            {callError && <div style={{ fontSize: 11, color: '#f97373' }}>{callError}</div>}
+            {!callError && <div style={{ fontSize: 11, color: '#9ca3af' }}>Your microphone will be used for this DM call.</div>}
           </div>
-        );
-      })()}
+          <audio ref={localAudioRef} autoPlay muted style={{ display: 'none' }} />
+          <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={toggleMute}
+              title={isMuted ? 'Unmute' : 'Mute'}
+              style={{ padding: '4px 8px' }}
+            >
+              <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={ringAgain}
+              title="Ring again"
+              style={{ padding: '4px 8px' }}
+            >
+              <FontAwesomeIcon icon={faPhone} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={endCall}
+              title="Leave call"
+              style={{ padding: '4px 8px', color: '#f97373' }}
+            >
+              End
+            </button>
+          </div>
+        </div>
+      )}
       {showServerSettings && (
         <ServerSettingsModal
           isOpen={showServerSettings}
@@ -3349,15 +3248,6 @@ export default function Main({ username }: { username: string }) {
                 <button className="btn-ghost" onClick={() => handleCtxAction('close')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Close DM</button>
               </>
             )}
-            {ctxMenu.target.type === 'call' && (
-              <>
-                <button className="btn-ghost" onClick={() => handleCtxAction('open_dm')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Open Call Screen</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_call_id')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Call ID</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_link')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Call Link</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_participants')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Participants</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('hangup')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Hang Up</button>
-              </>
-            )}
             {ctxMenu.target.type === 'blank' && (
               <>
                 <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Server Settings</button>
@@ -3474,8 +3364,5 @@ export default function Main({ username }: { username: string }) {
     </div>
   );
 }
-
-
-
 
 
