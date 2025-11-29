@@ -301,6 +301,7 @@ export default function Main({ username }: { username: string }) {
     const startedAt = callStartedAt;
     if (endedRoom) {
       socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now() });
+      try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-end', message: `Call ended in ${endedRoom}`, meta: { room: endedRoom } }) }); } catch {}
     }
     setCallState('idle');
     setCallError(null);
@@ -542,6 +543,10 @@ export default function Main({ username }: { username: string }) {
   }>({ canPin: true, canManageMessages: true, canManageServer: true, canManageChannels: true, canSend: true, canReact: true, canUpload: true });
   const [adminQuickButtons, setAdminQuickButtons] = useState<{ own: string[]; others: string[] } | null>(null);
   const [callState, setCallState] = useState<'idle' | 'calling' | 'in-call'>('idle');
+  const callStateRef = useRef(callState);
+  useEffect(() => { callStateRef.current = callState; }, [callState]);
+  const callEndTimerRef = useRef<number | null>(null);
+  const ringFallbackTimerRef = useRef<number | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -1018,6 +1023,11 @@ export default function Main({ username }: { username: string }) {
         : null;
       if (normalizedList && normalizedList.length) {
         applyParticipantUpdate(normalizedList, { reset: true });
+        // When we see participants supplied, cancel any fallback timers
+        if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
+        if (callEndTimerRef.current) { window.clearTimeout(callEndTimerRef.current); callEndTimerRef.current = null; }
+        // audit log: record call start
+        try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-start', message: `Call started in ${room}`, meta: { room } }) }); } catch {}
       } else if (callParticipantsRef.current.length === 0) {
         const dmUsers = dms.find((d) => d.id === room)?.users || [];
         const fallback: CallParticipant[] = [];
@@ -1031,11 +1041,30 @@ export default function Main({ username }: { username: string }) {
         setActiveCallDM(room);
         setCallState('in-call');
         if (startedAt) setCallStartedAt(startedAt);
+        // Cancel any previously scheduled end or ring fallbacks
+        if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
+        if (callEndTimerRef.current) { window.clearTimeout(callEndTimerRef.current); callEndTimerRef.current = null; }
       } else if (state === 'calling') {
         setActiveCallDM(room);
         if (callState === 'idle') setCallState('calling');
+        // schedule a fallback in case ringing doesn't resolve (avoid infinite ringing)
+        if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
+        ringFallbackTimerRef.current = window.setTimeout(() => {
+          // If still calling and no connected participants, mark idle
+          try {
+            const connected = callParticipantsRef.current.filter(p => p.status === 'connected').length;
+            if (callStateRef.current === 'calling' && connected === 0) {
+              setCallState('idle');
+            }
+          } catch {}
+        }, 60 * 1000);
       } else if (state === 'idle') {
-        endCall();
+        // allow a tiny grace window for transient transitions before fully ending
+        if (callEndTimerRef.current) window.clearTimeout(callEndTimerRef.current);
+        callEndTimerRef.current = window.setTimeout(() => {
+          // Only end if still idle
+          if (callStateRef.current === 'idle') endCall();
+        }, 2000);
       }
     };
     const callDeclineHandler = (data: any) => {
@@ -1730,7 +1759,7 @@ export default function Main({ username }: { username: string }) {
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
           <div key="__dms__" onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel(''); setSelectedDM(null); }} title="Direct Messages" style={{ padding: '10px 10px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: selectedHaven === '__dms__' ? '#111a2e' : '#0b1222', color: selectedHaven === '__dms__' ? accent : '#e5e7eb', fontWeight: selectedHaven === '__dms__' ? 700 : 500, border: '1px solid #1f2937', borderLeft: selectedHaven === '__dms__' ? `3px solid ${accent}` : '3px solid transparent', borderRadius: 10 }}>
-            <FontAwesomeIcon icon={faEnvelope} /> <span>Direct Messages</span>
+            <FontAwesomeIcon icon={faEnvelope} /> <span>DMs</span>
           </div>
           {Object.keys(havens)
             .filter(h => h.toLowerCase().includes(havenFilter.trim().toLowerCase()))
@@ -3360,7 +3389,9 @@ export default function Main({ username }: { username: string }) {
             )}
             {ctxMenu.target.type === 'blank' && (
               <>
-                <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Server Settings</button>
+                {permState.canManageServer && (
+                  <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Server Settings</button>
+                )}
                 {ctxMenu.target.debug && (
                   <button className="btn-ghost" onClick={() => handleCtxAction('copy_debug')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12 }}>
                     Copy Debug Info

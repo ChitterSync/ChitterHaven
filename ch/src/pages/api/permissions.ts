@@ -81,7 +81,7 @@ async function load(haven: string) {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const payload = requireUser(req, res);
+  const payload = await requireUser(req, res);
   if (!payload) return;
   const haven = String(req.query.haven || req.body?.haven || '').trim();
   if (!haven) return res.status(400).json({ error: 'Missing haven' });
@@ -98,14 +98,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { action } = req.body || {};
     const value = await load(haven);
     const perms = value.permissions as { roles: RolesMap; members: MembersMap; defaults: any };
+    // Helper to compute whether a user has a permission in this haven
+    const userHasPerm = (user: string | undefined, permission: string) => {
+      if (!user) return false;
+      const rolesMap = perms.roles || {};
+      const memberRoles = (perms.members?.[user] || []) as string[];
+      const everyone: string[] = (perms.defaults?.everyone || []) as string[];
+      // any role with '*' has full access
+      if (memberRoles.some(r => (rolesMap[r] || []).includes('*'))) return true;
+      if (memberRoles.some(r => (rolesMap[r] || []).includes(permission))) return true;
+      if (everyone.includes('*') || everyone.includes(permission)) return true;
+      return false;
+    };
+    const actor = payload.username;
     if (action === 'set-owner') {
       const user = String(req.body.user || '').trim();
       if (!user) return res.status(400).json({ error: 'Missing user' });
+      // only allow owners / manage_server to set a new owner
+      if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       perms.members[user] = ['Owner'];
     } else if (action === 'assign-role') {
       const user = String(req.body.user || '').trim();
       const role = String(req.body.role || '').trim();
       if (!user || !role) return res.status(400).json({ error: 'Missing user/role' });
+      if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       const list = new Set(perms.members[user] || []);
       list.add(role);
       perms.members[user] = Array.from(list);
@@ -113,12 +129,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const user = String(req.body.user || '').trim();
       const role = String(req.body.role || '').trim();
       if (!user || !role) return res.status(400).json({ error: 'Missing user/role' });
+      if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       perms.members[user] = (perms.members[user] || []).filter(r => r !== role);
     } else if (action === 'define-role') {
       const role = String(req.body.role || '').trim();
       const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : [];
       if (!role) return res.status(400).json({ error: 'Missing role' });
+      if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       perms.roles[role] = permissions;
+    } else if (action === 'kick') {
+      // add a short-lived kick record; requires manage_server
+      const user = String(req.body.user || '').trim();
+      if (!user) return res.status(400).json({ error: 'Missing user' });
+      if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
+      if (!Array.isArray((perms as any).kicked)) (perms as any).kicked = [];
+      (perms as any).kicked.push({ user, by: actor, at: Date.now() });
+    } else if (action === 'ban') {
+      const user = String(req.body.user || '').trim();
+      if (!user) return res.status(400).json({ error: 'Missing user' });
+      if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
+      if (!Array.isArray((perms as any).banned)) (perms as any).banned = [];
+      if (!((perms as any).banned.includes(user))) (perms as any).banned.push(user);
+    } else if (action === 'unban') {
+      const user = String(req.body.user || '').trim();
+      if (!user) return res.status(400).json({ error: 'Missing user' });
+      if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
+      if (Array.isArray((perms as any).banned)) (perms as any).banned = (perms as any).banned.filter((u: string) => u !== user);
     } else {
       return res.status(400).json({ error: 'Unknown action' });
     }

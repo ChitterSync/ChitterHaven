@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:a11y": "node ./scripts/check_dropdown_a11y.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.744.0",

@@ -65,7 +65,7 @@ export default function ServerSettingsModal({
           {tab === "channels" && <ChannelsTab havenName={havenName} />}
           {tab === "audit" && <AuditTab havenName={havenName} />}
           {tab === "integrations" && <IntegrationsTab havenName={havenName} />}
-          {tab === "danger" && <DangerZoneTab havenName={havenName} />}
+          {tab === "danger" && <DangerZoneTab havenName={havenName} onClose={onClose} />}
         </div>
       </div>
     </div>
@@ -374,6 +374,9 @@ function MembersTab({ havenName }: { havenName: string }) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<string[]>([]);
   const [roles, setRoles] = useState<{ [user: string]: string[] }>({});
+  const [banned, setBanned] = useState<string[]>([]);
+  const [kicked, setKicked] = useState<any[]>([]);
+  const [query, setQuery] = useState("");
   const [allRoles, setAllRoles] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -387,6 +390,8 @@ function MembersTab({ havenName }: { havenName: string }) {
         setUsers(Object.keys(members));
         setRoles(members);
         setAllRoles(Object.keys(perms.roles || {}));
+        setBanned(Array.isArray(perms.banned) ? perms.banned : []);
+        setKicked(Array.isArray(perms.kicked) ? perms.kicked : []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -432,6 +437,46 @@ function MembersTab({ havenName }: { havenName: string }) {
     }
   };
 
+  const handleKick = async (user: string) => {
+    setStatus(null);
+    setLoading(true);
+    const res = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ haven: havenName, action: 'kick', user }) });
+    setLoading(false);
+    if (res.ok) {
+      // update local kicked list
+      setKicked(prev => [...prev, { user, at: Date.now() }]);
+      setStatus('Kicked');
+    } else {
+      setStatus('Error kicking user');
+    }
+  };
+
+  const handleBan = async (user: string) => {
+    setStatus(null);
+    setLoading(true);
+    const res = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ haven: havenName, action: 'ban', user }) });
+    setLoading(false);
+    if (res.ok) {
+      setBanned(prev => Array.from(new Set([...prev, user])));
+      setStatus('Banned');
+    } else {
+      setStatus('Error banning user');
+    }
+  };
+
+  const handleUnban = async (user: string) => {
+    setStatus(null);
+    setLoading(true);
+    const res = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ haven: havenName, action: 'unban', user }) });
+    setLoading(false);
+    if (res.ok) {
+      setBanned(prev => prev.filter(u => u !== user));
+      setStatus('Unbanned');
+    } else {
+      setStatus('Error unbanning user');
+    }
+  };
+
   return (
     <div className="text-gray-200">
       <h2 className="text-2xl font-bold mb-4">Members</h2>
@@ -440,7 +485,11 @@ function MembersTab({ havenName }: { havenName: string }) {
       ) : (
         <div className="flex flex-col gap-3">
           {users.length === 0 && <div className="text-gray-400">No members found.</div>}
-          {users.map((u) => (
+          <div className="flex items-center gap-2 mb-2">
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search members" className="bg-[#23232a] border border-gray-700 rounded px-2 py-1 text-white flex-1" />
+            <div className="text-sm text-gray-400">{users.length} members</div>
+          </div>
+          {users.filter(u => u.toLowerCase().includes(query.trim().toLowerCase())).map((u) => (
             <div key={u} className="bg-[#23232a] border border-gray-800 rounded px-3 py-2">
               <div className="font-mono text-sm mb-2">{u}</div>
               <div className="flex flex-wrap gap-2">
@@ -461,6 +510,17 @@ function MembersTab({ havenName }: { havenName: string }) {
                   onSelect={(r) => handleAssignRole(u, r)}
                   label="Add role"
                 />
+                <div className="ml-2 flex items-center gap-2">
+                  <button onClick={() => handleKick(u)} className="px-2 py-1 bg-yellow-700 rounded text-xs">Kick</button>
+                  {banned.includes(u) ? (
+                    <button onClick={() => handleUnban(u)} className="px-2 py-1 bg-green-700 rounded text-xs">Unban</button>
+                  ) : (
+                    <button onClick={() => handleBan(u)} className="px-2 py-1 bg-red-600 rounded text-xs">Ban</button>
+                  )}
+                </div>
+                {banned.includes(u) && (
+                  <span className="inline-flex items-center bg-red-700 px-2 py-1 rounded text-xs text-white ml-2">BANNED</span>
+                )}
               </div>
             </div>
           ))}
@@ -636,9 +696,10 @@ function ChannelsTab({ havenName }: { havenName: string }) {
 function AuditTab({ havenName }: { havenName: string }) {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<string | null>(null);
   useEffect(() => {
     setLoading(true);
-    fetch("/api/audit-log")
+    fetch(`/api/audit-log?haven=${encodeURIComponent(havenName)}`)
       .then((r) => r.json())
       .then((d) => {
         const arr = Array.isArray(d) ? d : Array.isArray(d?.entries) ? d.entries : [];
@@ -666,6 +727,24 @@ function AuditTab({ havenName }: { havenName: string }) {
           ))}
         </div>
       )}
+      <div className="flex gap-2 mt-4">
+        <button
+          onClick={async () => {
+            if (!window.confirm('Clear audit log for this haven? This cannot be undone.')) return;
+            setLoading(true);
+            const res = await fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'clear', haven: havenName }) });
+            setLoading(false);
+            if (res.ok) {
+              setLogs([]);
+              setStatus('Cleared audit log');
+            } else {
+              setStatus('Could not clear audit log');
+            }
+          }}
+          className="px-3 py-1 bg-red-700 rounded text-sm text-white"
+        >Clear Audit Log</button>
+        <div className="text-sm text-gray-400 self-center">{status}</div>
+      </div>
       <div className="text-xs text-gray-500 mt-3">Audit log is global; per-haven scoping not implemented yet.</div>
     </div>
   );
@@ -673,28 +752,122 @@ function AuditTab({ havenName }: { havenName: string }) {
 
 // --- Integrations ---
 function IntegrationsTab({ havenName }: { havenName: string }) {
+  const [loading, setLoading] = useState(true);
+  const [integrations, setIntegrations] = useState<any[]>([]);
+  const [newUrl, setNewUrl] = useState('');
+  const [newName, setNewName] = useState('');
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/integrations?haven=${encodeURIComponent(havenName)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setIntegrations(Array.isArray(d?.integrations) ? d.integrations : []);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [havenName]);
+
+  const addIntegration = async () => {
+    if (!newUrl) return setStatus('Missing URL');
+    setStatus(null);
+    setLoading(true);
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+    const item = { id, type: 'webhook', url: newUrl, name: newName || 'Webhook' };
+    const res = await fetch('/api/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ haven: havenName, action: 'add', integration: item }) });
+    setLoading(false);
+    if (res.ok) {
+      setIntegrations((prev) => [...prev, item]);
+      setNewUrl(''); setNewName(''); setStatus('Added');
+    } else setStatus('Error adding integration');
+  };
+
+  const removeIntegration = async (id: string) => {
+    if (!window.confirm('Remove this integration?')) return;
+    setStatus(null); setLoading(true);
+    const res = await fetch('/api/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ haven: havenName, action: 'remove', id }) });
+    setLoading(false);
+    if (res.ok) setIntegrations((prev) => prev.filter(i => (i.id || '') !== id));
+    else setStatus('Error removing integration');
+  };
+
   return (
     <div className="text-gray-200 max-w-lg">
       <h2 className="text-2xl font-bold mb-2">Integrations</h2>
-      <div className="text-gray-400 text-sm mb-4">
-        No integrations are configured yet. Future: webhooks, bots, external service links.
-      </div>
-      <div className="bg-[#23232a] border border-gray-800 rounded px-3 py-2 text-sm">
-        Haven: <span className="text-blue-400">{havenName}</span>
-      </div>
+      {loading ? (
+        <div>Loading...</div>
+      ) : (
+        <>
+          <div className="text-gray-400 text-sm mb-4">Integrations can be added to send external webhooks and bot hooks. (Simple webhook support)</div>
+          <div className="bg-[#23232a] border border-gray-800 rounded px-3 py-2 text-sm mb-4">
+            <div className="mb-2">Haven: <span className="text-blue-400">{havenName}</span></div>
+            <div className="flex gap-2">
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" className="bg-[#16161a] border border-gray-700 rounded px-2 py-1 text-white flex-1" />
+              <input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="Webhook URL" className="bg-[#16161a] border border-gray-700 rounded px-2 py-1 text-white flex-2" />
+              <button onClick={addIntegration} className="px-3 py-1 bg-blue-600 rounded text-white">Add</button>
+            </div>
+            {status && <div className="text-sm text-gray-400 mt-2">{status}</div>}
+          </div>
+          <div className="space-y-2">
+            {integrations.length === 0 ? (
+              <div className="text-gray-400">No integrations configured.</div>
+            ) : (
+              integrations.map((it) => (
+                <div key={it.id} className="bg-[#23232a] border border-gray-800 rounded px-3 py-2 text-sm flex items-center justify-between">
+                  <div>
+                    <div className="font-bold">{it.name}</div>
+                    <div className="text-xs text-gray-400">{it.type} — {it.url}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => navigator.clipboard?.writeText(it.url)} className="px-2 py-1 bg-gray-700 rounded text-xs">Copy</button>
+                    <button onClick={() => removeIntegration(it.id)} className="px-2 py-1 bg-red-700 rounded text-xs text-white">Remove</button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 // --- Danger Zone ---
-function DangerZoneTab({ havenName }: { havenName: string }) {
+function DangerZoneTab({ havenName, onClose }: { havenName: string; onClose?: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const deleteServer = async () => {
+    if (!window.confirm(`Delete server ${havenName}? This cannot be undone.`)) return;
+    setStatus(null);
+    setLoading(true);
+    const res = await fetch('/api/danger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete-server', haven: havenName }) });
+    setLoading(false);
+    if (res.ok) {
+      setStatus('Deleted');
+      // close modal after a moment
+      setTimeout(() => {
+        onClose?.();
+        // reload to reflect changes (client-side safe fallback)
+        try { window.location.reload(); } catch {}
+      }, 400);
+    } else {
+      setStatus('Failed to delete');
+    }
+  };
+
   return (
     <div className="text-gray-200">
       <h2 className="text-2xl font-bold mb-4 text-red-400">Danger Zone</h2>
       <div className="bg-[#2a1a1a] border border-red-900 text-sm text-red-100 rounded p-4 space-y-3">
-        <div>Delete server and transfer ownership are not implemented yet.</div>
-        <div>For now, manage ownership via Roles & Permissions.</div>
+        <div className="text-red-200">This area contains powerful actions. Proceed with caution.</div>
+        <div>Actions include: delete server and transfer ownership (transfer is done via Roles & Permissions).</div>
         <div className="text-gray-400">Haven: {havenName}</div>
+        <div className="flex gap-2 mt-2">
+          <button onClick={deleteServer} disabled={loading} className="px-3 py-1 bg-red-700 rounded text-white">{loading ? 'Deleting...' : 'Delete Server'}</button>
+          <div className="text-sm text-gray-400 self-center">{status}</div>
+        </div>
       </div>
     </div>
   );

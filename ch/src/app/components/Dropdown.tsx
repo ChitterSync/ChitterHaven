@@ -73,6 +73,17 @@ export default function Dropdown({
     onChange?.(option);
     setOpen(false);
   };
+  // Accessible announcement for action clicks
+  const [srMessage, setSrMessage] = useState("");
+  const srTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!srMessage) return;
+    if (srTimerRef.current) window.clearTimeout(srTimerRef.current);
+    srTimerRef.current = window.setTimeout(() => setSrMessage(""), 2500);
+    return () => {
+      if (srTimerRef.current) window.clearTimeout(srTimerRef.current);
+    };
+  }, [srMessage]);
 
   const handleKeyDown = (ev: React.KeyboardEvent<HTMLButtonElement>) => {
     if (disabled) return;
@@ -174,9 +185,12 @@ export default function Dropdown({
                     type="button"
                     className="ch-dropdown__option-action"
                     title={opt.action.title || opt.action.label}
+                    aria-label={`${opt.label} ${opt.action.title || opt.action.label}`}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       opt.action?.onClick?.(opt, ev);
+                      // announce to screen readers that the action ran
+                      try { setSrMessage(`${opt.label} ${opt.action?.title || opt.action?.label || 'action'} activated`); } catch {}
                     }}
                   >
                     {opt.action.icon || opt.action.label || "⋯"}
@@ -186,6 +200,10 @@ export default function Dropdown({
             );
           })}
         </div>
+      )}
+      {/* Live region for screen-readers: announced when action buttons are pressed */}
+      {srMessage && (
+        <div aria-live="polite" style={{ position: 'absolute', left: -9999, width: 1, height: 1, overflow: 'hidden' }}>{srMessage}</div>
       )}
       <style jsx>{`
         .ch-dropdown {
