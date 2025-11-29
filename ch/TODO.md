@@ -5,8 +5,8 @@ The auth revamp (migrating fully to the shared `auth.chittersync.com` service an
 -## 1. Voice & Call Experience
 - [x] Fix DM call synchronization bugs (remote participant immediately drops / ringing never stops) across desktop + mobile.
 - [x] Add an in-DM call screen with participant list, ringing indicator, mute/deafen controls, and popup shortcut from the dock.
-- [ ] Ensure call summary messages fire exactly once and remain uneditable (already blocked server-side, but add server tests).
-- [ ] Make the call banner responsive and persistent above the composer and add context-menu actions (view profile, copy call ID, etc.).
+- [x] Ensure call summary messages fire exactly once and remain uneditable (already blocked server-side, added server smoke-test).
+- [x] Make the call banner responsive and persistent above the composer and add context-menu actions (view profile, copy call ID, etc.).
 
 -## 2. Server Settings Modal
 - [x] Load actual member / role data; hook up searching, role assignment, and kick/ban actions.

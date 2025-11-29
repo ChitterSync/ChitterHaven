@@ -71,9 +71,17 @@ function getHistory(room: string): Message[] {
   return deduped;
 }
 
-function saveMessage(room: string, msg: { user: string; text: string; replyToId?: string | null; attachments?: Message["attachments"] }) {
+function saveMessage(room: string, msg: { user: string; text: string; replyToId?: string | null; attachments?: Message["attachments"]; systemType?: string }) {
   const data: Record<string, Message[]> = decryptHistory();
   if (!data[room]) data[room] = [];
+  // If this is a call-summary, ensure we only ever have one summary message in the room
+  if (msg.systemType === 'call-summary') {
+    const existing = (data[room] || []).find(m => m && m.systemType === 'call-summary');
+    if (existing) {
+      // Return existing message instead of adding a duplicate
+      return existing;
+    }
+  }
   const message: Message = {
     id: crypto.randomUUID(),
     user: msg.user,
@@ -84,6 +92,7 @@ function saveMessage(room: string, msg: { user: string; text: string; replyToId?
     pinned: false,
     attachments: msg.attachments || [],
     editHistory: [],
+    systemType: msg.systemType,
   };
   data[room].push(message);
   encryptHistory(data);
