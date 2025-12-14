@@ -274,7 +274,7 @@ export default function Dropdown({
           border: 1px solid rgba(148, 163, 184, 0.2);
           background: rgba(6, 10, 20, 0.98);
           box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
-          padding: 4px;
+          padding: 6px;
           max-height: 260px;
           overflow-y: auto;
           z-index: 30;
@@ -284,7 +284,7 @@ export default function Dropdown({
           display: flex;
           align-items: center;
           gap: 10px;
-          padding: 10px;
+          padding: 12px;
           border-radius: 10px;
           border: 1px solid transparent;
           background: transparent;
@@ -318,7 +318,7 @@ export default function Dropdown({
           border: 1px solid rgba(148, 163, 184, 0.25);
           background: rgba(15, 23, 42, 0.7);
           color: #cbd5f5;
-          padding: 6px 10px;
+          padding: 8px 12px;
           font-size: 12px;
           cursor: pointer;
           transition: background 100ms ease, border-color 100ms ease;
@@ -331,6 +331,10 @@ export default function Dropdown({
           .ch-dropdown {
             max-width: 100%;
           }
+          .ch-dropdown__control { padding: 12px 14px; }
+          .ch-dropdown__option { padding: 14px; }
+          .ch-dropdown__option-action { padding: 10px 12px; font-size: 14px; }
+          .ch-dropdown__menu { padding: 8px; max-height: 56vh; }
         }
       `}</style>
     </div>

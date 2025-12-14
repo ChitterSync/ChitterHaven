@@ -6,13 +6,18 @@ import io, { Socket } from "socket.io-client";
 import ReactMarkdown from "react-markdown";
 import dynamic from "next/dynamic";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faReply, faEdit, faTrash, faGear, faThumbtack, faFaceSmile, faXmark, faAt, faPaperclip, faClockRotateLeft, faUsers, faHashtag, faEnvelope, faPlus, faServer, faBars, faMagnifyingGlass, faPaperPlane, faLock, faPhone, faMicrophone, faMicrophoneSlash, faCopy, faLink, faVolumeXmark } from "@fortawesome/free-solid-svg-icons";
+import { faReply, faEdit, faTrash, faGear, faThumbtack, faFaceSmile, faXmark, faAt, faPaperclip, faClockRotateLeft, faUsers, faHashtag, faEnvelope, faPlus, faServer, faBars, faMagnifyingGlass, faPaperPlane, faLock, faPhone, faMicrophone, faMicrophoneSlash, faCopy, faLink, faVolumeXmark, faHouse, faUser } from "@fortawesome/free-solid-svg-icons";
 import { EMOJI_LIST, filterEmojis, CATEGORIES } from "./emojiData";
 import { parseCHInline, resolveCH } from "./chTokens";
 
 const ServerSettingsModal = dynamic(() => import("./ServerSettingsModal"));
 const UserSettingsModal = dynamic(() => import("./UserSettingsModal"));
 const ProfileModal = dynamic(() => import("./ProfileModal"));
+import NavController from "./components/NavController";
+import HomePanel from "./components/HomePanel";
+import ProfilePanel from "./components/ProfilePanel";
+import MobileApp from "./components/MobileApp";
+import EmojiPicker from "./components/EmojiPicker";
 
 const SOUND_DIALING = "/sounds/Dialing.wav";
 const SOUND_PING = "/sounds/Ping.wav";
@@ -190,6 +195,9 @@ export default function Main({ username }: { username: string }) {
   const statusColor = (s?: string) => (s === "online" ? "#22c55e" : s === "idle" ? "#f59e0b" : s === "dnd" ? "#ef4444" : "#6b7280");
   const [showPinned, setShowPinned] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  // Active navigation controller: determines which content is focused.
+  const [activeNav, setActiveNav] = useState<string>(() => { try { return localStorage.getItem('activeNav') || 'havens'; } catch { return 'havens'; } });
+  useEffect(() => { try { localStorage.setItem('activeNav', activeNav); } catch {} }, [activeNav]);
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickQuery, setQuickQuery] = useState("");
@@ -1519,6 +1527,27 @@ export default function Main({ username }: { username: string }) {
     setSelectedChannel(havens[haven][0] || "");
   };
 
+  const navigateToLocation = (loc: { haven?: string; channel?: string; dm?: string | null }) => {
+    if (!loc || typeof loc !== 'object') return;
+    // If a haven is provided, navigate to that haven and optionally channel/dm
+    if (loc.haven) {
+      setSelectedHaven(loc.haven);
+      setSelectedDM(loc.dm ?? null);
+      if (loc.channel) {
+        setSelectedChannel(loc.channel);
+      } else {
+        setSelectedChannel(havens[loc.haven]?.[0] || "");
+      }
+      return;
+    }
+    // If dm explicitly provided (even null), switch to DMs view
+    if (Object.prototype.hasOwnProperty.call(loc, 'dm')) {
+      setSelectedHaven('__dms__');
+      setSelectedDM(loc.dm ?? null);
+      setSelectedChannel('');
+    }
+  };
+
   const handleChannelChange = (channel: string) => {
     setSelectedChannel(channel);
   };
@@ -1723,6 +1752,65 @@ export default function Main({ username }: { username: string }) {
       setHoveredMsgState(idOrUpdater);
     }
   };
+  if (isMobile) {
+    return (
+      <div
+        className="ch-shell"
+        style={{
+          display: "flex",
+          height: isMobile ? "calc(100vh - 1rem)" : "70vh",
+          width: "100%",
+          maxWidth: isMobile ? "100%" : 1100,
+          minWidth: 320,
+          margin: isMobile ? "0.5rem auto" : "2rem auto",
+          border: "1px solid #2a3344",
+          borderRadius: isMobile ? 10 : 14,
+          background: "linear-gradient(180deg, rgba(15,23,42,0.85), rgba(17,24,39,0.82))",
+          boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
+          filter: isBooting ? 'blur(4px)' : 'none',
+          pointerEvents: isBooting ? 'none' : 'auto'
+        }}
+      >
+        <MobileApp
+          activeNav={activeNav}
+          setActiveNav={setActiveNav}
+          isMobile={isMobile}
+          setShowMobileNav={setShowMobileNav}
+          havens={havens}
+          setSelectedHaven={setSelectedHaven}
+          selectedHaven={selectedHaven}
+          dms={dms}
+          selectedDM={selectedDM}
+          setSelectedDM={setSelectedDM}
+          setShowUserSettings={setShowUserSettings}
+          setShowServerSettings={setShowServerSettings}
+          setSelectedChannel={setSelectedChannel}
+          selectedChannel={selectedChannel}
+          messages={messages}
+          input={input}
+          setInput={setInput}
+          sendMessage={sendMessage}
+          typingUsers={typingUsers}
+          showMobileNav={showMobileNav}
+          currentAvatarUrl={(userProfileCache && userProfileCache[username] && userProfileCache[username].avatarUrl) || '/favicon.ico'}
+          accent={accent}
+          lastSelectedDMRef={lastSelectedDMRef}
+          setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
+          handleEdit={handleEdit}
+          handleDelete={handleDelete}
+          handleReply={handleReply}
+          editId={editId}
+          editText={editText}
+          setEditText={setEditText}
+          handleEditSubmit={handleEditSubmit}
+          cancelEdit={() => { setEditId(null); setEditText(''); }}
+          toggleReaction={toggleReaction}
+          username={username}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       className="ch-shell"
@@ -1741,6 +1829,24 @@ export default function Main({ username }: { username: string }) {
         pointerEvents: isBooting ? 'none' : 'auto'
       }}
     >
+      <NavController
+        activeNav={activeNav}
+        setActiveNav={setActiveNav}
+        isMobile={isMobile}
+        setShowMobileNav={setShowMobileNav}
+        setSelectedHaven={setSelectedHaven}
+        setSelectedChannel={setSelectedChannel}
+        setSelectedDM={setSelectedDM}
+        havens={havens}
+        selectedHaven={selectedHaven}
+        selectedDM={selectedDM}
+        navigateToLocation={typeof navigateToLocation !== 'undefined' ? (navigateToLocation as any) : undefined}
+        setShowUserSettings={setShowUserSettings}
+        setShowServerSettings={setShowServerSettings}
+        accent={accent}
+        lastSelectedDMRef={lastSelectedDMRef}
+        setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
+      />
       {/* Havens sidebar */}
       <aside style={{ width: compactSidebar ? 120 : 160, background: '#0b1222', borderRight: '1px solid #1f2937', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb', fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1781,6 +1887,50 @@ export default function Main({ username }: { username: string }) {
           </button>
         </div>
       </aside>
+      {activeNav === 'home' && <HomePanel isMobile={isMobile} />}
+      {activeNav === 'profile' && <ProfilePanel isMobile={isMobile} />}
+
+      {/* Mobile-optimized application shell */}
+      {isMobile && (
+        <MobileApp
+          activeNav={activeNav}
+          setActiveNav={setActiveNav}
+          isMobile={isMobile}
+          setShowMobileNav={setShowMobileNav}
+          showMobileNav={showMobileNav}
+          havens={havens}
+          setSelectedHaven={setSelectedHaven}
+          selectedHaven={selectedHaven}
+          dms={dms}
+          selectedDM={selectedDM}
+          setSelectedDM={setSelectedDM}
+          setShowUserSettings={setShowUserSettings}
+          setShowServerSettings={setShowServerSettings}
+          setSelectedChannel={setSelectedChannel}
+          selectedChannel={selectedChannel}
+          username={username}
+          messages={messages}
+          input={input}
+          setInput={setInput}
+          sendMessage={sendMessage}
+          typingUsers={typingUsers}
+          currentAvatarUrl={(userProfileCache && userProfileCache[username] && userProfileCache[username].avatarUrl) || '/favicon.ico'}
+          accent={accent}
+          lastSelectedDMRef={lastSelectedDMRef}
+          setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
+        />
+      )}
+
+      {/* Mobile-only Profile view */}
+      {isMobile && activeNav === 'profile' && (
+        <div className="block md:hidden" style={{ width: '100%', padding: 12, background: '#071127', borderBottom: '1px solid #111827' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#e5e7eb' }}><FontAwesomeIcon icon={faUser} /> Profile</div>
+            <button className="btn-ghost" onClick={() => setShowUserSettings(true)} style={{ padding: '6px 8px' }}>Edit</button>
+          </div>
+          <div style={{ color: '#9ca3af' }}>Mobile profile view — separate from desktop profile UI.</div>
+        </div>
+      )}
       {/* Channels / DMs sidebar */}
       <aside style={{ width: compactSidebar ? 180 : 220, background: '#0f172a', borderRight: '1px solid #1f2937', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb', fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -2548,24 +2698,8 @@ export default function Main({ username }: { username: string }) {
                       <div style={{ color: '#e5e7eb', fontWeight: 600 }}>Add Reaction</div>
                       <button onClick={() => setPickerFor(null)} className="btn-ghost" style={{ padding: '4px 8px' }}><FontAwesomeIcon icon={faXmark} /></button>
                     </div>
-                    <div style={{ padding: 10, borderBottom: '1px solid #111827', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ color: '#9ca3af', fontSize: 12 }}>Quick:</div>
-                      {commonEmojis.map((e) => (
-                        <button key={e} onClick={() => { toggleReaction(pickerFor!, e); setPickerFor(null); }} style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #1f2937', background: '#0b1222', cursor: 'pointer', fontSize: 18 }}>{e}</button>
-                      ))}
-                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                        {CATEGORIES.map(cat => (
-                          <button key={cat.key} className="btn-ghost" onClick={() => setEmojiCategory(cat.key)} style={{ padding: '4px 8px', borderColor: emojiCategory === cat.key ? '#93c5fd' : undefined, color: emojiCategory === cat.key ? '#93c5fd' : undefined }}>{cat.label}</button>
-                        ))}
-                      </div>
-                    </div>
                     <div style={{ padding: 10 }}>
-                      <input value={emojiQuery} onChange={(e) => setEmojiQuery(e.target.value)} placeholder="Search emojis" className="input-dark" style={{ width: '100%', padding: 10 }} />
-                    </div>
-                    <div style={{ maxHeight: '50vh', overflowY: 'auto', padding: 10, display: 'grid', gridTemplateColumns: 'repeat(10, minmax(0,1fr))', gap: 6 }}>
-                      {filterEmojis(emojiQuery, emojiCategory).map((em) => (
-                        <button key={em.char+em.name} title={em.name} onClick={() => { toggleReaction(pickerFor!, em.char); setPickerFor(null); }} style={{ background: '#0f172a', border: '1px solid #1f2937', padding: 6, borderRadius: 8, fontSize: 18, cursor: 'pointer' }}>{em.char}</button>
-                      ))}
+                      <EmojiPicker onPick={(ch) => { toggleReaction(pickerFor!, ch); setPickerFor(null); }} onClose={() => setPickerFor(null)} />
                     </div>
                   </div>
                 </div>
@@ -3293,6 +3427,14 @@ export default function Main({ username }: { username: string }) {
           {toasts.map(t => (
             <div key={t.id} style={{ minWidth: 260, maxWidth: 360, background: '#0b1222', border: '1px solid #1f2937', borderLeft: `3px solid ${t.type==='success'?'#22c55e':t.type==='warn'?'#f59e0b':t.type==='error'?'#ef4444':'#60a5fa'}`, borderRadius: 8, padding: 10, color: '#e5e7eb', boxShadow: '0 10px 24px rgba(0,0,0,0.35)' }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{t.title}</div>
+            handleEdit={handleEdit}
+            handleDelete={handleDelete}
+            handleReply={handleReply}
+            editId={editId}
+            editText={editText}
+            setEditText={setEditText}
+            handleEditSubmit={handleEditSubmit}
+            cancelEdit={() => { setEditId(null); setEditText(''); }}
               {t.body && <div style={{ color: '#cbd5e1', fontSize: 13 }}>{t.body}</div>}
             </div>
           ))}
@@ -3440,6 +3582,72 @@ export default function Main({ username }: { username: string }) {
           <div style={{ flex: 1 }} onClick={() => setShowMobileNav(false)} />
         </div>
       )}
+          {/* Mobile bottom tab bar */}
+          {isMobile && (
+            <div style={{ position: 'fixed', left: 8, right: 8, bottom: 'calc(8px + env(safe-area-inset-bottom))', height: 56, zIndex: 80, display: 'flex', justifyContent: 'space-between', gap: 8, paddingBottom: 'env(safe-area-inset-bottom)', userSelect: 'none' }}>
+              <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-around', background: 'linear-gradient(180deg, rgba(7,12,20,0.9), rgba(9,14,24,0.85))', borderRadius: 12, padding: '8px 10px', border: '1px solid #1f2937' }}>
+                <button
+                  type="button"
+                  aria-label="Home"
+                  title="Home"
+                  className="btn-ghost"
+                  onClick={() => { setActiveNav('home'); setShowMobileNav(false); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'home' ? '#93c5fd' : '#e5e7eb' }}
+                >
+                  <FontAwesomeIcon icon={faHouse} />
+                  <div style={{ fontSize: 11 }}>Home</div>
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Havens"
+                  title="Havens"
+                  className="btn-ghost"
+                  onClick={() => { setActiveNav('havens'); setShowMobileNav(false); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven !== '__dms__' ? '#93c5fd' : '#e5e7eb' }}
+                >
+                  <FontAwesomeIcon icon={faServer} />
+                  <div style={{ fontSize: 11 }}>Havens</div>
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Profile"
+                  title="Profile"
+                  className="btn-ghost"
+                  onClick={() => { setActiveNav('profile'); setShowMobileNav(false); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'profile' ? '#93c5fd' : '#e5e7eb' }}
+                >
+                  <FontAwesomeIcon icon={faUser} />
+                  <div style={{ fontSize: 11 }}>Profile</div>
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Direct messages"
+                  title="Direct Messages"
+                  className="btn-ghost"
+                  onClick={() => { setActiveNav('activity'); navigateToLocation({ haven: '__dms__', dm: lastSelectedDMRef.current ?? null }); setShowMobileNav(false); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !!selectedDM ? '#93c5fd' : '#e5e7eb' }}
+                >
+                  <FontAwesomeIcon icon={faEnvelope} />
+                  <div style={{ fontSize: 11 }}>DMs</div>
+                </button>
+
+                <button
+                  type="button"
+                  aria-label="Activity"
+                    title="Activity"
+                  className="btn-ghost"
+                  onClick={() => { setActiveNav('activity'); navigateToLocation({ haven: '__dms__', dm: null }); setFriendsTab('all'); setShowMobileNav(false); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !selectedDM ? '#93c5fd' : '#e5e7eb' }}
+                >
+                  <FontAwesomeIcon icon={faUsers} />
+                  <div style={{ fontSize: 11 }}>Activity</div>
+                </button>
+              </div>
+            </div>
+          )}
       {quickOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80, zIndex: 75 }}>
           <div className="glass" style={{ width: 'min(720px, 92vw)', maxHeight: '70vh', overflow: 'hidden', borderRadius: 14 }}>

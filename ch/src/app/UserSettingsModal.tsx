@@ -8,10 +8,10 @@ import { faCirclePlay, faCirclePause } from "@fortawesome/free-solid-svg-icons";
 
 type Props = {
   isOpen: boolean;
-  onClose: () => void;
+  onCloseAction: () => void;
   username: string;
-  onStatusChange?: (status: string) => void;
-  onSaved?: (settings: Settings) => void;
+  onStatusChangeAction?: (status: string) => void;
+  onSavedAction?: (settings: Settings) => void;
 };
 
 type Settings = {
@@ -55,7 +55,7 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
   return base;
 };
 
-export default function UserSettingsModal({ isOpen, onClose, username, onStatusChange, onSaved }: Props) {
+export default function UserSettingsModal({ isOpen, onCloseAction, username, onStatusChangeAction, onSavedAction }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => normalizeSettings({}));
@@ -111,11 +111,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     try {
       const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
       const d = await r.json();
-      if (d?.settings?.status && onStatusChange) onStatusChange(d.settings.status);
-      if (d?.settings && onSaved) onSaved(d.settings);
+      if (d?.settings?.status && onStatusChangeAction) onStatusChangeAction(d.settings.status);
+      if (d?.settings && onSavedAction) onSavedAction(d.settings);
       try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: (d?.settings || {}) })); } catch {}
     } catch {}
-    onClose();
+    onCloseAction();
   };
 
   const stopPreview = () => {
@@ -263,7 +263,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
             <div style={{ fontWeight: 600 }}>User Settings — {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
-            <button onClick={onClose} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
+            <button onClick={onCloseAction} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
           </div>
           <div style={{ padding: 12, color: '#e5e7eb', overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {loading ? (
@@ -716,12 +716,15 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     </div>
                   </div>
                 )}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-                  <button className="btn-ghost" onClick={onClose} style={{ padding: '6px 10px' }}>Cancel</button>
-                  <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
-                </div>
               </>
             )}
+          </div>
+          <div style={{ padding: 12, borderTop: '1px solid #2a3344', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: '#07101a' }}>
+            <p style={{ margin: 0, color: '#9ca3af', fontSize: 13 }}>Some settings will not properly sync without reloading after.</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn-ghost" onClick={onCloseAction} style={{ padding: '6px 10px' }}>Cancel</button>
+              <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
+            </div>
           </div>
         </div>
       </div>

@@ -15,12 +15,13 @@ The auth revamp (migrating fully to the shared `auth.chittersync.com` service an
 - [x] Enforce permission checks client + server (no opening modal without `canManageServer`).
 
 ## 3. Mobile / Responsive UX
-- [ ] Rebuild navigation for <768px screens (slide-over sidebars, bottom tab bar for Havens/DMs/Friends/Settings).
-- [ ] Ensure calling UI, context menus, and dropdowns adapt to touch + mobile viewport.
-- [ ] Persist “last open page” per device and gracefully fall back to Friends tab when nothing stored.
+ - [x] Rebuild navigation for <768px screens (slide-over sidebars, bottom tab bar for Havens/DMs/Friends/Settings).
+ - [x] Ensure calling UI, context menus, and dropdowns adapt to touch + mobile viewport.
+ - [x] Persist “last open page” per device and gracefully fall back to Friends tab when nothing stored.
 - [ ] Add media queries for compact sidebar + channel list that now defaults on.
 
 -## 4. Messaging Enhancements
+## 4. Messaging Enhancements
 - [ ] Message quick button editor: hook up drag/drop persistence per role; expose admin overrides in Server Settings.
 - [x] Context menus: add Copy Timestamp / Copy Username / call-related actions.
 - [ ] Guarantee multiline markdown + custom code block styling render identically on server/client (prevent hydration warnings).
@@ -32,9 +33,13 @@ The auth revamp (migrating fully to the shared `auth.chittersync.com` service an
 - [ ] Add push-notification prep (service worker stub + backend queue) so we can later wire mobile/desktop notifications.
 
 -## 6. Misc Polish
+## 6. Misc Polish
 - [x] Custom dropdown component: extract to shared UI kit with tests, ensure action buttons announce properly to screen readers.
 - [ ] Loading shell animation: confirm all async boot states flip `isBooting` to false so blur disappears.
 - [ ] Health checks / `/api/health` should assert encrypted JSON files are readable & writable.
 - [ ] Clean up temporary files (`Main_head.tmp.tsx`, etc.) that still break parsers if referenced.
+
+## 7. Auth / Login
+- [x] Add show/hide password toggle on the login screen (eye / eye-slash toggle)
 
 Once these are complete and tested, we can safely focus on the centralized auth migration (cookie domain, R2-backed sessions, requireUser everywhere, etc.).
