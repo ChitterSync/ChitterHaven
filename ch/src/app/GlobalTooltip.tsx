@@ -9,14 +9,21 @@ export default function GlobalTooltip() {
   const [visible, setVisible] = useState(false);
   const [text, setText] = useState<string>("");
   const [coords, setCoords] = useState<Coords>({ top: 0, left: 0 });
+  const [alignCenter, setAlignCenter] = useState(false);
   const curEl = useRef<HTMLElement | null>(null);
   const restoreMap = useRef(new WeakMap<HTMLElement, string>());
+  const isCoarseRef = useRef(false);
 
   useEffect(() => {
+    isCoarseRef.current = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
     const positionNear = (el: HTMLElement, ev?: MouseEvent) => {
       const rect = el.getBoundingClientRect();
-      const top = (ev ? ev.clientY : rect.bottom) + window.scrollY + 10;
-      const left = (ev ? ev.clientX : rect.left) + window.scrollX;
+      const coarse = isCoarseRef.current;
+      const baseTop = (ev ? ev.clientY : rect.bottom) + window.scrollY + (coarse ? 12 : 10);
+      const baseLeft = (ev ? ev.clientX : rect.left) + window.scrollX;
+      const left = coarse ? rect.left + rect.width / 2 + window.scrollX : baseLeft;
+      setAlignCenter(coarse);
+      const top = baseTop;
       setCoords({ top, left });
     };
 
@@ -83,20 +90,35 @@ export default function GlobalTooltip() {
       show(el);
     };
     const onFocusOut = () => hide();
+    const onPointerDown = (e: PointerEvent) => {
+      if (!isCoarseRef.current) return;
+      const el = findTooltipTarget(e.target);
+      if (!el) {
+        hide();
+        return;
+      }
+      if (curEl.current === el && visible) {
+        hide();
+        return;
+      }
+      show(el);
+    };
 
     document.addEventListener("mouseover", onOver, true);
     document.addEventListener("mousemove", onMove, true);
     document.addEventListener("mouseout", onOut, true);
     document.addEventListener("focusin", onFocusIn, true);
     document.addEventListener("focusout", onFocusOut, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       document.removeEventListener("mouseover", onOver, true);
       document.removeEventListener("mousemove", onMove, true);
       document.removeEventListener("mouseout", onOut, true);
       document.removeEventListener("focusin", onFocusIn, true);
       document.removeEventListener("focusout", onFocusOut, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
     };
-  }, []);
+  }, [visible]);
 
   if (typeof window === "undefined") return null;
 
@@ -107,6 +129,7 @@ export default function GlobalTooltip() {
           position: "absolute",
           top: coords.top,
           left: coords.left,
+          transform: alignCenter ? "translateX(-50%)" : undefined,
           zIndex: 9999,
           background: "#0b1222",
           color: "#e5e7eb",
@@ -116,7 +139,7 @@ export default function GlobalTooltip() {
           fontSize: 12,
           pointerEvents: "none",
           boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
-          maxWidth: 320,
+          maxWidth: alignCenter ? 260 : 320,
           whiteSpace: "pre-line",
         }}
       >

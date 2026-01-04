@@ -3,15 +3,33 @@ import React, { useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faXmark, faUserPlus, faUserCheck, faUserXmark, faCommentDots, faLink, faLocationDot, faEdit } from "@fortawesome/free-solid-svg-icons";
 
-type Props = { isOpen: boolean; onClose: () => void; username: string; me: string; contextLabel?: string };
+type Props = {
+  isOpen: boolean;
+  onClose: () => void;
+  username: string;
+  me: string;
+  contextLabel?: string;
+  callPresence?: {
+    color: string;
+    label: string;
+    icon: React.ReactNode;
+    location?: string | null;
+    participants: { user: string; avatar: string }[];
+  };
+};
 
-export default function ProfileModal({ isOpen, onClose, username, me, contextLabel }: Props) {
+type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
+
+export default function ProfileModal({ isOpen, onClose, username, me, contextLabel, callPresence }: Props) {
   const [profile, setProfile] = useState<any>(null);
   const [friends, setFriends] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
   const [status, setStatus] = useState<string>("offline");
+  const [statusMessage, setStatusMessage] = useState<string>("");
+  const [richPresence, setRichPresence] = useState<RichPresence | null>(null);
   const [mutual, setMutual] = useState<{ havens: string[]; groupDMs: { id: string; users: string[] }[] }>({ havens: [], groupDMs: [] });
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<any>({});
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
   const avatarInputRef = React.useRef<HTMLInputElement>(null);
   const bannerInputRef = React.useRef<HTMLInputElement>(null);
   const uploadImage = async (file: File) => {
@@ -26,10 +44,24 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
     if (!isOpen) return;
     fetch(`/api/profile?user=${encodeURIComponent(username)}`).then(r => r.json()).then(setProfile).catch(()=>{});
     fetch('/api/friends').then(r=>r.json()).then(setFriends).catch(()=>{});
-    fetch(`/api/user-status?users=${encodeURIComponent(username)}`).then(r=>r.json()).then(d => setStatus(d.statuses?.[username] || 'offline')).catch(()=>{});
+    fetch(`/api/user-status?users=${encodeURIComponent(username)}`)
+      .then(r=>r.json())
+      .then(d => {
+        setStatus(d.statuses?.[username] || 'offline');
+        setStatusMessage(d.statusMessages?.[username] || '');
+        setRichPresence(d.richPresence?.[username] || null);
+      })
+      .catch(()=>{});
     fetch(`/api/mutual?user=${encodeURIComponent(username)}`).then(r=>r.json()).then(setMutual).catch(()=>{});
     setEditMode(false);
   }, [isOpen, username]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateLayout = () => setIsMobileLayout(window.innerWidth < 720);
+    updateLayout();
+    window.addEventListener("resize", updateLayout);
+    return () => window.removeEventListener("resize", updateLayout);
+  }, []);
 
   if (!isOpen) return null;
   const isFriend = friends.friends.includes(username);
@@ -45,25 +77,135 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
   const dotColor = status === 'online' ? '#22c55e' : status === 'idle' ? '#f59e0b' : status === 'dnd' ? '#ef4444' : '#6b7280';
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }}>
-      <div className="glass" style={{ width: 'min(560px, 95vw)', borderRadius: 14, overflow: 'hidden' }}>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        display: 'flex',
+        alignItems: isMobileLayout ? 'stretch' : 'center',
+        justifyContent: isMobileLayout ? 'flex-start' : 'center',
+        zIndex: 80,
+        padding: isMobileLayout ? 0 : 16,
+      }}
+    >
+      <div
+        className="glass"
+        style={{
+          width: isMobileLayout ? '100%' : 'min(560px, 95vw)',
+          height: isMobileLayout ? '100%' : undefined,
+          borderRadius: isMobileLayout ? 0 : 14,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: isMobileLayout ? '100vh' : '90vh',
+        }}
+      >
         {/* Banner */}
-        <div style={{ height: 140, background: profile?.bannerUrl ? `url(${profile.bannerUrl}) center/cover no-repeat` : 'linear-gradient(90deg,#1f2937,#0f172a)' }} />
-        <div style={{ padding: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: -32 }}>
-            <img src={profile?.avatarUrl || '/favicon.ico'} alt={profile?.displayName || username} style={{ width: 64, height: 64, borderRadius: '50%', border: '3px solid #0b1222' }} />
+        <div style={{ height: isMobileLayout ? 120 : 140, background: profile?.bannerUrl ? `url(${profile.bannerUrl}) center/cover no-repeat` : 'linear-gradient(90deg,#1f2937,#0f172a)', position: 'relative', zIndex: 0 }} />
+        <div style={{ padding: isMobileLayout ? 16 : 18, paddingTop: isMobileLayout ? 24 : 28, overflowY: 'auto', position: 'relative', zIndex: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: isMobileLayout ? -36 : -44, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
+            <img src={profile?.avatarUrl || '/favicon.ico'} alt={profile?.displayName || username} style={{ width: isMobileLayout ? 58 : 72, height: isMobileLayout ? 58 : 72, borderRadius: '50%', border: '3px solid #0b1222', transform: 'translateY(-10px)', zIndex: 3 }} />
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 18, color: '#e5e7eb', fontWeight: 600 }}>{profile?.displayName || username}</span>
                 <span style={{ width: 10, height: 10, borderRadius: 999, background: dotColor }} />
                 {contextLabel ? (
                   <span style={{ background: '#0b1222', border: '1px solid #1f2937', color: '#93c5fd', borderRadius: 999, padding: '2px 8px', fontSize: 11 }}>{contextLabel}</span>
                 ) : null}
+                {callPresence && (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(37,99,235,0.15)', borderRadius: 999, padding: '2px 8px', color: callPresence.color, fontSize: 11 }}>
+                    {callPresence.icon}
+                    {callPresence.label}
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>@{username}{profile?.pronouns ? ` • ${profile.pronouns}`: ''}</div>
             </div>
-            <button className="btn-ghost" onClick={onClose} style={{ marginLeft: 'auto', padding: '6px 10px' }}><FontAwesomeIcon icon={faXmark} /></button>
+            <button className="btn-ghost" onClick={onClose} style={{ marginLeft: isMobileLayout ? 0 : 'auto', padding: '6px 10px' }}><FontAwesomeIcon icon={faXmark} /></button>
           </div>
+          {(statusMessage || (richPresence && richPresence.title)) && (
+            <div
+              style={{
+                position: 'relative',
+                marginTop: 8,
+                marginLeft: isMobileLayout ? 0 : 92,
+                padding: '8px 12px',
+                borderRadius: 18,
+                border: '1px solid #1f2937',
+                background: 'rgba(8,15,28,0.92)',
+                color: '#e2e8f0',
+                fontSize: 12,
+                maxWidth: 340,
+                zIndex: 2,
+              }}
+            >
+              <span
+                style={{
+                  position: 'absolute',
+                  left: -10,
+                  top: 12,
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  background: 'rgba(8,15,28,0.92)',
+                  border: '1px solid #1f2937',
+                }}
+              />
+              <span
+                style={{
+                  position: 'absolute',
+                  left: -18,
+                  top: 4,
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: 'rgba(8,15,28,0.92)',
+                  border: '1px solid #1f2937',
+                }}
+              />
+              <span
+                style={{
+                  position: 'absolute',
+                  left: -24,
+                  top: -2,
+                  width: 4,
+                  height: 4,
+                  borderRadius: '50%',
+                  background: 'rgba(8,15,28,0.92)',
+                  border: '1px solid #1f2937',
+                }}
+              />
+              {statusMessage && (
+                <div style={{ whiteSpace: 'pre-wrap' }}>{statusMessage}</div>
+              )}
+              {richPresence && richPresence.title && (
+                <div style={{ color: '#93c5fd', marginTop: statusMessage ? 4 : 0 }}>
+                  {richPresence.type === 'music' ? 'Listening to' : richPresence.type === 'game' ? 'Playing' : 'Activity'} {richPresence.title}
+                  {richPresence.details ? ` - ${richPresence.details}` : ''}
+                </div>
+              )}
+            </div>
+          )}
+          {callPresence && (
+            <div style={{ marginTop: 12, border: '1px solid #1f2937', background: '#010914', borderRadius: 10, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ fontWeight: 600, color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {callPresence.icon}
+                <span>Currently in call</span>
+              </div>
+              {callPresence.location && (
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>{callPresence.location}</div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                {callPresence.participants.slice(0, 6).map((p) => (
+                  <div key={`profile-call-${p.user}`} title={p.user} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #1f2937', overflow: 'hidden' }}>
+                    <img src={p.avatar} alt={p.user} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                ))}
+                {callPresence.participants.length === 0 && <div style={{ color: '#9ca3af', fontSize: 12 }}>No participants listed.</div>}
+              </div>
+            </div>
+          )}
           {profile?.bio && (
             <div style={{ marginTop: 12, color: '#e5e7eb', whiteSpace: 'pre-wrap' }}>{profile.bio}</div>
           )}

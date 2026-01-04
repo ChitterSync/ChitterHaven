@@ -1,10 +1,74 @@
 "use client";
-import React, { useEffect, useRef } from "react";
-import { useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faSearch, faPlus, faChevronLeft, faReply, faEdit, faTrash } from "@fortawesome/free-solid-svg-icons";
+import {
+  faSearch,
+  faPlus,
+  faChevronLeft,
+  faChevronRight,
+  faChevronDown,
+  faReply,
+  faEdit,
+  faTrash,
+  faPhone,
+  faMicrophone,
+  faMicrophoneSlash,
+  faVolumeXmark,
+  faBars,
+  faEnvelope,
+  faHashtag,
+  faGear,
+  faServer,
+} from "@fortawesome/free-solid-svg-icons";
 import NavController from "./NavController";
 import EmojiPicker from "./EmojiPicker";
+
+const COLOR_PANEL = "var(--ch-panel)";
+const COLOR_PANEL_ALT = "var(--ch-panel-alt)";
+const COLOR_PANEL_STRONG = "var(--ch-panel-strong)";
+const COLOR_CARD = "var(--ch-card)";
+const COLOR_CARD_ALT = "var(--ch-card-alt)";
+const COLOR_BORDER = "var(--ch-border)";
+const COLOR_TEXT = "var(--ch-text)";
+const COLOR_TEXT_MUTED = "var(--ch-text-muted)";
+const BORDER = `1px solid ${COLOR_BORDER}`;
+const statusColor = (status?: string) => {
+  if (status === "online") return "#22c55e";
+  if (status === "idle") return "#f59e0b";
+  if (status === "dnd") return "#ef4444";
+  return "#6b7280";
+};
+const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
+  try {
+    const resolved = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
+    const cycle = resolved.hourCycle;
+    if (cycle === "h23" || cycle === "h24") return "24h";
+  } catch {}
+  return "12h";
+};
+
+type MobileDM = {
+  id: string;
+  users: string[];
+  title?: string;
+  group?: boolean;
+  owner?: string;
+  moderators?: string[];
+  avatarUrl?: string;
+};
+
+type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
+type AppearanceSettings = {
+  messageGrouping?: "none" | "compact" | "aggressive";
+  messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
+  timeFormat?: "12h" | "24h";
+  timeDisplay?: "absolute" | "relative" | "hybrid";
+  timestampGranularity?: "perMessage" | "perGroup";
+  systemMessageEmphasis?: "prominent" | "normal" | "dimmed" | "collapsible";
+  maxContentWidth?: number | null;
+  accentIntensity?: "subtle" | "normal" | "bold";
+  readingMode?: boolean;
+};
 
 type Props = {
   activeNav: string;
@@ -14,7 +78,7 @@ type Props = {
   havens: { [k: string]: string[] };
   setSelectedHaven: (h: string) => void;
   selectedHaven: string;
-  dms: { id: string; users: string[] }[];
+  dms: MobileDM[];
   selectedDM: string | null;
   setSelectedDM: (d: string | null) => void;
   setShowUserSettings?: (b: boolean) => void;
@@ -30,9 +94,17 @@ type Props = {
   setInput: (s: string) => void;
   sendMessage: () => void;
   typingUsers: string[];
+  showTimestamps?: boolean;
+  presenceMap?: Record<string, string>;
+  userProfileCache?: Record<string, { displayName?: string; avatarUrl?: string }>;
+  statusMessageMap?: Record<string, string>;
+  richPresenceMap?: Record<string, RichPresence>;
+  friendsState?: { friends: string[]; incoming: string[]; outgoing: string[] };
+  friendsTab?: "all" | "online" | "pending";
   showMobileNav: boolean;
   setShowMobileNav: (b: boolean) => void;
   currentAvatarUrl?: string;
+  appearance?: AppearanceSettings;
   // message actions
   handleEdit?: (id: string, text: string) => void;
   handleDelete?: (id: string) => void;
@@ -43,13 +115,192 @@ type Props = {
   handleEditSubmit?: (id: string) => void;
   cancelEdit?: () => void;
   toggleReaction?: (messageId: string, emoji: string) => void;
+  callsEnabled?: boolean;
+  callState?: "idle" | "calling" | "in-call";
+  startCall?: () => void;
+  endCall?: () => void;
+  activeCallDM?: string | null;
+  callParticipants?: { user: string; status: string }[];
+  callElapsed?: number;
+  callInitiator?: string | null;
+  isMuted?: boolean;
+  isDeafened?: boolean;
+  toggleMute?: () => void;
+  toggleDeafen?: () => void;
+  friendAction?: (action: "request" | "accept" | "decline" | "cancel" | "remove", target: string) => void;
+  ensureDM?: (user: string) => void;
+  renderDisplayName?: (user: string, opts?: { revealKey?: string; labelOverride?: string }) => React.ReactNode;
+  renderDMLabel?: (dm?: MobileDM | null, opts?: { revealKey?: string }) => React.ReactNode;
+  renderDMHandles?: (dm?: MobileDM | null) => React.ReactNode;
 };
 
 export default function MobileApp(props: Props) {
-  const { activeNav, setActiveNav, isMobile, setShowMobileNav, havens, setSelectedHaven, selectedHaven, dms, selectedDM, setSelectedDM, setShowUserSettings, setShowServerSettings, setSelectedChannel, selectedChannel, username, messages, input, setInput, sendMessage, typingUsers, showMobileNav, currentAvatarUrl, accent, lastSelectedDMRef, setFriendsTab, handleEdit, handleDelete, handleReply, editId, editText, setEditText, handleEditSubmit, cancelEdit, toggleReaction } = props;
+  const {
+    activeNav,
+    setActiveNav,
+    isMobile,
+    setShowMobileNav,
+    havens,
+    setSelectedHaven,
+    selectedHaven,
+    dms,
+    selectedDM,
+    setSelectedDM,
+    setShowUserSettings,
+    setShowServerSettings,
+    setSelectedChannel,
+    selectedChannel,
+    username,
+    messages,
+    input,
+    setInput,
+    sendMessage,
+    typingUsers,
+    showTimestamps,
+    presenceMap = {},
+    userProfileCache = {},
+    statusMessageMap = {},
+    richPresenceMap = {},
+    friendsState,
+    friendsTab,
+    showMobileNav,
+    currentAvatarUrl,
+    accent,
+    appearance,
+    lastSelectedDMRef,
+    setFriendsTab,
+    handleEdit,
+    handleDelete,
+    handleReply,
+    editId,
+    editText,
+    setEditText,
+    handleEditSubmit,
+    cancelEdit,
+    toggleReaction,
+    callsEnabled,
+    callState = "idle",
+    startCall,
+    endCall,
+    activeCallDM,
+    callParticipants,
+    callElapsed = 0,
+    callInitiator,
+    isMuted,
+    isDeafened,
+    toggleMute,
+    toggleDeafen,
+    friendAction,
+    ensureDM,
+    renderDisplayName,
+    renderDMLabel,
+    renderDMHandles,
+  } = props;
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [openEmojiFor, setOpenEmojiFor] = useState<string | null>(null);
+  const [dmMenuOpen, setDmMenuOpen] = useState(false);
+  const [channelMenuOpen, setChannelMenuOpen] = useState(false);
+  const [collapsedSystemMessages, setCollapsedSystemMessages] = useState<Record<string, boolean>>({});
+  const [activityTab, setActivityTab] = useState<"dms" | "friends">("dms");
+  const [localFriendsTab, setLocalFriendsTab] = useState<"all" | "online" | "pending">("all");
+  const normalizedAppearance = appearance || {};
+  const messageGrouping = normalizedAppearance.messageGrouping || "compact";
+  const messageStyle = normalizedAppearance.messageStyle || "sleek";
+  const replyCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    messages.forEach((m) => {
+      if (m.replyToId) {
+        counts[m.replyToId] = (counts[m.replyToId] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [messages]);
+  const timeFormat = normalizedAppearance.timeFormat || resolveDefaultTimeFormat();
+  const timeDisplay = normalizedAppearance.timeDisplay || "absolute";
+  const timestampGranularity = normalizedAppearance.timestampGranularity || "perMessage";
+  const systemMessageEmphasis = normalizedAppearance.systemMessageEmphasis || "prominent";
+  const maxContentWidth = typeof normalizedAppearance.maxContentWidth === "number" ? normalizedAppearance.maxContentWidth : null;
+  const accentIntensity = normalizedAppearance.accentIntensity || "normal";
+  const readingMode = normalizedAppearance.readingMode === true;
+  const formatAbsoluteTime = (timestamp?: number) => {
+    const date = timestamp ? new Date(timestamp) : new Date();
+    const hour12 = timeFormat === "12h" ? true : timeFormat === "24h" ? false : undefined;
+    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12 });
+  };
+  const formatRelativeTime = (timestamp?: number) => {
+    if (!timestamp) return "just now";
+    const diffMs = Date.now() - timestamp;
+    if (diffMs < 30 * 1000) return "just now";
+    const minutes = Math.floor(diffMs / (60 * 1000));
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    const weeks = Math.floor(days / 7);
+    return `${weeks}w ago`;
+  };
+  const formatTimestampLabel = (timestamp?: number) => {
+    const absolute = formatAbsoluteTime(timestamp);
+    const relative = formatRelativeTime(timestamp);
+    if (timeDisplay === "relative") {
+      return { label: relative, title: absolute };
+    }
+    if (timeDisplay === "hybrid") {
+      return { label: absolute, title: relative };
+    }
+    return { label: absolute, title: undefined };
+  };
+  const effectiveFriendsTab = friendsTab ?? localFriendsTab;
+  const setEffectiveFriendsTab = setFriendsTab ?? setLocalFriendsTab;
+  const isGroupDMThread = (dm?: { id: string; users: string[]; group?: boolean }) => !!dm && (dm.group || (dm.users?.length || 0) > 2);
+  const dmMembersWithoutSelf = (dm?: { users: string[] }) => (dm ? dm.users.filter((u) => u !== username) : []);
+  const getDMTitle = (dm?: { users: string[]; title?: string; group?: boolean }) => {
+    if (!dm) return 'Direct Message';
+    const members = dmMembersWithoutSelf(dm);
+    if (isGroupDMThread(dm)) {
+      if (dm.title && dm.title.trim()) return dm.title.trim();
+      const preview = members.slice(0, 3).join(', ');
+      if (members.length > 3) return `${preview} +${members.length - 3}`;
+      return preview || 'Group DM';
+    }
+    return members.length ? members.join(', ') : 'Direct Message';
+  };
+  const getDMAvatar = (dm?: { avatarUrl?: string }) => (dm && dm.avatarUrl ? dm.avatarUrl.trim() : '');
+  const renderDMTitleNode = (dm?: MobileDM | null, revealKey?: string) =>
+    renderDMLabel ? renderDMLabel(dm || undefined, { revealKey }) : getDMTitle(dm || undefined);
+  const renderDMHandlesNode = (dm?: MobileDM | null) => {
+    if (renderDMHandles) return renderDMHandles(dm || undefined);
+    const members = dmMembersWithoutSelf(dm || undefined);
+    if (!members.length) return null;
+    return members.map((user, idx) => (
+      <Fragment key={`mobile-handle-${dm?.id || 'dm'}-${user}`}>
+        {idx > 0 && ', '}
+        @{user}
+      </Fragment>
+    ));
+  };
+  const renderName = (user: string, revealKey: string) =>
+    renderDisplayName ? renderDisplayName(user, { revealKey }) : user;
+  const renderNameWithPrefix = (user: string, prefix: string, revealKey: string) =>
+    renderDisplayName ? renderDisplayName(user, { revealKey, prefix }) : `${prefix}${user}`;
+  const formatRichPresence = (presence?: RichPresence) => {
+    if (!presence || !presence.title) return null;
+    const prefix = presence.type === "music" ? "Listening to" : presence.type === "game" ? "Playing" : "Activity";
+    const details = presence.details ? ` - ${presence.details}` : "";
+    return `${prefix} ${presence.title}${details}`;
+  };
+  const formatDateLine = (timestamp?: number) => {
+    const date = timestamp ? new Date(timestamp) : new Date();
+    return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  };
+  const isSameDay = (a?: number, b?: number) => {
+    if (!a || !b) return false;
+    const da = new Date(a);
+    const db = new Date(b);
+    return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+  };
 
   useEffect(() => {
     try {
@@ -61,29 +312,106 @@ export default function MobileApp(props: Props) {
     } catch {}
   }, [messages, isAtBottom]);
 
-  // reserve calculation for bottom padding so fixed nav + composer don't overlap content on mobile
-  const _navHeight = 56; // NavController bottom bar height
-  const _composerHeight = 64; // composer + padding
-  const safeBottomPad = isMobile ? _navHeight + _composerHeight + 16 : 12;
+  const MOBILE_NAV_HEIGHT = 56;
+  const COMPOSER_HEIGHT = 68;
+  const safeBottomPad = isMobile ? MOBILE_NAV_HEIGHT + COMPOSER_HEIGHT + 16 : 12;
+  const dmMeta = selectedDM ? dms.find((dm) => dm.id === selectedDM) : null;
+  const otherDmUsers = dmMembersWithoutSelf(dmMeta || undefined);
+  const dmTitle = getDMTitle(dmMeta || undefined);
+  const dmTitleNode = renderDMTitleNode(dmMeta || undefined, selectedDM ? `mobile-dm-header-${selectedDM}` : undefined);
+  const dmHandlesLine = renderDMHandlesNode(dmMeta || undefined);
+  const dmIsGroup = isGroupDMThread(dmMeta || undefined);
+  const dmGroupAvatar = getDMAvatar(dmMeta || undefined);
+  const dmStatusMessage = !dmIsGroup && otherDmUsers[0] ? statusMessageMap[otherDmUsers[0]] : "";
+  const dmRichPresence = !dmIsGroup && otherDmUsers[0] ? formatRichPresence(richPresenceMap[otherDmUsers[0]]) : null;
+  const fallbackCallParticipants = dmMeta ? dmMeta.users.map((user) => ({ user, status: "ringing" as const })) : [];
+  const mergedCallParticipants = (callParticipants && callParticipants.length ? callParticipants : fallbackCallParticipants).filter(
+    (p): p is { user: string; status: string } => !!p && typeof p.user === "string",
+  );
+  const normalizedCallParticipants = mergedCallParticipants;
+  const mobileCallsEnabled = !!callsEnabled && selectedHaven === "__dms__" && !!selectedDM;
+  const callInSelectedDM = mobileCallsEnabled && activeCallDM === selectedDM && callState !== "idle";
+  const callElsewhere = !!callsEnabled && callState !== "idle" && activeCallDM && (!selectedDM || activeCallDM !== selectedDM);
+  const callMinutes = Math.floor(Math.max(0, callElapsed || 0) / 60);
+  const callSeconds = Math.max(0, Math.floor((callElapsed || 0) % 60));
+  const callTimer = `${callMinutes}:${callSeconds.toString().padStart(2, "0")}`;
+  const muted = !!isMuted;
+  const deafened = !!isDeafened;
+  const participantPreview = mergedCallParticipants.slice(0, 4);
+  const remainingParticipants = Math.max(0, mergedCallParticipants.length - participantPreview.length);
+  const canCompose =
+    (!!selectedDM) ||
+    (selectedHaven && selectedHaven !== "__dms__" && !!selectedChannel);
+  const participantInitials = (value?: string) => {
+    if (!value) return "??";
+    const trimmed = value.trim();
+    if (!trimmed) return "??";
+    const parts = trimmed.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return trimmed.slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  };
+  const [showCallOverlay, setShowCallOverlay] = useState(false);
+  useEffect(() => {
+    if (callState === "idle") setShowCallOverlay(false);
+  }, [callState]);
+  useEffect(() => {
+    if (callInSelectedDM) setShowCallOverlay(true);
+  }, [callInSelectedDM]);
+  const jumpToActiveCall = () => {
+    if (!activeCallDM) return;
+    setSelectedHaven("__dms__");
+    setSelectedDM(activeCallDM);
+    setActiveNav("activity");
+    setShowMobileNav(false);
+  };
+  useEffect(() => {
+    if (!selectedDM) setDmMenuOpen(false);
+  }, [selectedDM]);
+  useEffect(() => {
+    if (selectedDM) setActivityTab("dms");
+  }, [selectedDM]);
+  useEffect(() => {
+    if (!selectedHaven || selectedHaven === "__dms__") setChannelMenuOpen(false);
+  }, [selectedHaven]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
       {/* Mobile header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid #0f172a', background: 'linear-gradient(180deg, #071127, #06101a)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: `1px solid ${COLOR_PANEL_ALT}`, background: `linear-gradient(180deg, ${COLOR_CARD}, ${COLOR_CARD_ALT})` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button className="btn-ghost" onClick={() => setShowMobileNav(true)} style={{ padding: 8 }} aria-label="Open">
             <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(90deg)' }} />
           </button>
           <div style={{ fontWeight: 700, fontSize: 16 }}>{activeNav.charAt(0).toUpperCase() + activeNav.slice(1)}</div>
         </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn-ghost" onClick={() => setShowUserSettings && setShowUserSettings(true)} aria-label="Search" style={{ padding: 8 }}>
               <FontAwesomeIcon icon={faSearch} />
             </button>
+            {setShowServerSettings && selectedHaven && selectedHaven !== "__dms__" && (
+              <button
+                className="btn-ghost"
+                onClick={() => setShowServerSettings(true)}
+                aria-label="Server settings"
+                style={{ padding: 8 }}
+              >
+                <FontAwesomeIcon icon={faServer} />
+              </button>
+            )}
             {currentAvatarUrl ? (
-              <img src={currentAvatarUrl} alt={username} style={{ width: 36, height: 36, borderRadius: 18, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.03)' }} onClick={() => setShowUserSettings && setShowUserSettings(true)} />
+              <img
+                src={currentAvatarUrl}
+                alt={username}
+                style={{ width: 36, height: 36, borderRadius: 18, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.03)' }}
+                onClick={() => setActiveNav('profile')}
+              />
             ) : (
-              <div style={{ width: 36, height: 36, borderRadius: 18, background: '#0b1222', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e5e7eb' }}>{username?.charAt(0)?.toUpperCase() ?? 'U'}</div>
+              <div
+                style={{ width: 36, height: 36, borderRadius: 18, background: COLOR_PANEL, display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT }}
+                onClick={() => setActiveNav('profile')}
+              >
+                {username?.charAt(0)?.toUpperCase() ?? 'U'}
+              </div>
             )}
           </div>
       </div>
@@ -93,13 +421,13 @@ export default function MobileApp(props: Props) {
       <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
         {activeNav === 'home' && (
           <div>
-            <div style={{ padding: 12, borderRadius: 12, background: '#071127', marginBottom: 12 }}>
+            <div style={{ padding: 12, borderRadius: 12, background: COLOR_CARD, marginBottom: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 6 }}>Welcome back</div>
-              <div style={{ color: '#9ca3af' }}>Quick actions and recent activity optimized for mobile.</div>
+              <div style={{ color: COLOR_TEXT_MUTED }}>Quick actions and recent activity optimized for mobile.</div>
             </div>
             <div style={{ display: 'grid', gap: 10 }}>
-              <button className="btn-ghost" style={{ padding: 12, borderRadius: 12, background: '#0b1222', textAlign: 'left' }} onClick={() => setActiveNav('havens')}>Jump to Havens</button>
-              <button className="btn-ghost" style={{ padding: 12, borderRadius: 12, background: '#0b1222', textAlign: 'left' }} onClick={() => setActiveNav('activity')}>Open Activity</button>
+              <button className="btn-ghost" style={{ padding: 12, borderRadius: 12, background: COLOR_PANEL, textAlign: 'left' }} onClick={() => setActiveNav('havens')}>Jump to Havens</button>
+              <button className="btn-ghost" style={{ padding: 12, borderRadius: 12, background: COLOR_PANEL, textAlign: 'left' }} onClick={() => setActiveNav('activity')}>Open Activity</button>
             </div>
           </div>
         )}
@@ -107,11 +435,34 @@ export default function MobileApp(props: Props) {
         {activeNav === 'havens' && (
           <div>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Your Havens</div>
-            {Object.keys(havens).length === 0 && <div style={{ color: '#94a3b8' }}>No havens yet.</div>}
+            {selectedHaven && selectedHaven !== '__dms__' && (
+              <div style={{ padding: 12, borderRadius: 12, background: COLOR_PANEL_ALT, border: BORDER, marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{selectedHaven}</div>
+                  <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>
+                    {(havens[selectedHaven] || []).length ? `Channels: ${(havens[selectedHaven] || []).slice(0, 3).map((c) => `#${c}`).join(', ')}` : 'No channels yet.'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn-ghost" onClick={() => setChannelMenuOpen(true)} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <FontAwesomeIcon icon={faHashtag} /> Channels
+                  </button>
+                  <button className="btn-ghost" onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel && setSelectedChannel(''); }} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <FontAwesomeIcon icon={faEnvelope} /> DMs
+                  </button>
+                  {setShowServerSettings && (
+                    <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <FontAwesomeIcon icon={faServer} /> Settings
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {Object.keys(havens).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED' }}>No havens yet.</div>}
             {Object.keys(havens).map(h => (
-              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? '#0f172a' : '#071127', marginBottom: 8 }}>
+              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8 }}>
                 <div style={{ fontWeight: 700 }}>{h}</div>
-                <div style={{ color: '#9ca3af', fontSize: 13 }}>{(havens[h] || []).slice(0,3).map(c => `#${c}`).join(' • ')}</div>
+                <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>{(havens[h] || []).slice(0,3).map(c => `#${c}`).join(' • ')}</div>
               </div>
             ))}
           </div>
@@ -119,24 +470,333 @@ export default function MobileApp(props: Props) {
 
         {activeNav === 'activity' && (
           <div>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Activity</div>
-            <div style={{ color: '#9ca3af' }}>Friends, recent DMs, and notifications.</div>
-            <div style={{ marginTop: 12 }}>
-              {dms.length === 0 && <div style={{ color: '#94a3b8' }}>No direct messages.</div>}
-              {dms.map(dm => (
-                <div key={dm.id} onClick={() => { setSelectedDM(dm.id); setActiveNav('activity'); }} style={{ padding: 12, borderRadius: 12, background: selectedDM === dm.id ? '#0f172a' : '#071127', marginBottom: 8 }}>
-                  <div style={{ fontWeight: 700 }}>{dm.users.filter(u => u !== username).join(', ')}</div>
-                </div>
-              ))}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>Activity</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  className="btn-ghost"
+                  onClick={() => setActivityTab("dms")}
+                  style={{ padding: '6px 10px', borderRadius: 999, color: activityTab === 'dms' ? '#93c5fd' : COLOR_TEXT }}
+                >
+                  DMs
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => setActivityTab("friends")}
+                  style={{ padding: '6px 10px', borderRadius: 999, color: activityTab === 'friends' ? '#93c5fd' : COLOR_TEXT }}
+                >
+                  Friends
+                </button>
+              </div>
             </div>
+            {selectedDM ? (
+              <div style={{ padding: 12, borderRadius: 12, background: COLOR_PANEL_ALT, border: BORDER, marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <div style={{ fontWeight: 700 }}>Chatting with</div>
+                  <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {dmTitleNode || dmTitle || 'Unknown user'}
+                  </div>
+                  {dmHandlesLine && (
+                    <div style={{ color: '#94a3b8', fontSize: 12, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {dmHandlesLine}
+                    </div>
+                  )}
+                  {!dmIsGroup && dmStatusMessage && (
+                    <div style={{ color: '#cbd5f5', fontSize: 12 }}>{dmStatusMessage}</div>
+                  )}
+                  {!dmIsGroup && dmRichPresence && (
+                    <div style={{ color: '#93c5fd', fontSize: 11 }}>{dmRichPresence}</div>
+                  )}
+                </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => setSelectedDM(null)}
+                      title="Back"
+                    aria-label="Back"
+                    style={{ padding: 10, borderRadius: 999, width: 42, height: 42, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <FontAwesomeIcon icon={faChevronLeft} />
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => setDmMenuOpen(true)}
+                    title="Direct messages"
+                    aria-label="Direct messages"
+                    style={{ padding: 10, borderRadius: 999, width: 42, height: 42, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <FontAwesomeIcon icon={faBars} />
+                    </button>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => {
+                        if (callState === 'in-call') {
+                          setShowCallOverlay(true);
+                          return;
+                        }
+                        if (!startCall) return;
+                        startCall();
+                        setShowCallOverlay(true);
+                      }}
+                      title={callState === 'in-call' ? 'Return to call' : 'Start call'}
+                      style={{
+                        padding: 10,
+                        borderRadius: 999,
+                        width: 42,
+                        height: 42,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: COLOR_PANEL_STRONG,
+                        border: BORDER,
+                        color: callState !== 'idle' ? '#22c55e' : COLOR_TEXT,
+                      }}
+                    >
+                      <FontAwesomeIcon icon={faPhone} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>Use DM Menu to switch conversations without leaving the chat.</div>
+              </div>
+            ) : (
+              <div style={{ color: COLOR_TEXT_MUTED, marginBottom: 12 }}>Friends, recent DMs, and notifications.</div>
+            )}
+            {!selectedDM && activityTab === 'dms' && (
+              <div style={{ marginTop: 12 }}>
+                {dms.length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED' }}>No direct messages.</div>}
+                {dms.map(dm => {
+                  const isGroup = isGroupDMThread(dm);
+                  const members = dmMembersWithoutSelf(dm);
+                  const title = getDMTitle(dm);
+                  const groupAvatar = getDMAvatar(dm);
+                  const initials = title.charAt(0).toUpperCase();
+                  const revealKey = `mobile-dm-card-${dm.id}`;
+                  const titleNode = renderDMTitleNode(dm, revealKey);
+                  const handlesNode = renderDMHandlesNode(dm);
+                  const statusMessage = !isGroup && members[0] ? statusMessageMap[members[0]] : "";
+                  const richPresence = !isGroup && members[0] ? formatRichPresence(richPresenceMap[members[0]]) : null;
+                  return (
+                    <div
+                      key={dm.id}
+                      onClick={() => {
+                        setSelectedHaven('__dms__');
+                        setSelectedChannel && setSelectedChannel('');
+                        setSelectedDM(dm.id);
+                        setActiveNav('activity');
+                      }}
+                      style={{ padding: 12, borderRadius: 12, background: selectedDM === dm.id ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}
+                    >
+                      <div style={{ width: 40, height: 40, borderRadius: '35%', border: BORDER, background: '#040c1a', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                        {groupAvatar ? (
+                          <img src={groupAvatar} alt={title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <span style={{ fontWeight: 700 }}>{initials}</span>
+                        )}
+                      </div>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <div style={{ fontWeight: 700, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {titleNode || title || members.join(', ') || 'Direct Message'}
+                        </div>
+                        <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {handlesNode || (isGroup ? `${dm.users.length} members` : members.map((user, idx) => (
+                            <Fragment key={`mobile-handle-inline-${dm.id}-${user}`}>
+                              {idx > 0 && ', '}
+                              @{user}
+                            </Fragment>
+                          )))}
+                        </div>
+                        {!isGroup && statusMessage && (
+                          <div style={{ fontSize: 11, color: '#cbd5f5' }}>{statusMessage}</div>
+                        )}
+                        {!isGroup && richPresence && (
+                          <div style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {!selectedDM && activityTab === 'friends' && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => setEffectiveFriendsTab("all")}
+                    style={{ padding: '6px 10px', borderRadius: 999, color: effectiveFriendsTab === 'all' ? '#93c5fd' : COLOR_TEXT }}
+                  >
+                    All
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => setEffectiveFriendsTab("online")}
+                    style={{ padding: '6px 10px', borderRadius: 999, color: effectiveFriendsTab === 'online' ? '#93c5fd' : COLOR_TEXT }}
+                  >
+                    Online
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => setEffectiveFriendsTab("pending")}
+                    style={{ padding: '6px 10px', borderRadius: 999, color: effectiveFriendsTab === 'pending' ? '#93c5fd' : COLOR_TEXT }}
+                  >
+                    Pending
+                  </button>
+                </div>
+                {!friendsState && (
+                  <div style={{ color: COLOR_TEXT_MUTED }}>Friends data not loaded.</div>
+                )}
+                {friendsState && effectiveFriendsTab !== 'pending' && (() => {
+                  const sorted = [...friendsState.friends].sort((a, b) => a.localeCompare(b));
+                  const list = effectiveFriendsTab === 'online'
+                    ? sorted.filter((friend) => (presenceMap[friend] || 'offline') !== 'offline')
+                    : sorted;
+                  if (list.length === 0) {
+                    return <div style={{ color: COLOR_TEXT_MUTED }}>No friends found.</div>;
+                  }
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {list.map((friend) => {
+                        const avatar = userProfileCache[friend]?.avatarUrl || '/favicon.ico';
+                        const revealKey = `mobile-friend-${friend}`;
+                        const statusMessage = statusMessageMap[friend] || "";
+                        const richPresence = formatRichPresence(richPresenceMap[friend]);
+                        return (
+                          <div
+                            key={`friend-${friend}`}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              padding: '10px 12px',
+                              borderRadius: 12,
+                              border: BORDER,
+                              background: COLOR_PANEL_ALT,
+                            }}
+                          >
+                            <div style={{ position: 'relative', width: 38, height: 38 }}>
+                              <img src={avatar} alt={friend} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                              <span style={{ position: 'absolute', bottom: 2, right: 2, width: 10, height: 10, borderRadius: '50%', border: `2px solid ${COLOR_PANEL}`, background: statusColor(presenceMap[friend]) }} />
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+                              <span style={{ fontWeight: 600 }}>{renderName(friend, revealKey)}</span>
+                              <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</span>
+                              {statusMessage && (
+                                <span style={{ fontSize: 11, color: '#cbd5f5' }}>{statusMessage}</span>
+                              )}
+                              {richPresence && (
+                                <span style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</span>
+                              )}
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              {ensureDM && (
+                                <button className="btn-ghost" onClick={() => ensureDM(friend)} style={{ padding: '6px 8px' }}>
+                                  Message
+                                </button>
+                              )}
+                              {friendAction && (
+                                <button className="btn-ghost" onClick={() => friendAction('remove', friend)} style={{ padding: '6px 8px', color: '#f87171' }}>
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+                {friendsState && effectiveFriendsTab === 'pending' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Incoming</div>
+                      {friendsState.incoming.length === 0 ? (
+                        <div style={{ color: COLOR_TEXT_MUTED }}>No incoming requests.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {friendsState.incoming.map((friend) => {
+                            const avatar = userProfileCache[friend]?.avatarUrl || '/favicon.ico';
+                            const revealKey = `mobile-incoming-${friend}`;
+                            return (
+                              <div key={`incoming-${friend}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, border: BORDER, background: COLOR_PANEL_ALT }}>
+                                <img src={avatar} alt={friend} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 600 }}>{renderName(friend, revealKey)}</div>
+                                  <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</div>
+                                </div>
+                                {friendAction && (
+                                  <div style={{ display: 'flex', gap: 6 }}>
+                                    <button className="btn-ghost" onClick={() => friendAction('accept', friend)} style={{ padding: '6px 8px', color: '#22c55e' }}>
+                                      Accept
+                                    </button>
+                                    <button className="btn-ghost" onClick={() => friendAction('decline', friend)} style={{ padding: '6px 8px', color: '#f87171' }}>
+                                      Decline
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Outgoing</div>
+                      {friendsState.outgoing.length === 0 ? (
+                        <div style={{ color: COLOR_TEXT_MUTED }}>No outgoing requests.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {friendsState.outgoing.map((friend) => {
+                            const avatar = userProfileCache[friend]?.avatarUrl || '/favicon.ico';
+                            const revealKey = `mobile-outgoing-${friend}`;
+                            return (
+                              <div key={`outgoing-${friend}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, border: BORDER, background: COLOR_PANEL_ALT }}>
+                                <img src={avatar} alt={friend} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 600 }}>{renderName(friend, revealKey)}</div>
+                                  <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</div>
+                                </div>
+                                {friendAction && (
+                                  <button className="btn-ghost" onClick={() => friendAction('cancel', friend)} style={{ padding: '6px 8px', color: '#f59e0b' }}>
+                                    Cancel
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {activeNav === 'profile' && (
           <div>
-            <div style={{ padding: 12, borderRadius: 12, background: '#071127' }}>
+            <div style={{ padding: 12, borderRadius: 12, background: COLOR_CARD }}>
               <div style={{ fontWeight: 700 }}>{username}</div>
-              <div style={{ color: '#9ca3af' }}>Tap to edit your profile and account settings.</div>
+              <div style={{ color: COLOR_TEXT_MUTED }}>Tap to edit your profile and account settings.</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                <button
+                  className="btn-ghost"
+                  onClick={() => setShowUserSettings && setShowUserSettings(true)}
+                  style={{ padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  <FontAwesomeIcon icon={faGear} /> User Settings
+                </button>
+                {setShowServerSettings && selectedHaven && selectedHaven !== "__dms__" && (
+                  <button
+                    className="btn-ghost"
+                    onClick={() => setShowServerSettings(true)}
+                    style={{ padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <FontAwesomeIcon icon={faServer} /> Server Settings
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -146,122 +806,873 @@ export default function MobileApp(props: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>{activeNav === 'channels' ? `Channels in ${selectedHaven}` : 'Messages'}</div>
 
+            {mobileCallsEnabled && (
+              <div
+                style={{
+                  borderRadius: 28,
+                  background: callInSelectedDM
+                    ? 'linear-gradient(145deg, rgba(15,23,42,0.95), rgba(2,6,23,0.85))'
+                    : 'linear-gradient(145deg, rgba(30,41,59,0.95), rgba(15,23,42,0.85))',
+                  padding: 22,
+                  marginBottom: 16,
+                  border: '1px solid rgba(148,163,184,0.25)',
+                  boxShadow: '0 25px 60px rgba(2,6,23,0.55)',
+                }}
+              >
+                {callInSelectedDM ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <span style={{ fontSize: 11, letterSpacing: 3, textTransform: 'uppercase', color: '#c7d2fe' }}>
+                        {callState === 'calling' ? 'Connecting' : 'Voice Connected'}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 20, fontWeight: 600, color: '#f8fafc' }}>{dmTitle || 'Direct Call'}</span>
+                        <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', color: '#cbd5f5', fontWeight: 600 }}>
+                          {callTimer}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 12, color: '#94a3b8' }}>
+                        {mergedCallParticipants.length} participant{mergedCallParticipants.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                        gap: 12,
+                      }}
+                    >
+                      {participantPreview.map((part) => (
+                        <div
+                          key={part.user}
+                          style={{
+                            borderRadius: 20,
+                            border: '1px solid rgba(148,163,184,0.25)',
+                            background: 'rgba(15,23,42,0.6)',
+                            padding: 12,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 10,
+                            boxShadow: '0 12px 30px rgba(0,0,0,0.35)',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 62,
+                              height: 62,
+                              borderRadius: 24,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontWeight: 700,
+                              fontSize: 20,
+                              textTransform: 'uppercase',
+                              color: '#fff',
+                              border: `2px solid ${part.status === 'connected' ? '#22c55e' : '#f97316'}`,
+                              background: 'linear-gradient(135deg, rgba(59,130,246,0.3), rgba(2,132,199,0.45))',
+                            }}
+                          >
+                            {participantInitials(part.user)}
+                          </div>
+                          <div style={{ fontWeight: 600, color: '#f8fafc' }}>{part.user === username ? 'You' : part.user}</div>
+                          <div style={{ fontSize: 12, color: 'rgba(226,232,240,0.65)' }}>
+                            {part.status === 'connected' ? 'Connected' : 'Ringing'}
+                          </div>
+                        </div>
+                      ))}
+                      {remainingParticipants > 0 && (
+                        <div
+                          style={{
+                            borderRadius: 20,
+                            border: '1px dashed rgba(148,163,184,0.4)',
+                            background: 'rgba(15,23,42,0.4)',
+                            padding: 12,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: 14,
+                            color: '#cbd5f5',
+                          }}
+                        >
+                          +{remainingParticipants} more
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', justifyContent: 'center' }}>
+                      <button
+                        type="button"
+                        onClick={toggleMute}
+                        disabled={!toggleMute}
+                        aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+                        style={{
+                          width: 70,
+                          height: 70,
+                          borderRadius: 24,
+                          border: 'none',
+                          background: muted ? '#dc2626' : 'rgba(15,23,42,0.85)',
+                          color: '#fff',
+                          fontSize: 22,
+                          boxShadow: '0 16px 30px rgba(0,0,0,0.35)',
+                          opacity: toggleMute ? 1 : 0.4,
+                        }}
+                      >
+                        <FontAwesomeIcon icon={muted ? faMicrophoneSlash : faMicrophone} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleDeafen}
+                        disabled={!toggleDeafen}
+                        aria-label={deafened ? 'Undeafen' : 'Deafen'}
+                        style={{
+                          width: 70,
+                          height: 70,
+                          borderRadius: 24,
+                          border: 'none',
+                          background: deafened ? '#f97316' : 'rgba(15,23,42,0.85)',
+                          color: '#fff',
+                          fontSize: 22,
+                          boxShadow: '0 16px 30px rgba(0,0,0,0.35)',
+                          opacity: toggleDeafen ? 1 : 0.4,
+                        }}
+                      >
+                        <FontAwesomeIcon icon={faVolumeXmark} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={endCall}
+                        disabled={!endCall}
+                        aria-label="End call"
+                        style={{
+                          flex: '1 0 180px',
+                          minHeight: 70,
+                          borderRadius: 24,
+                          border: 'none',
+                          background: 'linear-gradient(120deg, #ef4444, #b91c1c)',
+                          color: '#fff',
+                          fontSize: 18,
+                          fontWeight: 600,
+                          boxShadow: '0 20px 35px rgba(239,68,68,0.35)',
+                          opacity: endCall ? 1 : 0.4,
+                        }}
+                      >
+                        <FontAwesomeIcon icon={faPhone} /> Hang Up
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCallOverlay(true)}
+                      style={{
+                        width: '100%',
+                        padding: 12,
+                        borderRadius: 18,
+                        border: '1px solid rgba(148,163,184,0.25)',
+                        background: 'rgba(15,23,42,0.65)',
+                        color: '#e0e7ff',
+                        fontWeight: 600,
+                      }}
+                    >
+                      Open Call UI
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 18, color: '#f8fafc' }}>Start a voice call</div>
+                      <div style={{ fontSize: 13, color: '#cbd5f5', marginTop: 4 }}>
+                        {dmTitle ? `Call ${dmTitle}` : 'Invite someone to call'}
+                      </div>
+                      {callElsewhere && (
+                        <div style={{ fontSize: 12, color: '#fbbf24', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span className="dot" style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', display: 'inline-block' }} />
+                          Another call is active. Jump in to join.
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!startCall) return;
+                          startCall();
+                          setShowCallOverlay(true);
+                        }}
+                        className="btn-primary"
+                        style={{ flex: '1 0 180px', padding: 14, borderRadius: 999, opacity: startCall ? 1 : 0.6 }}
+                      >
+                        <FontAwesomeIcon icon={faPhone} /> Start Call
+                      </button>
+                      {callElsewhere && (
+                        <button
+                          type="button"
+                          onClick={jumpToActiveCall}
+                          className="btn-ghost"
+                          style={{ flex: '1 0 160px', padding: 14, borderRadius: 999 }}
+                        >
+                          View Active Call
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {showCallOverlay && callInSelectedDM && (
+              <div
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'rgba(2,6,23,0.92)',
+                  backdropFilter: 'blur(6px)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 130,
+                  padding: 16,
+                }}
+              >
+                <div
+                  style={{
+                    width: 'min(520px, 96vw)',
+                    borderRadius: 28,
+                    border: '1px solid rgba(148,163,184,0.3)',
+                    background: 'linear-gradient(160deg, rgba(13,23,42,0.95), rgba(5,8,22,0.92))',
+                    color: '#f8fafc',
+                    padding: 20,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 16,
+                    maxHeight: '90vh',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 12, letterSpacing: 2, textTransform: 'uppercase', color: '#94a3b8' }}>
+                        {dmTitle || 'Direct Call'}
+                      </div>
+                      <div style={{ fontSize: 22, fontWeight: 700 }}>Live Call</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontVariantNumeric: 'tabular-nums', color: '#cbd5f5' }}>{callTimer}</span>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => setShowCallOverlay(false)}
+                        style={{ padding: '6px 10px', borderRadius: 999 }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, overflowY: 'auto' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+                      {normalizedCallParticipants.map((participant) => (
+                        <div
+                          key={`overlay-participant-${participant.user}`}
+                          style={{
+                            borderRadius: 20,
+                            border: '1px solid rgba(148,163,184,0.25)',
+                            background: 'rgba(15,23,42,0.75)',
+                            padding: 12,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 70,
+                              height: 70,
+                              borderRadius: 24,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 22,
+                              fontWeight: 700,
+                              border: `2px solid ${participant.status === 'connected' ? '#22c55e' : '#f97316'}`,
+                              background: 'linear-gradient(130deg, rgba(59,130,246,0.35), rgba(14,165,233,0.35))',
+                            }}
+                          >
+                            {participantInitials(participant.user)}
+                          </div>
+                          <div style={{ fontWeight: 600 }}>{participant.user === username ? `${participant.user} (You)` : participant.user}</div>
+                          <div style={{ fontSize: 12, color: '#cbd5f5' }}>
+                            {participant.status === 'connected' ? 'Connected' : 'Ringing'}
+                          </div>
+                        </div>
+                      ))}
+                      {normalizedCallParticipants.length === 0 && (
+                        <div
+                          style={{
+                            borderRadius: 20,
+                            border: '1px dashed rgba(148,163,184,0.3)',
+                            background: 'rgba(15,23,42,0.6)',
+                            padding: 20,
+                            textAlign: 'center',
+                            color: '#94a3b8',
+                          }}
+                        >
+                          No other participants connected yet.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+                      <button
+                        type="button"
+                        onClick={toggleMute}
+                        disabled={!toggleMute}
+                        style={{
+                          flex: '1 0 140px',
+                          padding: 12,
+                          borderRadius: 18,
+                          border: 'none',
+                          background: muted ? '#dc2626' : 'rgba(15,23,42,0.85)',
+                          color: '#fff',
+                          fontWeight: 600,
+                          opacity: toggleMute ? 1 : 0.4,
+                        }}
+                      >
+                        <FontAwesomeIcon icon={muted ? faMicrophoneSlash : faMicrophone} /> {muted ? 'Unmute' : 'Mute'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleDeafen}
+                        disabled={!toggleDeafen}
+                        style={{
+                          flex: '1 0 140px',
+                          padding: 12,
+                          borderRadius: 18,
+                          border: 'none',
+                          background: deafened ? '#f97316' : 'rgba(15,23,42,0.85)',
+                          color: '#fff',
+                          fontWeight: 600,
+                          opacity: toggleDeafen ? 1 : 0.4,
+                        }}
+                      >
+                        <FontAwesomeIcon icon={faVolumeXmark} /> {deafened ? 'Undeafen' : 'Deafen'}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCallOverlay(false);
+                        if (endCall) endCall();
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: 14,
+                        borderRadius: 22,
+                        border: 'none',
+                        background: 'linear-gradient(120deg, #ef4444, #b91c1c)',
+                        color: '#fff',
+                        fontWeight: 700,
+                        fontSize: 16,
+                      }}
+                    >
+                      End Call
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* reserve space at the bottom to avoid overlap with fixed nav + composer */}
             <div ref={messagesRef} onScroll={(e) => {
               const el = e.currentTarget as HTMLDivElement;
               const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
               setIsAtBottom(atBottom);
             }} style={{ flex: 1, overflowY: 'auto', paddingBottom: safeBottomPad }}>
-              {messages.length === 0 && <div style={{ color: '#94a3b8' }}>No messages yet.</div>}
-              {messages.map((m, idx) => (
-                <div key={m.id || idx} style={{ padding: 10, borderRadius: 10, background: m.user === username ? '#05203a' : '#071127', marginBottom: 8 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{m.user}</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn-ghost" title="Reply" onClick={() => handleReply && handleReply(m)} style={{ padding: 6 }}>
-                        <FontAwesomeIcon icon={faReply} />
-                      </button>
-                      {m.user === username && (
-                        <>
-                          <button className="btn-ghost" title="Edit" onClick={() => handleEdit && handleEdit(m.id, m.text)} style={{ padding: 6 }}>
-                            <FontAwesomeIcon icon={faEdit} />
+              <div style={{ maxWidth: maxContentWidth ? `${maxContentWidth}px` : '100%', margin: '0 auto', width: '100%' }}>
+              {messages.length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED' }}>No messages yet.</div>}
+              {messages.map((m, idx) => {
+                const messageKey = m.id ? `${m.id}-${idx}` : `${m.user}-${m.timestamp}-${idx}`;
+                const revealKey = `mobile-msg-${messageKey}`;
+                const prevMessage = messages[idx - 1];
+                const showDateDivider = idx === 0 || !isSameDay(prevMessage?.timestamp, m.timestamp);
+                const isSystemMessage = !!(m as any).systemType;
+                const prevIsSystem = !!(prevMessage as any)?.systemType;
+                const isBubbles = messageStyle === "bubbles";
+                const isClassic = messageStyle === "classic";
+                const isMinimalLog = messageStyle === "minimal_log";
+                const isFocusStyle = messageStyle === "focus";
+                const isThreadForward = messageStyle === "thread_forward";
+                const isRetro = messageStyle === "retro";
+                const groupingWindowMs = messageGrouping === "aggressive" ? 30 * 60 * 1000 : messageGrouping === "compact" ? 5 * 60 * 1000 : 0;
+                const isGrouped =
+                  messageGrouping !== "none" &&
+                  !showDateDivider &&
+                  !!prevMessage &&
+                  !isSystemMessage &&
+                  !prevIsSystem &&
+                  prevMessage.user === m.user &&
+                  (m.timestamp - prevMessage.timestamp) <= groupingWindowMs;
+                const replyCount = m.id ? replyCounts[m.id] || 0 : 0;
+                const hasReplies = replyCount > 0;
+                const showHeader = !isGrouped && !isSystemMessage;
+                const showAvatar = showHeader && !readingMode;
+                const showTimestamp = (showTimestamps !== false) && (!isGrouped || timestampGranularity === "perMessage");
+                const timeMeta = showTimestamp ? formatTimestampLabel(m.timestamp) : null;
+                const systemKey = m.id || messageKey;
+                const isCollapsible = isSystemMessage && systemMessageEmphasis === "collapsible";
+                const isCollapsed = isCollapsible && (collapsedSystemMessages[systemKey] ?? true);
+                const systemOpacity = isSystemMessage
+                  ? (systemMessageEmphasis === "dimmed" ? 0.65 : systemMessageEmphasis === "normal" ? 0.9 : 1)
+                  : 1;
+                const dateLabel = formatDateLine(m.timestamp);
+                const ownMessage = m.user === username;
+                const bubbleBackground = ownMessage ? (accentIntensity === "subtle" ? COLOR_PANEL_STRONG : COLOR_PANEL_STRONG) : COLOR_CARD;
+                const baseBackground = isClassic
+                  ? COLOR_PANEL_STRONG
+                  : isMinimalLog
+                    ? "transparent"
+                    : isRetro
+                      ? "rgba(6,10,20,0.85)"
+                      : isFocusStyle
+                        ? "rgba(8,14,26,0.62)"
+                        : bubbleBackground;
+                const avatarUrl =
+                  (m as any).avatarUrl ||
+                  userProfileCache[m.user]?.avatarUrl ||
+                  '/favicon.ico';
+                let cardBackground = isBubbles ? bubbleBackground : baseBackground;
+                const cardRadius = isBubbles ? 14 : isRetro ? 6 : 12;
+                let cardShadow = isMinimalLog ? 'none' : '0 10px 30px rgba(0,0,0,0.35)';
+                let cardBorder = isMinimalLog ? 'none' : `1px solid ${COLOR_PANEL_ALT}`;
+                const threadBorder = isThreadForward && hasReplies ? '3px solid rgba(148,163,184,0.25)' : undefined;
+                const focusDim = isFocusStyle && idx < Math.max(0, messages.length - 20);
+                const timestampFontFamily = (isMinimalLog || isRetro) ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' : undefined;
+                if (isSystemMessage && (isMinimalLog || isBubbles || isRetro)) {
+                  cardBackground = "transparent";
+                  cardBorder = "none";
+                  cardShadow = "none";
+                }
+                const systemContent = isSystemMessage ? (() => {
+                  const label = m.text || '';
+                  const timeLabel = showTimestamp && timeMeta ? timeMeta.label : null;
+                  if (isMinimalLog) {
+                    return (
+                      <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED, letterSpacing: 0.4 }}>
+                        -- {label} --
+                        {timeLabel && <span style={{ marginLeft: 8, fontFamily: timestampFontFamily }}>[{timeLabel}]</span>}
+                      </div>
+                    );
+                  }
+                  if (isRetro) {
+                    return (
+                      <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED, fontFamily: timestampFontFamily }}>
+                        [SYSTEM] {label}
+                        {timeLabel && <span style={{ marginLeft: 8 }}>[{timeLabel}]</span>}
+                      </div>
+                    );
+                  }
+                  if (isBubbles) {
+                    return (
+                      <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                        {label}
+                        {timeLabel && <span style={{ marginLeft: 8 }}>{timeLabel}</span>}
+                      </div>
+                    );
+                  }
+                  if (isClassic || isThreadForward) {
+                    return (
+                      <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {timeLabel && <span style={{ fontFamily: timestampFontFamily }}>{timeLabel}</span>}
+                        <span>{label}</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                      {label}
+                      {timeLabel && <span style={{ marginLeft: 8 }}>{timeLabel}</span>}
+                    </div>
+                  );
+                })() : null;
+                return (
+                  <Fragment key={messageKey}>
+                    {showDateDivider && (
+                      <div style={{ textAlign: 'center', margin: '18px 0 12px', position: 'relative' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '4px 14px',
+                            borderRadius: 999,
+                            border: BORDER,
+                            background: COLOR_PANEL,
+                            color: COLOR_TEXT_MUTED,
+                            fontSize: 11,
+                            letterSpacing: 0.4,
+                          }}
+                        >
+                          {dateLabel}
+                        </span>
+                      </div>
+                    )}
+                    {isCollapsible && isCollapsed ? (
+                      <div
+                        data-mid={m.id}
+                        style={{
+                          padding: isMinimalLog ? 6 : 8,
+                          borderRadius: cardRadius,
+                          background: cardBackground,
+                          marginBottom: isMinimalLog ? 0 : 12,
+                          boxShadow: cardShadow,
+                          border: cardBorder,
+                          borderLeft: threadBorder,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          opacity: focusDim ? 0.6 : systemOpacity,
+                        }}
+                        onClick={() => setCollapsedSystemMessages((prev) => ({ ...prev, [systemKey]: false }))}
+                      >
+                        <FontAwesomeIcon icon={faChevronRight} />
+                        <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {m.text}
+                        </div>
+                        {showTimestamp && timeMeta && (
+                          <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }} title={timeMeta.title || undefined}>{timeMeta.label}</span>
+                        )}
+                      </div>
+                    ) : (
+                    <div
+                      data-mid={m.id}
+                      style={{
+                        padding: isMinimalLog ? 6 : 10,
+                        borderRadius: cardRadius,
+                        background: cardBackground,
+                        marginBottom: isMinimalLog ? 0 : (isGrouped ? 6 : 12),
+                        boxShadow: cardShadow,
+                        border: cardBorder,
+                        borderLeft: threadBorder,
+                        opacity: focusDim ? 0.6 : systemOpacity,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          {showAvatar && (
+                            <div style={{ position: 'relative', width: 38, height: 38, flex: '0 0 auto' }}>
+                              <img
+                                src={avatarUrl}
+                                alt={m.user}
+                                style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: BORDER }}
+                              />
+                              <span
+                                style={{
+                                  position: 'absolute',
+                                  width: 10,
+                                  height: 10,
+                                  borderRadius: '50%',
+                                  border: `2px solid ${COLOR_PANEL}`,
+                                  background: statusColor(presenceMap[m.user]),
+                                  bottom: 2,
+                                  right: 2,
+                                }}
+                              />
+                            </div>
+                          )}
+                          {showHeader && (
+                            <div style={{ display: 'flex', flexDirection: isMinimalLog ? 'row' : 'column', gap: isMinimalLog ? 8 : 2, alignItems: isMinimalLog ? 'center' : 'flex-start' }}>
+                              {isMinimalLog && showTimestamp && timeMeta && (
+                                <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED, fontFamily: timestampFontFamily }} title={timeMeta.title || undefined}>[{timeMeta.label}]</span>
+                              )}
+                              <span style={{ color: COLOR_TEXT, fontWeight: 600, fontSize: 13 }}>
+                                {renderName(m.user, revealKey)}
+                              </span>
+                              {isThreadForward && hasReplies && (
+                                <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.2)', color: '#cbd5e1', background: 'rgba(2,6,23,0.6)' }}>
+                                  {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
+                                </span>
+                              )}
+                              {!isMinimalLog && showTimestamp && timeMeta && (
+                                <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED, fontFamily: timestampFontFamily }} title={timeMeta.title || undefined}>{timeMeta.label}</span>
+                              )}
+                            </div>
+                          )}
+                          {!showHeader && showTimestamp && timeMeta && (
+                            <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED, fontFamily: timestampFontFamily }} title={timeMeta.title || undefined}>{timeMeta.label}</span>
+                          )}
+                        </div>
+                        {!readingMode && !isSystemMessage && (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button className="btn-ghost" title="Reply" onClick={() => handleReply && handleReply(m)} style={{ padding: 6 }}>
+                              <FontAwesomeIcon icon={faReply} />
+                            </button>
+                            {ownMessage && (
+                              <>
+                                <button className="btn-ghost" title="Edit" onClick={() => handleEdit && handleEdit(m.id, m.text)} style={{ padding: 6 }}>
+                                  <FontAwesomeIcon icon={faEdit} />
+                                </button>
+                                <button className="btn-ghost" title="Delete" onClick={() => handleDelete && handleDelete(m.id)} style={{ padding: 6 }}>
+                                  <FontAwesomeIcon icon={faTrash} />
+                                </button>
+                              </>
+                            )}
+                            <button className="btn-ghost" title="React" onClick={() => setOpenEmojiFor(openEmojiFor === m.id ? null : m.id)} style={{ padding: 6 }}>
+                              <span style={{ fontSize: 14 }}>dY~S</span>
+                            </button>
+                          </div>
+                        )}
+                        {isCollapsible && (
+                          <button
+                            className="btn-ghost"
+                            title="Collapse"
+                            onClick={() => setCollapsedSystemMessages((prev) => ({ ...prev, [systemKey]: true }))}
+                            style={{ padding: 6 }}
+                          >
+                            <FontAwesomeIcon icon={faChevronDown} />
                           </button>
-                          <button className="btn-ghost" title="Delete" onClick={() => handleDelete && handleDelete(m.id)} style={{ padding: 6 }}>
-                            <FontAwesomeIcon icon={faTrash} />
-                          </button>
-                        </>
+                        )}
+                      </div>
+                      <div style={{ color: COLOR_TEXT, marginTop: 8, whiteSpace: 'pre-wrap', textAlign: isSystemMessage && (isMinimalLog || isBubbles || isRetro) ? 'center' : undefined }}>
+                        {isSystemMessage ? systemContent : m.text}
+                      </div>
+                      <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {(m.reactions && Object.keys(m.reactions).length > 0 && !readingMode)
+                          ? Object.entries(m.reactions).map(([emo, users]: any) => {
+                              const count = Array.isArray(users) ? users.length : 0;
+                              const active = Array.isArray(users) && users.includes(username);
+                              return (
+                                <button
+                                  key={emo}
+                                  onClick={() => toggleReaction && toggleReaction(m.id, emo)}
+                                  className="btn-ghost"
+                                  style={{
+                                    padding: isMinimalLog ? '2px 6px' : '4px 8px',
+                                    borderRadius: 12,
+                                    background: active ? COLOR_PANEL_ALT : 'transparent',
+                                    border: '1px solid rgba(255,255,255,0.08)',
+                                    color: active ? '#93c5fd' : isMinimalLog ? COLOR_TEXT_MUTED : COLOR_TEXT,
+                                    opacity: isMinimalLog ? 0.85 : 1,
+                                  }}
+                                >
+                                  <span style={{ marginRight: 6, fontSize: isMinimalLog ? 12 : 14 }}>{emo}</span>
+                                  <span style={{ fontSize: isMinimalLog ? 10 : 12, opacity: 0.9 }}>{count}</span>
+                                </button>
+                              );
+                            })
+                          : null}
+                      </div>
+
+                      {/* Inline edit UI */}
+                      {editId === m.id && (
+                        <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                          <input value={editText || ''} onChange={(e) => setEditText && setEditText(e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 8, background: COLOR_CARD_ALT, border: `1px solid ${COLOR_PANEL_ALT}`, color: COLOR_TEXT }} />
+                          <button className="btn-primary" onClick={() => handleEditSubmit && handleEditSubmit(m.id)} style={{ padding: '6px 10px', borderRadius: 8 }}>Save</button>
+                          <button className="btn-ghost" onClick={() => cancelEdit && cancelEdit()} style={{ padding: '6px 10px', borderRadius: 8 }}>Cancel</button>
+                        </div>
                       )}
-                      <button className="btn-ghost" title="React" onClick={() => setOpenEmojiFor(openEmojiFor === m.id ? null : m.id)} style={{ padding: 6 }}>
-                        <span style={{ fontSize: 14 }}>😊</span>
-                      </button>
+                      {/* emoji picker inline */}
+                      {openEmojiFor === m.id && (
+                        <div style={{ marginTop: 8, padding: 8, background: COLOR_CARD_ALT, borderRadius: 10, border: `1px solid ${COLOR_PANEL_ALT}` }}>
+                          <EmojiPicker onPick={(char) => { toggleReaction && toggleReaction(m.id, char); setOpenEmojiFor(null); }} onClose={() => setOpenEmojiFor(null)} />
+                        </div>
+                      )}
+                      {m.replyToId && (() => {
+                        const parent = messages.find(msg => msg.id === m.replyToId);
+                        if (!parent) return null;
+                        return (
+                          <div
+                            onClick={() => {
+                              if (!parent.id) return;
+                              const el = messagesRef.current?.querySelector(`[data-mid="${parent.id}"]`) as HTMLElement | null;
+                              if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }}
+                            style={{ fontSize: 12, color: COLOR_TEXT_MUTED, background: COLOR_CARD_ALT, border: `1px solid ${COLOR_PANEL_ALT}`, borderRadius: 8, padding: 6, marginTop: 10, cursor: 'pointer' }}
+                          >
+                            <FontAwesomeIcon icon={faReply} style={{ marginRight: 6 }} />
+                            Replying to <strong>{renderNameWithPrefix(parent.user, '@', revealKey)}</strong>: <span style={{ opacity: 0.8 }}>{parent.text.slice(0, 64)}{parent.text.length > 64 ? "..." : ""}</span>
+                          </div>
+                        );
+                      })()}
                     </div>
-                  </div>
-                  <div style={{ color: '#e5e7eb', marginTop: 6 }}>{m.text}</div>
-                  <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {(m.reactions && Object.keys(m.reactions).length > 0) ? Object.entries(m.reactions).map(([emo, users]: any) => {
-                      const count = Array.isArray(users) ? users.length : 0;
-                      const active = Array.isArray(users) && users.includes(username);
-                      return (
-                        <button key={emo} onClick={() => toggleReaction && toggleReaction(m.id, emo)} className="btn-ghost" style={{ padding: '4px 8px', borderRadius: 12, background: active ? '#05203a' : 'transparent', border: '1px solid rgba(255,255,255,0.03)', color: active ? '#93c5fd' : '#e5e7eb' }}>
-                          <span style={{ marginRight: 6 }}>{emo}</span>
-                          <span style={{ fontSize: 12, opacity: 0.9 }}>{count}</span>
-                        </button>
-                      );
-                    }) : null}
-                  </div>
-                  <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 6 }}>{new Date(m.timestamp || Date.now()).toLocaleTimeString()}</div>
-
-                  {/* Inline edit UI */}
-                  {editId === m.id && (
-                    <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                      <input value={editText || ''} onChange={(e) => setEditText && setEditText(e.target.value)} style={{ flex: 1, padding: 8, borderRadius: 8, background: '#031226', border: '1px solid #0f172a', color: '#e5e7eb' }} />
-                      <button className="btn-primary" onClick={() => handleEditSubmit && handleEditSubmit(m.id)} style={{ padding: '6px 10px', borderRadius: 8 }}>Save</button>
-                      <button className="btn-ghost" onClick={() => cancelEdit && cancelEdit()} style={{ padding: '6px 10px', borderRadius: 8 }}>Cancel</button>
-                    </div>
-                  )}
-                  {/* emoji picker inline */}
-                  {openEmojiFor === m.id && (
-                    <div style={{ marginTop: 8, padding: 8, background: '#06101a', borderRadius: 10, border: '1px solid #0f172a' }}>
-                      <EmojiPicker onPick={(char) => { toggleReaction && toggleReaction(m.id, char); setOpenEmojiFor(null); }} onClose={() => setOpenEmojiFor(null)} />
-                    </div>
-                  )}
-                </div>
-              ))}
+                    )}
+                  </Fragment>
+                );
+              })}
               {typingUsers && typingUsers.length > 0 && (
-                <div style={{ color: '#9ca3af', fontSize: 13 }}>{typingUsers.join(', ')} typing…</div>
+                <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>{typingUsers.join(', ')} typing...</div>
               )}
-            </div>
-
-            <div style={{ borderTop: '1px solid #0f172a', paddingTop: 8, marginBottom: isMobile ? 8 : 0 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                  placeholder="Message #channel or DM"
-                  style={{ flex: 1, padding: 10, borderRadius: 10, background: '#031226', border: '1px solid #0f172a', color: '#e5e7eb' }}
-                />
-                <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '8px 12px', borderRadius: 10 }}>Send</button>
               </div>
             </div>
+
+            {canCompose && <div style={{ borderTop: `1px solid ${COLOR_PANEL_ALT}`, paddingTop: 8, marginBottom: isMobile ? 8 : 0 }} />}
           </div>
         )}
       </div>
 
+      {dmMenuOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 101 }}>
+          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
+              <div style={{ fontWeight: 600 }}>Direct Messages</div>
+              <button className="btn-ghost" onClick={() => setDmMenuOpen(false)} style={{ padding: '4px 8px' }}>
+                <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
+              </button>
+            </div>
+            <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
+              {dms.length === 0 && (<div style={{ color: 'COLOR_TEXT_MUTED', fontSize: 13 }}>No direct messages.</div>)}
+              {dms.map((dm) => {
+                const revealKey = `mobile-dm-menu-${dm.id}`;
+                const handles = renderDMHandlesNode(dm);
+                const isGroup = isGroupDMThread(dm);
+                const members = dmMembersWithoutSelf(dm);
+                const statusMessage = !isGroup && members[0] ? statusMessageMap[members[0]] : "";
+                const richPresence = !isGroup && members[0] ? formatRichPresence(richPresenceMap[members[0]]) : null;
+                return (
+                  <div
+                    key={dm.id}
+                    onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setDmMenuOpen(false); setShowMobileNav(false); setActiveNav('activity'); }}
+                    style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ fontWeight: 600, display: 'flex', flexWrap: 'wrap', gap: 4 }}>{renderDMTitleNode(dm, revealKey)}</span>
+                      {handles && (
+                        <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {handles}
+                        </span>
+                      )}
+                      {!isGroup && statusMessage && (
+                        <span style={{ fontSize: 11, color: '#cbd5f5' }}>{statusMessage}</span>
+                      )}
+                      {!isGroup && richPresence && (
+                        <span style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div style={{ flex: 1 }} onClick={() => setDmMenuOpen(false)} />
+        </div>
+      )}
+      {channelMenuOpen && selectedHaven && selectedHaven !== '__dms__' && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 101 }}>
+          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Channels</div>
+                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{selectedHaven}</div>
+              </div>
+              <button className="btn-ghost" onClick={() => setChannelMenuOpen(false)} style={{ padding: '4px 8px' }}>
+                <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
+              </button>
+            </div>
+            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
+              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Switch Haven</div>
+              {Object.keys(havens).map((h) => (
+                <button
+                  key={h}
+                  className="btn-ghost"
+                  onClick={() => {
+                    setSelectedHaven(h);
+                    const firstChannel = havens[h]?.[0] || '';
+                    setSelectedChannel && setSelectedChannel(firstChannel);
+                  }}
+                  style={{
+                    width: '100%',
+                    justifyContent: 'flex-start',
+                    marginBottom: 6,
+                    borderRadius: 8,
+                    border: selectedHaven === h ? `1px solid ${accent}` : BORDER,
+                    color: selectedHaven === h ? accent : COLOR_TEXT,
+                    padding: '8px 10px',
+                  }}
+                >
+                  {h}
+                </button>
+              ))}
+            </div>
+            <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
+              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
+              {(havens[selectedHaven] || []).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED', fontSize: 13 }}>No channels yet.</div>}
+              {(havens[selectedHaven] || []).map((channel) => (
+                <div
+                  key={channel}
+                  onClick={() => {
+                    setSelectedChannel && setSelectedChannel(channel);
+                    setChannelMenuOpen(false);
+                    setShowMobileNav(false);
+                    setActiveNav('channels');
+                  }}
+                  style={{
+                    padding: '8px 6px',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    background: selectedChannel === channel ? COLOR_CARD : 'transparent',
+                    color: selectedChannel === channel ? '#93c5fd' : COLOR_TEXT,
+                  }}
+                >
+                  #{channel}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ flex: 1 }} onClick={() => setChannelMenuOpen(false)} />
+        </div>
+      )}
       {/* Mobile navigation drawer */}
       {showMobileNav && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 100 }}>
-          <div style={{ width: '82vw', maxWidth: 360, background: '#0b1222', borderRight: '1px solid #2a3344', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
+          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Navigate</div>
               <button className="btn-ghost" onClick={() => setShowMobileNav(false)} style={{ padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
               </button>
             </div>
-            <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb' }}>
+            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Havens</div>
               {Object.keys(havens).map((h) => (
-                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? '#111a2e' : 'transparent', color: selectedHaven === h ? '#93c5fd' : '#e5e7eb' }}>
+                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT }}>
                   {h}
                 </div>
               ))}
             </div>
-            <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb' }}>
+            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
               {(havens[selectedHaven] || []).map((ch) => (
-                <div key={ch} onClick={() => { setSelectedChannel && setSelectedChannel(ch); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('activity'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === ch ? '#111a2e' : 'transparent', color: selectedChannel === ch ? '#93c5fd' : '#e5e7eb' }}>
+                <div key={ch} onClick={() => { setSelectedChannel && setSelectedChannel(ch); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('activity'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT }}>
                   #{ch}
                 </div>
               ))}
             </div>
-            <div style={{ padding: 12, color: '#e5e7eb', flex: 1, overflowY: 'auto' }}>
+            <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Direct Messages</div>
-              {dms.length === 0 && (<div style={{ color: '#94a3b8', fontSize: 13 }}>No direct messages.</div>)}
-              {dms.map((dm) => (
-                <div key={dm.id} onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setShowMobileNav(false); setActiveNav('activity'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? '#111a2e' : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : '#e5e7eb', display: 'flex', alignItems: 'center' }}>
-                  <div style={{ marginRight: 8 }}>{dm.users.filter(u => u !== username).join(', ')}</div>
-                </div>
-              ))}
+              {dms.length === 0 && (<div style={{ color: 'COLOR_TEXT_MUTED', fontSize: 13 }}>No direct messages.</div>)}
+              {dms.map((dm) => {
+                const revealKey = `mobile-dm-drawer-${dm.id}`;
+                const handles = renderDMHandlesNode(dm);
+                const isGroup = isGroupDMThread(dm);
+                const members = dmMembersWithoutSelf(dm);
+                const statusMessage = !isGroup && members[0] ? statusMessageMap[members[0]] : "";
+                const richPresence = !isGroup && members[0] ? formatRichPresence(richPresenceMap[members[0]]) : null;
+                return (
+                  <div
+                    key={dm.id}
+                    onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setShowMobileNav(false); setActiveNav('activity'); }}
+                    style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ fontWeight: 600, display: 'flex', flexWrap: 'wrap', gap: 4 }}>{renderDMTitleNode(dm, revealKey)}</span>
+                      {handles && (
+                        <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {handles}
+                        </span>
+                      )}
+                      {!isGroup && statusMessage && (
+                        <span style={{ fontSize: 11, color: '#cbd5f5' }}>{statusMessage}</span>
+                      )}
+                      {!isGroup && richPresence && (
+                        <span style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div style={{ flex: 1 }} onClick={() => setShowMobileNav(false)} />
@@ -292,6 +1703,36 @@ export default function MobileApp(props: Props) {
           >
             Jump to bottom
           </button>
+        </div>
+      )}
+      {canCompose && (
+        <div
+          style={{
+            position: 'sticky',
+            bottom: 0,
+            background: COLOR_CARD_ALT,
+            padding: 10,
+            borderTop: `1px solid ${COLOR_PANEL_ALT}`,
+            zIndex: 80,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
+              placeholder="Message #channel or DM"
+              style={{ flex: 1, padding: 10, borderRadius: 10, background: COLOR_CARD_ALT, border: `1px solid ${COLOR_PANEL_ALT}`, color: COLOR_TEXT }}
+            />
+            <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '8px 12px', borderRadius: 10 }}>
+              Send
+            </button>
+          </div>
         </div>
       )}
       {/* Nav controller (desktop hidden, mobile bottom bar visible) */}

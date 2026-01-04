@@ -9,20 +9,24 @@ interface HelpTooltipProps {
 export default function HelpTooltip({ tooltip, children }: HelpTooltipProps) {
   const [visible, setVisible] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [alignCenter, setAlignCenter] = useState(false);
   const iconRef = useRef<HTMLSpanElement>(null);
 
   const showTooltip = () => {
     if (iconRef.current) {
       const rect = iconRef.current.getBoundingClientRect();
+      const coarse = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
       setCoords({
         top: rect.bottom + window.scrollY + 6,
-        left: rect.left + window.scrollX,
+        left: coarse ? rect.left + rect.width / 2 + window.scrollX : rect.left + window.scrollX,
       });
+      setAlignCenter(coarse);
     }
     setVisible(true);
   };
 
   const hideTooltip = () => setVisible(false);
+  const toggleTooltip = () => setVisible((prev) => !prev);
 
   return (
     <>
@@ -30,6 +34,9 @@ export default function HelpTooltip({ tooltip, children }: HelpTooltipProps) {
         ref={iconRef}
         onMouseEnter={showTooltip}
         onMouseLeave={hideTooltip}
+        onClick={toggleTooltip}
+        onTouchStart={toggleTooltip}
+        onBlur={hideTooltip}
         tabIndex={0}
         className="inline-flex items-center"
       >
@@ -43,6 +50,7 @@ export default function HelpTooltip({ tooltip, children }: HelpTooltipProps) {
             style={{
               top: coords.top,
               left: coords.left,
+              transform: alignCenter ? "translateX(-50%)" : undefined,
               whiteSpace: "pre-line",
               pointerEvents: "none",
             }}

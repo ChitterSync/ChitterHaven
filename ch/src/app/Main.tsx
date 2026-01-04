@@ -1,12 +1,12 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import io, { Socket } from "socket.io-client";
 import ReactMarkdown from "react-markdown";
 import dynamic from "next/dynamic";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faReply, faEdit, faTrash, faGear, faThumbtack, faFaceSmile, faXmark, faAt, faPaperclip, faClockRotateLeft, faUsers, faHashtag, faEnvelope, faPlus, faServer, faBars, faMagnifyingGlass, faPaperPlane, faLock, faPhone, faMicrophone, faMicrophoneSlash, faCopy, faLink, faVolumeXmark, faHouse, faUser } from "@fortawesome/free-solid-svg-icons";
+import { faReply, faEdit, faTrash, faGear, faThumbtack, faFaceSmile, faXmark, faAt, faPaperclip, faClockRotateLeft, faUsers, faHashtag, faEnvelope, faPlus, faServer, faBars, faMagnifyingGlass, faPaperPlane, faLock, faPhone, faMicrophone, faMicrophoneSlash, faCopy, faLink, faVolumeXmark, faHouse, faUser, faHeadphonesSimple, faSlash, faVideo, faVideoSlash, faDisplay, faUpRightAndDownLeftFromCenter, faDownLeftAndUpRightToCenter, faUserPlus, faChevronRight, faChevronDown, faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
 import { EMOJI_LIST, filterEmojis, CATEGORIES } from "./emojiData";
 import { parseCHInline, resolveCH } from "./chTokens";
 
@@ -17,10 +17,188 @@ import NavController from "./components/NavController";
 import HomePanel from "./components/HomePanel";
 import ProfilePanel from "./components/ProfilePanel";
 import MobileApp from "./components/MobileApp";
+import Oneko from "./components/Oneko";
 import EmojiPicker from "./components/EmojiPicker";
 
 const SOUND_DIALING = "/sounds/Dialing.wav";
 const SOUND_PING = "/sounds/Ping.wav";
+const SOUND_MUTE = "/sounds/UI/droplet/mute.wav";
+const SOUND_UNMUTE = "/sounds/UI/droplet/unmute.wav";
+const DEFAULT_PIP_WIDTH = 360;
+const DEFAULT_PIP_HEIGHT = 220;
+const MIN_PIP_WIDTH = 260;
+const MIN_PIP_HEIGHT = 170;
+const PIP_MARGIN = 12;
+const PIP_TOP_MARGIN = 72;
+const MAX_GROUP_DM_MEMBERS = 25;
+const MAX_GROUP_DM_TARGETS = MAX_GROUP_DM_MEMBERS - 1;
+const DEFAULT_CUSTOM_THEME_GRADIENT = "linear-gradient(135deg, rgba(59,130,246,0.85), rgba(30,27,75,0.95))";
+const COLOR_PANEL = "var(--ch-panel)";
+const COLOR_PANEL_ALT = "var(--ch-panel-alt)";
+const COLOR_PANEL_STRONG = "var(--ch-panel-strong)";
+const COLOR_CARD = "var(--ch-card)";
+const COLOR_CARD_ALT = "var(--ch-card-alt)";
+const COLOR_BORDER = "var(--ch-border)";
+const COLOR_TEXT = "var(--ch-text)";
+const COLOR_TEXT_MUTED = "var(--ch-text-muted)";
+const BORDER = `1px solid ${COLOR_BORDER}`;
+const BORDER_THICK = `2px solid ${COLOR_BORDER}`;
+type ThemeStop = { color: string; position: number };
+type AppearanceSettings = {
+  messageGrouping?: "none" | "compact" | "aggressive";
+  messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
+  timeFormat?: "12h" | "24h";
+  timeDisplay?: "absolute" | "relative" | "hybrid";
+  timestampGranularity?: "perMessage" | "perGroup";
+  systemMessageEmphasis?: "prominent" | "normal" | "dimmed" | "collapsible";
+  maxContentWidth?: number | null;
+  accentIntensity?: "subtle" | "normal" | "bold";
+  readingMode?: boolean;
+};
+const DEFAULT_CUSTOM_THEME_STOPS: ThemeStop[] = [
+  { color: "#60a5fa", position: 0 },
+  { color: "#4338ca", position: 55 },
+  { color: "#7c3aed", position: 100 },
+];
+const DEFAULT_CUSTOM_THEME_ANGLE = 135;
+const APPEARANCE_WIDTHS = [720, 840, 960, 1080];
+const MAX_STATUS_MESSAGE = 140;
+const MAX_RICH_TITLE = 80;
+const MAX_RICH_DETAILS = 160;
+
+const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const cloneThemeStops = (stops: ThemeStop[]): ThemeStop[] => stops.map((stop) => ({ ...stop }));
+
+const gradientStopRegex = /(rgba?\([^\)]+\)|#[0-9a-f]{3,8})(?:\s+(-?\d+(?:\.\d+)?))?/gi;
+
+const sanitizeThemeStops = (incoming?: ThemeStop[] | null): ThemeStop[] => {
+  if (!Array.isArray(incoming)) return cloneThemeStops(DEFAULT_CUSTOM_THEME_STOPS);
+  const normalized = incoming
+    .filter((stop): stop is ThemeStop => !!stop && typeof stop.color === "string")
+    .map((stop) => ({
+      color: stop.color.trim() || "#ffffff",
+      position: clampNumber(Number.isFinite(Number(stop.position)) ? Number(stop.position) : 0, 0, 100),
+    }))
+    .filter((stop) => stop.color.length > 0)
+    .slice(0, 5);
+  if (normalized.length < 2) return cloneThemeStops(DEFAULT_CUSTOM_THEME_STOPS);
+  return normalized.sort((a, b) => a.position - b.position);
+};
+
+const parseStopsFromGradient = (gradient?: string): ThemeStop[] | null => {
+  if (!gradient) return null;
+  const matches = Array.from(gradient.matchAll(gradientStopRegex));
+  if (!matches.length) return null;
+  const stops = matches
+    .map((match, idx, list) => {
+      const color = match[1]?.trim();
+      if (!color) return null;
+      const posRaw = match[2];
+      if (posRaw !== undefined) {
+        return { color, position: clampNumber(Number(posRaw), 0, 100) };
+      }
+      if (list.length === 1) {
+        return { color, position: idx === 0 ? 0 : 100 };
+      }
+      const inferred = (idx / (list.length - 1)) * 100;
+      return { color, position: clampNumber(inferred, 0, 100) };
+    })
+    .filter((stop): stop is ThemeStop => !!stop);
+  if (stops.length < 2) return null;
+  return cloneThemeStops(stops.slice(0, 5)).sort((a, b) => a.position - b.position);
+};
+
+const normalizeThemeAngle = (value?: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_CUSTOM_THEME_ANGLE;
+  const normalized = parsed % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+};
+
+const parseAngleFromGradient = (gradient?: string): number | null => {
+  if (!gradient) return null;
+  const match = gradient.match(/linear-gradient\(([^,]+),/i);
+  if (!match) return null;
+  const token = match[1]?.trim();
+  if (!token) return null;
+  const angleMatch = token.match(/(-?\d+(?:\.\d+)?)deg/i);
+  if (!angleMatch) return null;
+  return normalizeThemeAngle(Number(angleMatch[1]));
+};
+
+const sanitizeStatusMessage = (value?: string) => {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, MAX_STATUS_MESSAGE) : "";
+};
+
+const sanitizeRichPresence = (raw?: { type?: string; title?: string; details?: string } | null) => {
+  if (!raw || typeof raw !== "object") return undefined;
+  const type = raw.type === "game" || raw.type === "music" || raw.type === "custom" ? raw.type : undefined;
+  const title = typeof raw.title === "string" ? raw.title.trim().slice(0, MAX_RICH_TITLE) : "";
+  const details = typeof raw.details === "string" ? raw.details.trim().slice(0, MAX_RICH_DETAILS) : "";
+  if (!type || !title) return undefined;
+  return details ? { type, title, details } : { type, title };
+};
+
+const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
+  try {
+    const resolved = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
+    const cycle = resolved.hourCycle;
+    if (cycle === "h23" || cycle === "h24") return "24h";
+  } catch {}
+  return "12h";
+};
+
+const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistingSettings = false): AppearanceSettings => {
+  const base = raw && typeof raw === "object" ? { ...raw } : {};
+  const messageStyle =
+    base.messageStyle === "bubbles" ||
+    base.messageStyle === "classic" ||
+    base.messageStyle === "sleek" ||
+    base.messageStyle === "minimal_log" ||
+    base.messageStyle === "focus" ||
+    base.messageStyle === "thread_forward" ||
+    base.messageStyle === "retro"
+      ? base.messageStyle
+      : undefined;
+  const messageGrouping =
+    base.messageGrouping === "none" || base.messageGrouping === "compact" || base.messageGrouping === "aggressive"
+      ? base.messageGrouping
+      : (hasExistingSettings ? "none" : "compact");
+  const timeFormat = base.timeFormat === "12h" || base.timeFormat === "24h" ? base.timeFormat : resolveDefaultTimeFormat();
+  const timeDisplay = base.timeDisplay === "relative" || base.timeDisplay === "hybrid" || base.timeDisplay === "absolute"
+    ? base.timeDisplay
+    : "absolute";
+  const timestampGranularity = base.timestampGranularity === "perGroup" ? "perGroup" : "perMessage";
+  const systemMessageEmphasis =
+    base.systemMessageEmphasis === "normal" ||
+    base.systemMessageEmphasis === "dimmed" ||
+    base.systemMessageEmphasis === "collapsible"
+      ? base.systemMessageEmphasis
+      : "prominent";
+  const accentIntensity = base.accentIntensity === "subtle" || base.accentIntensity === "bold" ? base.accentIntensity : "normal";
+  const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
+  const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
+  return {
+    messageGrouping,
+    messageStyle,
+    timeFormat,
+    timeDisplay,
+    timestampGranularity,
+    systemMessageEmphasis,
+    maxContentWidth,
+    accentIntensity,
+    readingMode: base.readingMode === true,
+  };
+};
+
+const buildGradientFromStops = (stops: ThemeStop[], angle: number): string | null => {
+  if (!Array.isArray(stops) || stops.length < 2) return null;
+  const sorted = cloneThemeStops(stops).sort((a, b) => a.position - b.position);
+  return `linear-gradient(${angle}deg, ${sorted.map((stop) => `${stop.color} ${stop.position}%`).join(", ")})`;
+};
 
 const RINGTONES: Record<string, string> = {
   Drive: "/sounds/ringtones/Drive.wav",
@@ -32,11 +210,70 @@ const RINGTONES: Record<string, string> = {
 const DEFAULT_RINGTONE_KEY: keyof typeof RINGTONES = "Drive";
 const DEFAULT_RINGTONE_SRC = RINGTONES[DEFAULT_RINGTONE_KEY];
 
+const BASE_HAVENS: Record<string, string[]> = {
+  ChitterHaven: ["general", "random"],
+};
+
+const cloneHavens = (source: Record<string, string[]>) =>
+  Object.fromEntries(Object.entries(source).map(([name, channels]) => [name, [...channels]]));
+
+const sanitizeHavens = (raw: any): Record<string, string[]> => {
+  if (!raw || typeof raw !== "object") {
+    return cloneHavens(BASE_HAVENS);
+  }
+  const cleaned: Record<string, string[]> = {};
+  Object.entries(raw).forEach(([havenName, channels]) => {
+    if (typeof havenName !== "string" || !Array.isArray(channels)) return;
+    const normalized = Array.from(
+      new Set(
+        channels
+          .filter((ch): ch is string => typeof ch === "string")
+          .map((ch) => ch.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (normalized.length > 0) {
+      cleaned[havenName] = normalized;
+    }
+  });
+  return Object.keys(cleaned).length > 0 ? cleaned : cloneHavens(BASE_HAVENS);
+};
+
 const hasRingtone = (name: string): name is keyof typeof RINGTONES =>
   Object.prototype.hasOwnProperty.call(RINGTONES, name);
 
+const hexToRgb = (hex?: string): { r: number; g: number; b: number } | null => {
+  if (!hex) return null;
+  let value = hex.replace("#", "");
+  if (value.length === 3) {
+    value = value.split("").map((ch) => ch + ch).join("");
+  }
+  if (value.length !== 6) return null;
+  const num = parseInt(value, 16);
+  return {
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255,
+  };
+};
+
+const rgbaFromHex = (hex?: string, alpha = 1) => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return `rgba(99,102,241,${alpha})`;
+  return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+};
+
+const contrastColorFor = (background?: string, light = "#f8fafc", dark = "#020617") => {
+  const rgb = hexToRgb(background);
+  if (!rgb) return light;
+  const { r, g, b } = rgb;
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.6 ? dark : light;
+};
+
 const normalizeUserSettings = (raw: any) => {
   const base = { ...(raw || {}) };
+  const hasExistingSettings = !!(raw && Object.keys(raw).length);
   const notif = base.notifications || {};
   base.notifications = {
     mentions: notif.mentions !== false,
@@ -45,10 +282,66 @@ const normalizeUserSettings = (raw: any) => {
     volume: typeof notif.volume === "number" ? notif.volume : 0.6,
   };
   base.callRingSound = base.callRingSound !== false;
+  base.blurOnUnfocused = base.blurOnUnfocused !== false;
+  base.streamerMode = !!base.streamerMode;
+  base.streamerModeStyle = base.streamerModeStyle === 'shorten' ? 'shorten' : 'blur';
+  base.streamerModeHoverReveal = base.streamerModeHoverReveal !== false;
+  base.sidebarHavenIconOnly = base.sidebarHavenIconOnly === true;
+  const columns = Number(base.havenColumns);
+  base.havenColumns = Number.isFinite(columns) ? Math.min(5, Math.max(1, Math.round(columns))) : 1;
+  const gradientString =
+    typeof base.customThemeGradient === 'string' && base.customThemeGradient.trim().length
+      ? base.customThemeGradient.trim()
+      : DEFAULT_CUSTOM_THEME_GRADIENT;
+  const parsedStops = parseStopsFromGradient(gradientString);
+  base.customThemeStops = sanitizeThemeStops(base.customThemeStops || parsedStops || null);
+  const parsedAngle = parseAngleFromGradient(gradientString);
+  base.customThemeAngle = normalizeThemeAngle(base.customThemeAngle ?? parsedAngle ?? DEFAULT_CUSTOM_THEME_ANGLE);
+  const normalizedGradient = gradientString || buildGradientFromStops(base.customThemeStops, base.customThemeAngle) || DEFAULT_CUSTOM_THEME_GRADIENT;
+  base.customThemeGradient = normalizedGradient;
+  base.customThemeImage = typeof base.customThemeImage === 'string' ? base.customThemeImage : '';
+  if (base.chatStyle === 'classic' || base.chatStyle === 'bubbles') {
+    base.chatStyle = base.chatStyle;
+  } else if (base.chatStyle === 'minimal_log' || base.chatStyle === 'focus' || base.chatStyle === 'thread_forward' || base.chatStyle === 'retro') {
+    base.chatStyle = base.chatStyle;
+  } else {
+    base.chatStyle = 'sleek';
+  }
   const key = typeof base.callRingtone === "string" && hasRingtone(base.callRingtone)
     ? base.callRingtone
     : DEFAULT_RINGTONE_KEY;
   base.callRingtone = key;
+  base.enableOneko = base.enableOneko === true;
+  base.appearance = normalizeAppearanceSettings((base as any).appearance, hasExistingSettings);
+  if (!base.appearance?.messageStyle) {
+    base.appearance = { ...base.appearance, messageStyle: base.chatStyle };
+  }
+  base.statusMessage = sanitizeStatusMessage((base as any).statusMessage);
+  base.dndIsCosmetic = (base as any).dndIsCosmetic === true;
+  base.richPresence = sanitizeRichPresence((base as any).richPresence);
+  base.friendNicknames =
+    base.friendNicknames && typeof base.friendNicknames === 'object'
+      ? Object.fromEntries(
+          Object.entries(base.friendNicknames)
+            .map(([user, nick]) => [user, typeof nick === 'string' ? nick.trim() : ''])
+            .filter(([user, nick]) => typeof user === 'string' && nick.length),
+        )
+      : {};
+  base.havenNicknames =
+    base.havenNicknames && typeof base.havenNicknames === 'object'
+      ? Object.fromEntries(
+          Object.entries(base.havenNicknames)
+            .filter(([haven, map]) => typeof haven === 'string' && map && typeof map === 'object')
+            .map(([haven, map]) => [
+              haven,
+              Object.fromEntries(
+                Object.entries(map as Record<string, string>)
+                  .map(([user, nick]) => [user, typeof nick === 'string' ? nick.trim() : ''])
+                  .filter(([user, nick]) => typeof user === 'string' && nick.length),
+              ),
+            ]),
+        )
+      : {};
   return base;
 };
 
@@ -72,24 +365,24 @@ const havenCode = (name: string) => {
 
 function AttachmentViewer({ a }: { a: Attachment }) {
   if (isImage(a.type, a.name)) return (
-    <div style={{ border: '1px solid #1f2937', borderRadius: 8, padding: 6, background: '#0b1222' }}>
+    <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
       <a href={a.url} target="_blank" rel="noreferrer">
         <img src={a.url} alt={a.name} style={{ maxWidth: 360, borderRadius: 6 }} />
       </a>
     </div>
   );
   if (isVideo(a.type, a.name)) return (
-    <div style={{ border: '1px solid #1f2937', borderRadius: 8, padding: 6, background: '#0b1222' }}>
+    <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
       <video src={a.url} controls style={{ maxWidth: 420, borderRadius: 6 }} />
     </div>
   );
   if (isAudio(a.type, a.name)) return (
-    <div style={{ border: '1px solid #1f2937', borderRadius: 8, padding: 6, background: '#0b1222' }}>
+    <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
       <audio src={a.url} controls />
     </div>
   );
   return (
-    <div style={{ border: '1px solid #1f2937', borderRadius: 8, padding: 6, background: '#0b1222' }}>
+    <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
       <a href={a.url} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{a.name}</a>
     </div>
   );
@@ -109,7 +402,17 @@ type Message = {
   editHistory?: { text: string; timestamp: number }[];
 };
 
-type CallParticipant = { user: string; status: "ringing" | "connected" };
+type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
+
+type CallParticipant = {
+  user: string;
+  status: "ringing" | "connected";
+  muted?: boolean;
+  deafened?: boolean;
+  videoEnabled?: boolean;
+  screenSharing?: boolean;
+};
+type DMThread = { id: string; users: string[]; title?: string; group?: boolean; owner?: string; moderators?: string[]; avatarUrl?: string };
 
 const mergeParticipantLists = (base: CallParticipant[], updates: CallParticipant[]) => {
   const map = new Map<string, CallParticipant>();
@@ -120,7 +423,14 @@ const mergeParticipantLists = (base: CallParticipant[], updates: CallParticipant
       item.status === "connected" || prev?.status === "connected"
         ? "connected"
         : item.status || "ringing";
-    map.set(item.user, { user: item.user, status });
+    map.set(item.user, {
+      user: item.user,
+      status,
+      muted: typeof item.muted === "boolean" ? item.muted : prev?.muted,
+      deafened: typeof item.deafened === "boolean" ? item.deafened : prev?.deafened,
+      videoEnabled: typeof item.videoEnabled === "boolean" ? item.videoEnabled : prev?.videoEnabled,
+      screenSharing: typeof item.screenSharing === "boolean" ? item.screenSharing : prev?.screenSharing,
+    });
   };
   base.forEach(push);
   updates.forEach(push);
@@ -134,6 +444,10 @@ const normalizeParticipantPayload = (incoming: any): CallParticipant | null => {
     return {
       user: incoming.user,
       status: incoming.status === "connected" ? "connected" : "ringing",
+      muted: typeof incoming.muted === "boolean" ? incoming.muted : undefined,
+      deafened: typeof incoming.deafened === "boolean" ? incoming.deafened : undefined,
+      videoEnabled: typeof incoming.videoEnabled === "boolean" ? incoming.videoEnabled : undefined,
+      screenSharing: typeof incoming.screenSharing === "boolean" ? incoming.screenSharing : undefined,
     };
   }
   return null;
@@ -156,22 +470,21 @@ export default function Main({ username }: { username: string }) {
       return { haven: "__dms__", channel: "", dm: null as string | null };
     }
   };
-  const [havens, setHavens] = useState<{ [key: string]: string[] }>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("havens");
-      if (saved) return JSON.parse(saved);
-    }
-    return { "ChitterHaven": ["general", "random"] };
-  });
+  const [havens, setHavens] = useState<Record<string, string[]>>(() => cloneHavens(BASE_HAVENS));
+  const [havensLoaded, setHavensLoaded] = useState(false);
   const last = loadLastLocation();
   const [selectedHaven, setSelectedHaven] = useState<string>(last.haven || "__dms__");
   const [selectedChannel, setSelectedChannel] = useState<string>(last.channel || "");
-  const [dms, setDMs] = useState<{ id: string; users: string[] }[]>([]);
+  const [dms, setDMs] = useState<DMThread[]>([]);
   const [selectedDM, setSelectedDM] = useState<string | null>(last.dm);
   const lastSelectedDMRef = useRef<string | null>(last.dm);
+  const havensSyncInitialized = useRef(false);
   useEffect(() => {
     if (selectedDM) lastSelectedDMRef.current = selectedDM;
   }, [selectedDM]);
+  const applyRemoteHavens = (incoming: any) => {
+    setHavens(sanitizeHavens(incoming));
+  };
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [newChannel, setNewChannel] = useState("");
@@ -190,9 +503,30 @@ export default function Main({ username }: { username: string }) {
   const [uploading, setUploading] = useState(false);
   const [uploadItems, setUploadItems] = useState<{ id: string; name: string; type: string; size: number; progress: number; status: 'uploading'|'done'|'error'; url?: string; localUrl?: string }[]>([]);
   const [presenceMap, setPresenceMap] = useState<Record<string, string>>({});
+  const [statusMessageMap, setStatusMessageMap] = useState<Record<string, string>>({});
+  const [richPresenceMap, setRichPresenceMap] = useState<Record<string, RichPresence>>({});
   const [profileUser, setProfileUser] = useState<string | null>(null);
   const [profileContext, setProfileContext] = useState<string | undefined>(undefined);
+  const [profileLauncherHover, setProfileLauncherHover] = useState(false);
   const statusColor = (s?: string) => (s === "online" ? "#22c55e" : s === "idle" ? "#f59e0b" : s === "dnd" ? "#ef4444" : "#6b7280");
+  const formatRichPresence = (presence?: RichPresence) => {
+    if (!presence || !presence.title) return null;
+    const prefix = presence.type === "music" ? "Listening to" : presence.type === "game" ? "Playing" : "Activity";
+    const details = presence.details ? ` - ${presence.details}` : "";
+    return `${prefix} ${presence.title}${details}`;
+  };
+  const applyUserStatusPayload = (payload: any) => {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.statuses) {
+      setPresenceMap((prev) => ({ ...prev, ...payload.statuses }));
+    }
+    if (payload.statusMessages) {
+      setStatusMessageMap((prev) => ({ ...prev, ...payload.statusMessages }));
+    }
+    if (payload.richPresence) {
+      setRichPresenceMap((prev) => ({ ...prev, ...payload.richPresence }));
+    }
+  };
   const [showPinned, setShowPinned] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   // Active navigation controller: determines which content is focused.
@@ -205,13 +539,18 @@ export default function Main({ username }: { username: string }) {
   const [showMembers, setShowMembers] = useState(false);
   const [havenMembers, setHavenMembers] = useState<string[]>([]);
   const [membersQuery, setMembersQuery] = useState("");
+  const [havenMembersLoading, setHavenMembersLoading] = useState(false);
+  const havenMembersCacheRef = useRef<Record<string, string[]>>({});
   const [showUserSettings, setShowUserSettings] = useState(false);
+  const [windowFocused, setWindowFocused] = useState(true);
   type Toast = { id: string; title: string; body?: string; type?: 'info'|'success'|'warn'|'error' };
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [onlineCount, setOnlineCount] = useState<number>(1);
   const dialingAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringAudioRef = useRef<HTMLAudioElement | null>(null);
   const notify = (t: Omit<Toast,'id'>) => {
+    const status = (userSettings.status as string) || 'online';
+    if (status === 'dnd' && !userSettings.dndIsCosmetic) return;
     const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto) ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const toast: Toast = { id, ...t } as Toast;
     setToasts(prev => [...prev, toast]);
@@ -225,7 +564,99 @@ export default function Main({ username }: { username: string }) {
     } catch {}
   };
 
+  const formatElapsedClock = (seconds: number) => {
+    const clamped = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(clamped / 3600);
+    const mins = Math.floor((clamped % 3600) / 60);
+    const secs = clamped % 60;
+    const mm = hrs > 0 ? mins.toString().padStart(2, '0') : mins.toString();
+    const hh = hrs > 0 ? `${hrs}:` : '';
+    return `${hh}${mm}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatDurationHuman = (seconds: number) => {
+    const clamped = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(clamped / 3600);
+    const mins = Math.floor((clamped % 3600) / 60);
+    const secs = clamped % 60;
+    if (hrs) return `${hrs}h ${mins}m ${secs.toString().padStart(2, '0')}s`;
+    if (mins) return `${mins}m ${secs.toString().padStart(2, '0')}s`;
+    return `${secs}s`;
+  };
+
+  const postCallSystemMessage = useCallback(async (room: string | null | undefined, payload: { text: string; systemType: string; meta?: Record<string, any> }) => {
+    if (!room) return;
+    try {
+      const body = {
+        room,
+        msg: {
+          user: username,
+          text: payload.text,
+          systemType: payload.systemType,
+          systemMeta: payload.meta,
+        },
+      };
+      const res = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.message) {
+        socketRef.current?.emit("message", { room, msg: data.message });
+        if (selectedHaven === "__dms__" && selectedDM === room) {
+          setMessages((prev) => [...prev, data.message]);
+        }
+      }
+    } catch {}
+  }, [selectedDM, selectedHaven, setMessages, username]);
+  const updateSelfParticipantRef = useRef<(patch: Partial<Omit<CallParticipant, 'user'>>) => void>(() => {});
+  const updateSelfParticipant = useCallback((patch: Partial<Omit<CallParticipant, 'user'>>) => {
+    try {
+      updateSelfParticipantRef.current?.(patch);
+    } catch {}
+  }, []);
+
   // --- DM voice call helpers ---
+  const attachLocalPreview = useCallback(() => {
+    const stream = screenShareStreamRef.current || cameraStreamRef.current;
+    const targets = [localVideoRef.current, pipLocalVideoRef.current];
+    targets.forEach((video) => {
+      if (!video) return;
+      video.srcObject = stream || null;
+      if (stream) video.play?.().catch(() => {});
+    });
+  }, []);
+  const attachRemoteVideo = useCallback((incomingStream?: MediaStream) => {
+    const stream = incomingStream || remoteStreamRef.current;
+    if (!stream) {
+      setRemoteVideoAvailable(false);
+      [remoteVideoRef.current, pipRemoteVideoRef.current].forEach((video) => {
+        if (video) video.srcObject = null;
+      });
+      return;
+    }
+    const hasVideo = stream.getVideoTracks().some((track) => track.readyState !== 'ended');
+    setRemoteVideoAvailable(hasVideo);
+    [remoteVideoRef.current, pipRemoteVideoRef.current].forEach((video) => {
+      if (!video) return;
+      if (!hasVideo) {
+        video.srcObject = null;
+        return;
+      }
+      video.srcObject = stream;
+      video.play?.().catch(() => {});
+    });
+  }, []);
+  const requestRenegotiationRef = useRef<() => void>(() => {});
+  const triggerRenegotiation = useCallback(() => {
+    try {
+      requestRenegotiationRef.current?.();
+    } catch (err) {
+      console.warn('Renegotiation trigger failed', err);
+    }
+  }, []);
+
   const setupPeer = () => {
     if (pcRef.current) return pcRef.current;
     const pc = new RTCPeerConnection({
@@ -246,6 +677,16 @@ export default function Main({ username }: { username: string }) {
         remoteAudioRef.current.volume = isDeafened ? 0 : Math.max(0, Math.min(1, userSettings?.notifications?.volume ?? 0.6));
         remoteAudioRef.current.play?.().catch(() => {});
       }
+      if (ev.track.kind === 'video') {
+        attachRemoteVideo(stream);
+        ev.track.onended = () => {
+          setRemoteVideoAvailable(false);
+        };
+      }
+    };
+    pc.onnegotiationneeded = () => {
+      if (!hasJoinedCallRef.current) return;
+      triggerRenegotiation();
     };
     pcRef.current = pc;
     return pc;
@@ -259,6 +700,12 @@ export default function Main({ username }: { username: string }) {
         t.enabled = !next;
       });
     }
+    try {
+      const clip = new Audio(next ? SOUND_MUTE : SOUND_UNMUTE);
+      clip.volume = Math.max(0, Math.min(1, userSettings?.notifications?.volume ?? 0.6));
+      clip.play().catch(() => {});
+    } catch {}
+    updateSelfParticipant({ muted: next });
   };
 
   const toggleDeafen = () => {
@@ -268,6 +715,198 @@ export default function Main({ username }: { username: string }) {
       remoteAudioRef.current.muted = next;
       remoteAudioRef.current.volume = next ? 0 : Math.max(0, Math.min(1, userSettings?.notifications?.volume ?? 0.6));
       if (!next) remoteAudioRef.current.play?.().catch(() => {});
+    }
+    updateSelfParticipant({ deafened: next });
+  };
+
+  const stopCamera = useCallback(() => {
+    cameraSendersRef.current.forEach((sender) => {
+      try {
+        pcRef.current?.removeTrack(sender);
+      } catch {}
+    });
+    cameraSendersRef.current = [];
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+    }
+    setIsCameraOn(false);
+    if (!isScreenSharingRef.current) {
+      [localVideoRef.current, pipLocalVideoRef.current].forEach((video) => {
+        if (video) video.srcObject = null;
+      });
+    } else {
+      attachLocalPreview();
+    }
+    updateSelfParticipant({ videoEnabled: false });
+    if (callStateRef.current === 'in-call') {
+      triggerRenegotiation();
+    }
+  }, [attachLocalPreview, triggerRenegotiation, updateSelfParticipant]);
+
+  const stopScreenShare = useCallback(() => {
+    screenShareSendersRef.current.forEach((sender) => {
+      try {
+        pcRef.current?.removeTrack(sender);
+      } catch {}
+    });
+    screenShareSendersRef.current = [];
+    if (screenShareStreamRef.current) {
+      screenShareStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenShareStreamRef.current = null;
+    }
+    setIsScreenSharing(false);
+    updateSelfParticipant({ screenSharing: false });
+    attachLocalPreview();
+    if (callStateRef.current === 'in-call') {
+      triggerRenegotiation();
+    }
+  }, [attachLocalPreview, triggerRenegotiation, updateSelfParticipant]);
+
+  const requestCameraStream = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera capture is not supported in this environment.');
+    }
+    const isRecoverableCameraError = (error: any) => {
+      if (!error) return false;
+      const name = `${error?.name || ''}`;
+      const message = `${error?.message || ''}`.toLowerCase();
+      return (
+        name === 'NotReadableError' ||
+        name === 'TrackStartError' ||
+        name === 'OverconstrainedError' ||
+        name === 'NotFoundError' ||
+        message.includes('could not start video source') ||
+        message.includes('device in use') ||
+        message.includes('hardware access')
+      );
+    };
+    const tryConstraints = async (constraints: MediaStreamConstraints) => {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (constraints.audio) {
+        const videoTracks = stream.getVideoTracks();
+        const videoOnly = new MediaStream(videoTracks);
+        stream.getAudioTracks().forEach((track) => track.stop());
+        return videoOnly;
+      }
+      return stream;
+    };
+    const preferredConstraints: MediaStreamConstraints = {
+      video: {
+        facingMode: 'user',
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, max: 60 },
+      },
+      audio: false,
+    };
+    const fallbackConstraints: MediaStreamConstraints = { video: true, audio: true };
+    try {
+      return await tryConstraints(preferredConstraints);
+    } catch (err: any) {
+      if (!isRecoverableCameraError(err)) throw err;
+      try {
+        return await tryConstraints(fallbackConstraints);
+      } catch (fallbackError) {
+        if (navigator.mediaDevices?.enumerateDevices) {
+          try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+            if (videoInputs.length === 0) {
+              throw new Error('No camera detected. Please connect a camera and try again.');
+            }
+            for (const device of videoInputs) {
+              try {
+                return await tryConstraints({
+                  video: { deviceId: { exact: device.deviceId } },
+                  audio: false,
+                });
+              } catch {}
+            }
+          } catch (enumError) {
+            throw enumError;
+          }
+        }
+        throw fallbackError instanceof Error ? fallbackError : err;
+      }
+    }
+  }, []);
+
+  const toggleCamera = async () => {
+    if (isCameraOn) {
+      stopCamera();
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      notify({ title: 'Camera unavailable', body: 'Your browser cannot access a camera in this context.', type: 'error' });
+      return;
+    }
+    try {
+      const stream = await requestCameraStream();
+      cameraStreamRef.current = stream;
+      screenShareError && setScreenShareError(null);
+      const pc = setupPeer();
+      cameraSendersRef.current.forEach((sender) => {
+        try {
+          pc.removeTrack(sender);
+        } catch {}
+      });
+      cameraSendersRef.current = [];
+      stream.getTracks().forEach((track) => {
+        const sender = pc.addTrack(track, stream);
+        cameraSendersRef.current.push(sender);
+        track.onended = () => stopCamera();
+      });
+      setIsCameraOn(true);
+      setShowFullscreenCall(true);
+      attachLocalPreview();
+      updateSelfParticipant({ videoEnabled: true });
+      triggerRenegotiation();
+    } catch (err: any) {
+      const fallbackMessage =
+        err?.message && err.message.length
+          ? err.message
+          : 'Could not access your camera. Make sure no other application is using it and that you granted permission.';
+      notify({ title: 'Camera unavailable', body: fallbackMessage, type: 'error' });
+      updateSelfParticipant({ videoEnabled: false });
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      notify({ title: 'Screen share unsupported', body: 'Your browser does not support screen sharing.', type: 'error' });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      screenShareStreamRef.current = stream;
+      const pc = setupPeer();
+      screenShareSendersRef.current.forEach((sender) => {
+        try {
+          pc.removeTrack(sender);
+        } catch {}
+      });
+      screenShareSendersRef.current = [];
+      stream.getTracks().forEach((track) => {
+        const sender = pc.addTrack(track, stream);
+        screenShareSendersRef.current.push(sender);
+        track.onended = () => stopScreenShare();
+      });
+      setIsScreenSharing(true);
+      setShowFullscreenCall(true);
+      setScreenShareError(null);
+      attachLocalPreview();
+      updateSelfParticipant({ screenSharing: true });
+      triggerRenegotiation();
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      const msg = err?.message || 'Could not start screen sharing.';
+      setScreenShareError(msg);
+      notify({ title: 'Screen share failed', body: msg, type: 'error' });
     }
   };
 
@@ -308,7 +947,7 @@ export default function Main({ username }: { username: string }) {
     const endedRoom = activeCallDM;
     const startedAt = callStartedAt;
     if (endedRoom) {
-      socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now() });
+      socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now(), participants: callParticipantsRef.current });
       try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-end', message: `Call ended in ${endedRoom}`, meta: { room: endedRoom } }) }); } catch {}
     }
     setCallState('idle');
@@ -352,23 +991,11 @@ export default function Main({ username }: { username: string }) {
       const durationSec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
       (async () => {
         try {
-          const mins = Math.floor(durationSec / 60);
-          const secs = durationSec % 60;
-          const human = mins ? `${mins}m ${secs.toString().padStart(2, '0')}s` : `${secs}s`;
-          const room = endedRoom;
-          const msg: any = { user: username, text: `Voice call ended \u2022 ${human}`, systemType: 'call-summary' };
-          const res = await fetch("/api/history", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ room, msg })
+          await postCallSystemMessage(endedRoom, {
+            text: `Voice call ended • Total time ${formatDurationHuman(durationSec)}`,
+            systemType: 'call-summary',
+            meta: { durationSec, startedAt, endedAt: Date.now(), initiator: callInitiator },
           });
-          const data = await res.json();
-          if (data.message) {
-            socketRef.current?.emit("message", { room, msg: data.message });
-            if (selectedHaven === "__dms__" && selectedDM === room) {
-              setMessages(prev => [...prev, data.message]);
-            }
-          }
         } catch {}
       })();
       setCallSummarySent(true);
@@ -391,7 +1018,14 @@ export default function Main({ username }: { username: string }) {
       const dm = dms.find(d => d.id === selectedDM);
       const initialRoster = Array.from(new Set([username, ...(dm ? dm.users : [])]))
         .filter(Boolean)
-        .map(user => ({ user, status: user === username ? 'connected' as const : 'ringing' as const }));
+        .map(user => ({
+          user,
+          status: user === username ? 'connected' as const : 'ringing' as const,
+          muted: user === username ? isMuted : undefined,
+          deafened: user === username ? isDeafened : undefined,
+          videoEnabled: user === username ? isCameraOn : undefined,
+          screenSharing: user === username ? isScreenSharing : undefined,
+        }));
       const syncedRoster = applyParticipantUpdate(initialRoster, { reset: true });
       if (dialingAudioRef.current) {
         try {
@@ -422,7 +1056,13 @@ export default function Main({ username }: { username: string }) {
       pendingOfferRef.current = null;
       socketRef.current?.emit('call-offer', { room: selectedDM, offer, from: username, targets });
       socketRef.current?.emit('call-state', { room: selectedDM, state: 'calling', from: username, participants: syncedRoster });
+      await postCallSystemMessage(selectedDM, {
+        text: `Voice call started by ${displayNameFor(username)} • ${formatElapsedClock(0)} elapsed`,
+        systemType: 'call-start',
+        meta: { initiator: username, startedAt: Date.now() },
+      });
       setIsMuted(false);
+      updateSelfParticipant({ muted: false, deafened: false, status: 'connected', videoEnabled: isCameraOn, screenSharing: isScreenSharing });
     } catch (e: any) {
       setCallState('idle');
       markJoined(false);
@@ -444,7 +1084,23 @@ export default function Main({ username }: { username: string }) {
   const [addFriendName, setAddFriendName] = useState("");
   const [showGroupDM, setShowGroupDM] = useState(false);
   const [groupDMName, setGroupDMName] = useState("");
+  const [groupDMAvatar, setGroupDMAvatar] = useState("");
   const [groupDMSelection, setGroupDMSelection] = useState<string[]>([]);
+  const [groupDMSearch, setGroupDMSearch] = useState("");
+  const [groupDMError, setGroupDMError] = useState<string | null>(null);
+  const [groupDMLoading, setGroupDMLoading] = useState(false);
+  const [groupAddSelection, setGroupAddSelection] = useState<string[]>([]);
+  const [groupAddQuery, setGroupAddQuery] = useState("");
+  const [groupAddError, setGroupAddError] = useState<string | null>(null);
+  const [groupAddSaving, setGroupAddSaving] = useState(false);
+  const [groupSettingsTarget, setGroupSettingsTarget] = useState<string | null>(null);
+  const [groupSettingsDraft, setGroupSettingsDraft] = useState<{ name: string; avatarUrl: string; moderators: string[] }>({
+    name: "",
+    avatarUrl: "",
+    moderators: [],
+  });
+  const [groupSettingsSaving, setGroupSettingsSaving] = useState(false);
+  const [groupSettingsError, setGroupSettingsError] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<any>(() => normalizeUserSettings({}));
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [dmsLoaded, setDmsLoaded] = useState(false);
@@ -454,6 +1110,15 @@ export default function Main({ username }: { username: string }) {
   const italicColor = userSettings.italicColorHex || '#ffffff';
   const pinColor = userSettings.pinColorHex || '#facc15';
   const mentionColor = userSettings.mentionColorHex || '#f97316';
+  const appearance: AppearanceSettings = userSettings.appearance || normalizeAppearanceSettings(undefined, true);
+  const messageGrouping = appearance.messageGrouping || 'compact';
+  const timeFormat = appearance.timeFormat || resolveDefaultTimeFormat();
+  const timeDisplay = appearance.timeDisplay || 'absolute';
+  const timestampGranularity = appearance.timestampGranularity || 'perMessage';
+  const systemMessageEmphasis = appearance.systemMessageEmphasis || 'prominent';
+  const maxContentWidth = typeof appearance.maxContentWidth === 'number' ? appearance.maxContentWidth : null;
+  const accentIntensity = appearance.accentIntensity || 'normal';
+  const readingMode = appearance.readingMode === true;
   const currentStatus: string = (userSettings.status as string) || 'online';
   const autoIdleEnabled = (userSettings as any).autoIdleEnabled !== false; // default on
   const [autoIdle, setAutoIdle] = useState(false);
@@ -471,17 +1136,84 @@ export default function Main({ username }: { username: string }) {
   const compact = !!userSettings.compact;
   const showTimestamps = userSettings.showTimestamps !== false;
   const reduceMotion = !!userSettings.reduceMotion;
-  const fontMap: Record<string, number> = { small: 13, medium: 14, large: 16 };
+  const blurOnUnfocused = !!(userSettings as any).blurOnUnfocused;
+  const streamerMode = !!(userSettings as any).streamerMode;
+  const streamerModeStyle: 'blur' | 'shorten' = (userSettings as any).streamerModeStyle === 'shorten' ? 'shorten' : 'blur';
+  const streamerModeHoverReveal = (userSettings as any).streamerModeHoverReveal !== false;
+  const messageStyle: AppearanceSettings["messageStyle"] =
+    appearance.messageStyle ||
+    (userSettings.chatStyle === 'classic' || userSettings.chatStyle === 'bubbles' || userSettings.chatStyle === 'minimal_log' || userSettings.chatStyle === 'focus' || userSettings.chatStyle === 'thread_forward' || userSettings.chatStyle === 'retro'
+      ? (userSettings.chatStyle as AppearanceSettings["messageStyle"])
+      : 'sleek');
+  const isBubbles = messageStyle === 'bubbles';
+  const isClassic = messageStyle === 'classic';
+  const isMinimalLog = messageStyle === 'minimal_log';
+  const isFocusStyle = messageStyle === 'focus';
+  const isThreadForward = messageStyle === 'thread_forward';
+  const isRetro = messageStyle === 'retro';
+  const isSleek = messageStyle === 'sleek';
+  const replyCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    messages.forEach((m) => {
+      if (m.replyToId) {
+        counts[m.replyToId] = (counts[m.replyToId] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [messages]);
+  const groupIds = useMemo(() => {
+    const isSameDayLocal = (a?: number, b?: number) => {
+      if (!a || !b) return false;
+      const da = new Date(a);
+      const db = new Date(b);
+      return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+    };
+    const ids: string[] = [];
+    let lastGroupId = "";
+    messages.forEach((msg, idx) => {
+      const prevMessage = messages[idx - 1];
+      const showDateDivider = idx === 0 || !isSameDayLocal(prevMessage?.timestamp, msg.timestamp);
+      const isSystemMessage = !!(msg as any).systemType;
+      const prevIsSystem = !!(prevMessage as any)?.systemType;
+      const groupingWindowMs = messageGrouping === 'aggressive' ? 30 * 60 * 1000 : messageGrouping === 'compact' ? 5 * 60 * 1000 : 0;
+      const isGrouped =
+        messageGrouping !== 'none' &&
+        !showDateDivider &&
+        !!prevMessage &&
+        !isSystemMessage &&
+        !prevIsSystem &&
+        prevMessage.user === msg.user &&
+        (msg.timestamp - prevMessage.timestamp) <= groupingWindowMs;
+      const messageKey = msg.id ? `${msg.id}-${idx}` : `${msg.user}-${msg.timestamp}-${idx}`;
+      const groupId = isGrouped && lastGroupId ? lastGroupId : messageKey;
+      ids.push(groupId);
+      lastGroupId = groupId;
+    });
+    return ids;
+  }, [messages, messageGrouping]);
+  const showHavenIconsOnly = !!(userSettings as any).sidebarHavenIconOnly;
+  const havenColumns = Math.max(1, Math.min(5, Number((userSettings as any).havenColumns) || 1));
+  const privacyBlurActive = blurOnUnfocused && !windowFocused;
+  const fontMap: Record<string, number> = { small: 13, medium: 15, large: 17 };
   const msgFontSize = fontMap[userSettings.messageFontSize || 'medium'] || 14;
   const codeColor = (userSettings as any).codeColorHex || '#a5b4fc';
   // default to compact sidebar unless explicitly disabled
   const compactSidebar = (userSettings as any).compactSidebar !== false;
+  const navSidebarWidth = compactSidebar ? "var(--ch-sidebar-width-compact)" : "var(--ch-sidebar-width)";
+  const channelSidebarWidth = compactSidebar ? "var(--ch-channel-width-compact)" : "var(--ch-channel-width)";
   const monospaceMessages = !!(userSettings as any).monospaceMessages;
   const quickButtonsOwn: string[] = Array.isArray((userSettings as any).quickButtonsOwn) ? (userSettings as any).quickButtonsOwn : ['reply','react','copy','more'];
   const quickButtonsOthers: string[] = Array.isArray((userSettings as any).quickButtonsOthers) ? (userSettings as any).quickButtonsOthers : ['reply','react','copy','more'];
   const effectiveStatus = autoIdle && currentStatus === 'online' ? 'idle' : currentStatus;
+  const statusForUser = (user: string) => {
+    if (!user) return 'offline';
+    if (user === username) return effectiveStatus;
+    return presenceMap[user] || 'offline';
+  };
+  const isUserOnline = (user: string) => statusForUser(user) !== 'offline';
   const isBooting = !(settingsLoaded && dmsLoaded && friendsLoaded);
   const [havenFilter, setHavenFilter] = useState("");
+  const [havenSearchOpen, setHavenSearchOpen] = useState(false);
   const [dmFilter, setDmFilter] = useState("");
   const [channelFilter, setChannelFilter] = useState("");
   const [showInvitePanel, setShowInvitePanel] = useState(false);
@@ -497,6 +1229,7 @@ export default function Main({ username }: { username: string }) {
   const [callElapsed, setCallElapsed] = useState<number>(0);
   const [callParticipants, setCallParticipants] = useState<CallParticipant[]>([]);
   const callParticipantsRef = useRef<CallParticipant[]>([]);
+  const callRosterDirtyRef = useRef(false);
   const [hasJoinedCall, setHasJoinedCall] = useState(false);
   const hasJoinedCallRef = useRef(false);
   const markJoined = (joined: boolean) => {
@@ -504,6 +1237,292 @@ export default function Main({ username }: { username: string }) {
     setHasJoinedCall(joined);
   };
   const [userProfileCache, setUserProfileCache] = useState<Record<string, { displayName: string; avatarUrl: string }>>({});
+  const [streamerRevealKey, setStreamerRevealKey] = useState<string | null>(null);
+  const beginStreamerReveal = useCallback((key: string) => {
+    setStreamerRevealKey((prev) => (prev === key ? prev : key));
+  }, []);
+  const endStreamerReveal = useCallback((key: string) => {
+    setStreamerRevealKey((prev) => (prev === key ? null : prev));
+  }, []);
+  type DisplayNameOptions = { haven?: string | null; allowFriend?: boolean; fallback?: string };
+  const displayNameFor = (user: string, opts?: DisplayNameOptions) => {
+    const havenKey =
+      typeof opts?.haven !== 'undefined'
+        ? opts?.haven
+        : selectedHaven && selectedHaven !== '__dms__'
+          ? selectedHaven
+          : null;
+    const allowFriend = opts?.allowFriend !== false;
+    const havenNick = havenKey
+      ? userSettings?.havenNicknames?.[havenKey]?.[user]
+      : undefined;
+    if (havenNick && havenNick.trim()) return havenNick.trim();
+    if (allowFriend) {
+      const friendNick = userSettings?.friendNicknames?.[user];
+      if (friendNick && friendNick.trim()) return friendNick.trim();
+    }
+    const profile = userProfileCache[user];
+    const label = profile?.displayName?.trim();
+    return label && label.length ? label : opts?.fallback || user;
+  };
+  const initialsFor = (label: string) => {
+    const parts = label.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return label.slice(0, 2).toUpperCase();
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+  const colorForString = (input: string, offset = 0) => {
+    let hash = 0;
+    for (let i = 0; i < input.length; i++) {
+      hash = (hash << 5) - hash + input.charCodeAt(i);
+      hash |= 0;
+    }
+    const hue = Math.abs(hash + offset * 53) % 360;
+    const lightness = offset ? 58 : 45;
+    return `hsl(${hue}, 70%, ${lightness}%)`;
+  };
+  const havenBadgeFor = (name: string) => {
+    return {
+      background: `linear-gradient(135deg, ${colorForString(name)}, ${colorForString(name, 1)})`,
+      initials: initialsFor(name).slice(0, 2),
+    };
+  };
+  const renderHavenLabel = (name: string, revealKey: string) => {
+    return renderDisplayName(`haven:${name}`, { labelOverride: name, revealKey });
+  };
+  const renderFriendRow = (
+    user: string,
+    actions?: React.ReactNode,
+    opts?: { key?: string; highlight?: boolean },
+  ) => {
+    const revealKey = `friend-${user}`;
+    const avatar = userProfileCache[user]?.avatarUrl || '/favicon.ico';
+    const dot = statusColor(presenceMap[user]);
+    const statusMessage = statusMessageMap[user];
+    const richPresence = formatRichPresence(richPresenceMap[user]);
+    return (
+      <div
+        key={opts?.key || user}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '10px 12px',
+          border: BORDER,
+          background: opts?.highlight ? COLOR_CARD : COLOR_PANEL,
+          borderRadius: 10,
+          marginBottom: 8,
+        }}
+      >
+        <div
+          style={{ position: 'relative', width: 36, height: 36, flex: '0 0 auto' }}
+          onMouseEnter={() => beginStreamerReveal(revealKey)}
+          onMouseLeave={() => endStreamerReveal(revealKey)}
+        >
+          <img
+            src={avatar}
+            alt={user}
+            style={{ width: 36, height: 36, borderRadius: '50%', border: BORDER, objectFit: 'cover' }}
+          />
+          <span
+            style={{
+              position: 'absolute',
+              bottom: 2,
+              right: 2,
+              width: 10,
+              height: 10,
+              borderRadius: '50%',
+              border: `2px solid ${COLOR_PANEL}`,
+              background: dot,
+            }}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <button
+            onClick={() => { setProfileUser(user); setProfileContext(selectedHaven !== '__dms__' ? 'Viewing Haven Profile' : undefined); }}
+            style={{ color: accent, fontWeight: 600, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+          >
+            {renderDisplayName(user, { revealKey })}
+          </button>
+          {statusMessage && (
+            <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, marginTop: 2, whiteSpace: 'pre-wrap' }}>
+              {statusMessage}
+            </div>
+          )}
+          {richPresence && (
+            <div style={{ fontSize: 11, color: '#93c5fd', marginTop: statusMessage ? 2 : 4 }}>
+              {richPresence}
+            </div>
+          )}
+        </div>
+        {actions && (
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            {actions}
+          </span>
+        )}
+      </div>
+    );
+  };
+  const isGroupDMThread = (dm?: DMThread | null) => !!dm && (dm.group || (dm.users?.length || 0) > 2);
+  const dmMembersWithoutSelf = (dm?: DMThread | null) => (dm ? dm.users.filter((u) => u !== username) : []);
+  const dmOwner = (dm?: DMThread | null) => {
+    if (!dm) return undefined;
+    if (dm.owner && dm.users.includes(dm.owner)) return dm.owner;
+    return dm.users[0];
+  };
+  const dmModerators = (dm?: DMThread | null) => {
+    if (!dm || !Array.isArray(dm.moderators)) return [];
+    return dm.moderators.filter((user) => dm.users.includes(user));
+  };
+  const currentIsGroupOwner = (dm?: DMThread | null) => dmOwner(dm) === username;
+  const currentIsGroupModerator = (dm?: DMThread | null) => {
+    if (!dm || !isGroupDMThread(dm)) return false;
+    if (currentIsGroupOwner(dm)) return true;
+    const mods = dmModerators(dm);
+    return mods.includes(username);
+  };
+  const canManageGroupDM = (dm?: DMThread | null) => !!dm && isGroupDMThread(dm) && currentIsGroupModerator(dm);
+  const getDMAvatar = (dm?: DMThread | null) => (dm && typeof dm.avatarUrl === 'string' ? dm.avatarUrl.trim() : "");
+  const getDMTitle = (dm?: DMThread | null) => {
+    if (!dm) return "Direct Message";
+    const members = dmMembersWithoutSelf(dm);
+    if (isGroupDMThread(dm)) {
+      if (dm.title && dm.title.trim()) return dm.title.trim();
+      const preview = members.slice(0, 3).map((user) => displayNameFor(user)).join(", ");
+      if (members.length > 3) return `${preview} +${members.length - 3}`;
+      return preview || "Group DM";
+    }
+    return members.length ? members.map((user) => displayNameFor(user)).join(", ") : "Direct Message";
+  };
+  const dmSearchHaystack = (dm: DMThread) => {
+    const members = dmMembersWithoutSelf(dm);
+    const displayNames = members.map((user) => displayNameFor(user));
+    return [getDMTitle(dm), ...members, ...displayNames].join(" ").toLowerCase();
+  };
+  const getUserAvatar = (user: string) => userProfileCache[user]?.avatarUrl || '/favicon.ico';
+  const renderDMLabel = (dm?: DMThread | null, opts?: { revealKey?: string }) => {
+    if (!dm) {
+      return renderDisplayName('dm:unknown', { labelOverride: 'Direct Message', revealKey: opts?.revealKey, allowFriend: false });
+    }
+    const revealKey = opts?.revealKey;
+    if (isGroupDMThread(dm)) {
+      const label = getDMTitle(dm);
+      return renderDisplayName(`group:${dm.id}`, { labelOverride: label, revealKey, allowFriend: false });
+    }
+    const members = dmMembersWithoutSelf(dm);
+    if (!members.length) return renderDisplayName('dm:unknown', { labelOverride: 'Direct Message', revealKey });
+    return (
+      <>
+        {members.map((user, idx) => (
+          <Fragment key={`${dm.id || 'dm'}-${user}`}>
+            {idx > 0 && ', '}
+            {renderDisplayName(user, { revealKey })}
+          </Fragment>
+        ))}
+      </>
+    );
+  };
+  const renderDMHandles = (dm?: DMThread | null) => {
+    if (!dm) return null;
+    const handles = isGroupDMThread(dm) ? dm.users : dmMembersWithoutSelf(dm);
+    if (!handles.length) return null;
+    return handles.map((user, idx) => (
+      <Fragment key={`handle-${dm.id || 'dm'}-${user}`}>
+        {idx > 0 && ', '}
+        @{user}
+      </Fragment>
+    ));
+  };
+  const formatAbsoluteTime = (timestamp?: number) => {
+    const date = timestamp ? new Date(timestamp) : new Date();
+    const hour12 = timeFormat === '12h' ? true : timeFormat === '24h' ? false : undefined;
+    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12 });
+  };
+  const formatRelativeTime = (timestamp?: number) => {
+    if (!timestamp) return 'just now';
+    const diffMs = Date.now() - timestamp;
+    if (diffMs < 30 * 1000) return 'just now';
+    const minutes = Math.floor(diffMs / (60 * 1000));
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d ago`;
+    const weeks = Math.floor(days / 7);
+    return `${weeks}w ago`;
+  };
+  const formatTimestampLabel = (timestamp?: number) => {
+    const absolute = formatAbsoluteTime(timestamp);
+    const relative = formatRelativeTime(timestamp);
+    if (timeDisplay === 'relative') {
+      return { label: relative, title: absolute };
+    }
+    if (timeDisplay === 'hybrid') {
+      return { label: absolute, title: relative };
+    }
+    return { label: absolute, title: undefined };
+  };
+  const formatDateLine = (timestamp?: number) => {
+    const date = timestamp ? new Date(timestamp) : new Date();
+    return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  };
+  const isSameDay = (a?: number, b?: number) => {
+    if (!a || !b) return false;
+    const da = new Date(a);
+    const db = new Date(b);
+    return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+  };
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleSettingsUpdate = (event: Event) => {
+      const custom = event as CustomEvent<any>;
+      if (custom?.detail) {
+        setUserSettings(normalizeUserSettings(custom.detail));
+      }
+    };
+    window.addEventListener('ch_settings_updated', handleSettingsUpdate as EventListener);
+    return () => window.removeEventListener('ch_settings_updated', handleSettingsUpdate as EventListener);
+  }, []);
+  const shortenName = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return "…";
+    if (trimmed.length <= 2) return `${trimmed.slice(0, 1)}…`;
+    if (trimmed.length <= 4) return `${trimmed.slice(0, 2)}…`;
+    return `${trimmed.slice(0, 1)}…${trimmed.slice(-1)}`;
+  };
+  const renderDisplayName = (
+    user: string,
+    opts?: { prefix?: string; revealKey?: string; labelOverride?: string; haven?: string | null; allowFriend?: boolean },
+  ): React.ReactNode => {
+    const raw = opts?.labelOverride ?? displayNameFor(user, { haven: opts?.haven, allowFriend: opts?.allowFriend });
+    const prefix = opts?.prefix || '';
+    if (!streamerMode) return `${prefix}${raw}`;
+    if (streamerModeStyle === 'shorten') {
+      return `${prefix}${shortenName(raw)}`;
+    }
+    const revealKey = opts?.revealKey;
+    const canReveal = !!revealKey && streamerModeHoverReveal && streamerRevealKey === revealKey;
+    if (canReveal) {
+      return `${prefix}${raw}`;
+    }
+    return (
+      <>
+        {prefix}
+        <span
+          className="ch-streamer-mask"
+          data-hoverable={streamerModeHoverReveal ? 'true' : 'false'}
+          onMouseEnter={() => revealKey && streamerModeHoverReveal && beginStreamerReveal(revealKey)}
+          onMouseLeave={() => revealKey && streamerModeHoverReveal && endStreamerReveal(revealKey)}
+        >
+          <span className="ch-streamer-mask-text">{raw}</span>
+        </span>
+      </>
+    );
+  };
+  const isCallSystemMessage = (msg: Message | Partial<Message>) => {
+    const type = (msg as any)?.systemType;
+    return type === 'call-summary' || type === 'call-start';
+  };
   const profileFetchesRef = useRef<Set<string>>(new Set());
 
   const applyParticipantUpdate = (updates: CallParticipant[], opts?: { reset?: boolean }) => {
@@ -512,11 +1531,84 @@ export default function Main({ username }: { username: string }) {
       merged = mergeParticipantLists(opts?.reset ? [] : prev, updates);
       return merged;
     });
+    callParticipantsRef.current = merged;
     return merged;
   };
+  const emitCallStateUpdate = useCallback((opts?: { participants?: CallParticipant[]; state?: 'idle' | 'calling' | 'in-call'; room?: string | null; useBeacon?: boolean }) => {
+    const targetRoom = opts?.room || activeCallDM || selectedDM;
+    if (!targetRoom) {
+      callRosterDirtyRef.current = false;
+      return;
+    }
+    const state = opts?.state || callStateRef.current;
+    const payloadParticipants = opts?.participants ?? callParticipantsRef.current;
+    if (state !== 'idle' && (!payloadParticipants || payloadParticipants.length === 0)) {
+      callRosterDirtyRef.current = false;
+      return;
+    }
+    const payload = {
+      room: targetRoom,
+      state,
+      from: username,
+      startedAt: callStartedAt || undefined,
+      participants: payloadParticipants,
+    };
+    try {
+      const shouldBeacon = opts?.useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function';
+      if (shouldBeacon) {
+        try {
+          const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+          navigator.sendBeacon('/api/call-sync', blob);
+        } catch {
+          socketRef.current?.emit('call-state', payload);
+        }
+      } else {
+        socketRef.current?.emit('call-state', payload);
+      }
+    } catch {}
+    callRosterDirtyRef.current = false;
+  }, [activeCallDM, selectedDM, username, callStartedAt]);
+  const realUpdateSelfParticipant = useCallback((patch: Partial<Omit<CallParticipant, 'user'>>) => {
+    const existing = callParticipantsRef.current.find((p) => p.user === username);
+    if (!existing) return;
+    const next: CallParticipant = {
+      user: username,
+      status: patch.status || existing.status || (callStateRef.current === 'in-call' ? 'connected' : 'ringing'),
+      muted: typeof patch.muted === 'boolean' ? patch.muted : existing.muted,
+      deafened: typeof patch.deafened === 'boolean' ? patch.deafened : existing.deafened,
+      videoEnabled: typeof patch.videoEnabled === 'boolean' ? patch.videoEnabled : existing.videoEnabled,
+      screenSharing: typeof patch.screenSharing === 'boolean' ? patch.screenSharing : existing.screenSharing,
+    };
+    applyParticipantUpdate([next]);
+    callRosterDirtyRef.current = true;
+  }, [username, applyParticipantUpdate]);
+  useEffect(() => {
+    updateSelfParticipantRef.current = realUpdateSelfParticipant;
+  }, [realUpdateSelfParticipant]);
   useEffect(() => {
     callParticipantsRef.current = callParticipants;
   }, [callParticipants]);
+  useEffect(() => {
+    if (!callRosterDirtyRef.current) return;
+    const timer = window.setTimeout(() => {
+      emitCallStateUpdate();
+    }, 75);
+    return () => window.clearTimeout(timer);
+  }, [callParticipants, emitCallStateUpdate]);
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (callStateRef.current === 'idle') return;
+      const room = activeCallDM || selectedDM;
+      if (!room) return;
+      const remaining = callParticipantsRef.current.filter((p) => p.user !== username);
+      const nextState: 'idle' | 'calling' | 'in-call' = remaining.length ? callStateRef.current : 'idle';
+      emitCallStateUpdate({ room, participants: remaining, state: nextState, useBeacon: true });
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [activeCallDM, selectedDM, username, emitCallStateUpdate]);
   const [havenIcons, setHavenIcons] = useState<Record<string, string>>({});
   const [havenOrder, setHavenOrder] = useState<string[]>(() => {
     if (typeof window !== "undefined") {
@@ -532,6 +1624,8 @@ export default function Main({ username }: { username: string }) {
   // Context menu
   type CtxTarget = { type: 'message'|'channel'|'dm'|'blank'|'attachment'|'call'; id?: string; data?: any; debug?: boolean };
   const [ctxMenu, setCtxMenu] = useState<{ open: boolean; x: number; y: number; target: CtxTarget } | null>(null);
+  const [collapsedSystemMessages, setCollapsedSystemMessages] = useState<Record<string, boolean>>({});
+  const [focusHoverGroupId, setFocusHoverGroupId] = useState<string | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [newSinceScroll, setNewSinceScroll] = useState(0);
   const roomKey = () => `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
@@ -539,6 +1633,9 @@ export default function Main({ username }: { username: string }) {
   const [shakeVoice, setShakeVoice] = useState(false);
   const [showNewHavenModal, setShowNewHavenModal] = useState(false);
   const [shakeHavenType, setShakeHavenType] = useState(false);
+  const closeNewHavenModal = useCallback(() => {
+    setShowNewHavenModal(false);
+  }, []);
   const [chResolved, setChResolved] = useState<Record<string, string>>({});
   const [permState, setPermState] = useState<{
     canPin: boolean;
@@ -561,9 +1658,125 @@ export default function Main({ username }: { username: string }) {
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipLocalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const screenShareStreamRef = useRef<MediaStream | null>(null);
+  const cameraSendersRef = useRef<RTCRtpSender[]>([]);
+  const screenShareSendersRef = useRef<RTCRtpSender[]>([]);
+  const [pipSize, setPipSize] = useState<{ width: number; height: number }>({
+    width: DEFAULT_PIP_WIDTH,
+    height: DEFAULT_PIP_HEIGHT,
+  });
+  const [pipPosition, setPipPosition] = useState<{ x: number; y: number }>({
+    x: PIP_MARGIN,
+    y: PIP_TOP_MARGIN,
+  });
+  const pipInteractionRef = useRef<{
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    originWidth: number;
+    originHeight: number;
+  } | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isDeafened, setIsDeafened] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const isScreenSharingRef = useRef(isScreenSharing);
+  const [showFullscreenCall, setShowFullscreenCall] = useState(false);
+  const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false);
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const renegotiationLockRef = useRef(false);
+  const requestRenegotiation = useCallback(async () => {
+    const pc = pcRef.current;
+    const room = activeCallDM || selectedDM;
+    if (!pc || !room || callStateRef.current !== 'in-call' || renegotiationLockRef.current) return;
+    if (pc.signalingState === 'closed') return;
+    renegotiationLockRef.current = true;
+    try {
+      const offer = await pc.createOffer();
+      if (pc.signalingState === 'closed') return;
+      await pc.setLocalDescription(offer);
+      socketRef.current?.emit('call-renegotiate', { room, offer, from: username });
+    } catch (err) {
+      console.warn('Renegotiation failed', err);
+    } finally {
+      renegotiationLockRef.current = false;
+    }
+  }, [activeCallDM, selectedDM, username]);
+  useEffect(() => {
+    requestRenegotiationRef.current = requestRenegotiation;
+  }, [requestRenegotiation]);
   const pendingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
+  const normalizedCallParticipants = callParticipants.filter((p): p is CallParticipant => !!p && !!p.user);
+  const callParticipantUsers = normalizedCallParticipants.map((p) => p.user);
+  const isUserInActiveCall = (user?: string | null) => !!user && callState !== 'idle' && callParticipantUsers.includes(user);
+  const getCallLocationInfo = () => {
+    if (callState === 'idle') return null;
+    if (activeCallDM) {
+      const dm = dms.find((d) => d.id === activeCallDM);
+      const label = isGroupDMThread(dm) ? `Group DM • ${getDMTitle(dm)}` : `DM • ${getDMTitle(dm)}`;
+      return { type: 'dm', label, channel: null as string | null };
+    }
+    if (selectedHaven !== '__dms__' && selectedChannel) {
+      return { type: 'channel', label: `${selectedHaven} • #${selectedChannel}`, channel: selectedChannel };
+    }
+    return { type: 'unknown', label: 'Active Call', channel: null as string | null };
+  };
+  type CallStatusMeta = { type: 'talking' | 'mutedSelf' | 'muted' | 'deafened'; color: string; label: string };
+  const getCallStatusMeta = (user?: string | null): CallStatusMeta | null => {
+    if (!isUserInActiveCall(user)) return null;
+    const participant = user ? normalizedCallParticipants.find((p) => p.user === user) : null;
+    const participantMuted = typeof participant?.muted === 'boolean' ? participant.muted : undefined;
+    const participantDeafened = typeof participant?.deafened === 'boolean' ? participant.deafened : undefined;
+    if (user === username) {
+      if (isDeafened || participantDeafened) return { type: 'deafened', color: '#f97316', label: 'Deafened' };
+      if (isMuted || participantMuted) return { type: 'mutedSelf', color: '#ef4444', label: 'Muted (you)' };
+    } else {
+      if (participantDeafened) return { type: 'deafened', color: '#f97316', label: 'Deafened' };
+      if (participantMuted) return { type: 'muted', color: '#facc15', label: 'Muted' };
+    }
+    return { type: 'talking', color: '#22c55e', label: 'In Call' };
+  };
+  const renderCallStatusIconGraphic = (meta: CallStatusMeta, size = 14) => {
+    if (meta.type === 'deafened') {
+      return (
+        <span style={{ position: 'relative', width: size, height: size, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+          <FontAwesomeIcon icon={faHeadphonesSimple} style={{ color: meta.color, fontSize: size }} />
+          <FontAwesomeIcon icon={faSlash} style={{ color: meta.color, fontSize: size * 0.9, position: 'absolute', transform: 'rotate(-20deg)' }} />
+        </span>
+      );
+    }
+    const icon = meta.type === 'talking' ? faPhone : faMicrophoneSlash;
+    return <FontAwesomeIcon icon={icon} style={{ color: meta.color, fontSize: size }} />;
+  };
+  const renderCallStatusBadge = (user?: string, opts?: { showLabel?: boolean }) => {
+    const meta = getCallStatusMeta(user);
+    if (!meta) return null;
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: meta.color, fontSize: 11, fontWeight: 600 }}>
+        {renderCallStatusIconGraphic(meta, 13)}
+        {opts?.showLabel && <span>{meta.label}</span>}
+      </span>
+    );
+  };
+  const getCallPresenceForUser = (user?: string | null) => {
+    const meta = getCallStatusMeta(user);
+    if (!meta) return null;
+    const locationInfo = getCallLocationInfo();
+    return {
+      color: meta.color,
+      label: meta.label,
+      icon: renderCallStatusIconGraphic(meta, 13),
+      location: locationInfo?.label || null,
+      participants: normalizedCallParticipants.map((p) => ({ user: p.user, avatar: userProfileCache[p.user]?.avatarUrl || '/favicon.ico' })),
+    };
+  };
   const viewingCallDM =
     !!(
       callState !== 'idle' &&
@@ -574,30 +1787,77 @@ export default function Main({ username }: { username: string }) {
         (!selectedDM && lastSelectedDMRef.current === activeCallDM)
       )
     );
+  const defaultCallMeta: CallStatusMeta = { type: 'talking', color: '#22c55e', label: 'In Call' };
+  const callLocationInfo = getCallLocationInfo();
+  const callParticipantPreview = normalizedCallParticipants.slice(0, 5);
+  const extraCallParticipants = Math.max(0, normalizedCallParticipants.length - callParticipantPreview.length);
+  const pipParticipantPreview = normalizedCallParticipants.slice(0, 4);
+  const pipParticipantOverflow = Math.max(0, normalizedCallParticipants.length - pipParticipantPreview.length);
+  const showGlobalCallBar = callState !== 'idle' && !viewingCallDM;
+  const showCallPiP = showGlobalCallBar && !showFullscreenCall;
+  const viewerCallMeta = getCallStatusMeta(username) || defaultCallMeta;
+  const dmFilterNormalized = dmFilter.trim().toLowerCase();
+  const filteredDMs = dmFilterNormalized
+    ? dms.filter((dm) => dmSearchHaystack(dm).includes(dmFilterNormalized))
+    : dms;
+  const groupDMSearchValue = groupDMSearch.trim().toLowerCase();
+  const sortedFriends = [...friendsState.friends].sort((a, b) => a.localeCompare(b));
+  const filteredGroupFriends = groupDMSearchValue
+    ? sortedFriends.filter((user) => {
+        const display = displayNameFor(user).toLowerCase();
+        return user.toLowerCase().includes(groupDMSearchValue) || display.includes(groupDMSearchValue);
+      })
+    : sortedFriends;
+  const ensureProfile = (user?: string | null) => {
+    if (!user) return;
+    if (userProfileCache[user] || profileFetchesRef.current.has(user)) return;
+    profileFetchesRef.current.add(user);
+    fetch(`/api/profile?user=${encodeURIComponent(user)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setUserProfileCache((prev) => ({
+          ...prev,
+          [user]: {
+            displayName: data.displayName || user,
+            avatarUrl: data.avatarUrl || "",
+          },
+        }));
+      })
+      .catch(() => {})
+      .finally(() => {
+        profileFetchesRef.current.delete(user);
+      });
+  };
+
+  const beginPipInteraction = useCallback(
+    (mode: "move" | "resize") => (event: React.MouseEvent) => {
+      if (isMobile) return;
+      event.preventDefault();
+      pipInteractionRef.current = {
+        mode,
+        startX: event.clientX,
+        startY: event.clientY,
+        originX: pipPosition.x,
+        originY: pipPosition.y,
+        originWidth: pipSize.width,
+        originHeight: pipSize.height,
+      };
+    },
+    [isMobile, pipPosition.x, pipPosition.y, pipSize.height, pipSize.width]
+  );
+
   useEffect(() => {
-    const missing = callParticipants
-      .map((p) => p.user)
-      .filter((user) => user && !userProfileCache[user] && !profileFetchesRef.current.has(user));
-    missing.forEach((user) => {
-      profileFetchesRef.current.add(user);
-      fetch(`/api/profile?user=${encodeURIComponent(user)}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (!data) return;
-          setUserProfileCache((prev) => ({
-            ...prev,
-            [user]: {
-              displayName: data.displayName || user,
-              avatarUrl: data.avatarUrl || "",
-            },
-          }));
-        })
-        .catch(() => {})
-        .finally(() => {
-          profileFetchesRef.current.delete(user);
-        });
-    });
+    callParticipants.forEach((p) => ensureProfile(p.user));
   }, [callParticipants, userProfileCache]);
+
+  useEffect(() => {
+    messages.forEach((m) => ensureProfile(m.user));
+  }, [messages, userProfileCache]);
+
+  useEffect(() => {
+    dms.forEach((dm) => dm.users.forEach((user) => ensureProfile(user)));
+  }, [dms, userProfileCache]);
 
   // Keep a simple elapsed timer while a call is active
   useEffect(() => {
@@ -613,18 +1873,31 @@ export default function Main({ username }: { username: string }) {
     return () => clearInterval(id);
   }, [callStartedAt, callState]);
 
-  // Persist havens to localStorage
+  // Persist havens per-account (skip initial hydrate to avoid redundant writes)
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("havens", JSON.stringify(havens));
+    if (!havensLoaded) return;
+    if (!havensSyncInitialized.current) {
+      havensSyncInitialized.current = true;
+      return;
     }
-  }, [havens]);
+    (async () => {
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ havens }),
+        });
+      } catch {
+        // Ignore failures; next mutation will retry.
+      }
+    })();
+  }, [havens, havensLoaded]);
   useEffect(() => {
     try {
       const payload = { haven: selectedHaven, channel: selectedChannel, dm: selectedDM };
       localStorage.setItem("lastLocation", JSON.stringify(payload));
     } catch {}
-  }, [selectedHaven, selectedChannel, selectedDM]);
+  }, [selectedHaven, selectedChannel, selectedDM, username]);
   useEffect(() => {
     if (typeof window !== "undefined" && havenOrder.length) {
       try {
@@ -697,17 +1970,35 @@ export default function Main({ username }: { username: string }) {
     });
   }, [havens]);
 
-  // Load user settings
+  // Load user settings + haven layout
   const loadUserSettings = async () => {
     try {
       const r = await fetch('/api/settings');
       const d = await r.json();
-      setUserSettings(normalizeUserSettings(d));
+      const payload = d && typeof d === 'object' && 'settings' in d ? (d.settings as any) : d;
+      setUserSettings(normalizeUserSettings(payload));
+      applyRemoteHavens(payload?.havens);
     } catch {
       setUserSettings(normalizeUserSettings({}));
+      applyRemoteHavens(null);
+    } finally {
+      setSettingsLoaded(true);
+      setHavensLoaded(true);
     }
-    setSettingsLoaded(true);
   };
+  const updateAppearance = useCallback(async (patch: Partial<AppearanceSettings>) => {
+    const nextAppearance = { ...(userSettings.appearance || {}), ...patch };
+    const next = normalizeUserSettings({ ...userSettings, appearance: nextAppearance });
+    setUserSettings(next);
+    try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: next })); } catch {}
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appearance: nextAppearance }),
+      });
+    } catch {}
+  }, [userSettings]);
   useEffect(() => { loadUserSettings(); }, []);
 
   // Load friends lists for DMs home
@@ -726,7 +2017,7 @@ export default function Main({ username }: { username: string }) {
       if (all.length > 0) {
         const res2 = await fetch(`/api/user-status?users=${encodeURIComponent(all.join(','))}`);
         const d2 = await res2.json();
-        if (d2 && d2.statuses) setPresenceMap((prev) => ({ ...prev, ...d2.statuses }));
+        applyUserStatusPayload(d2);
       }
     } catch {} finally {
       setFriendsLoaded(true);
@@ -746,6 +2037,234 @@ export default function Main({ username }: { username: string }) {
       }
     } catch {}
   };
+
+  const resetGroupDMModal = useCallback(() => {
+    setGroupDMName("");
+    setGroupDMAvatar("");
+    setGroupDMSelection([]);
+    setGroupDMSearch("");
+    setGroupDMError(null);
+    setGroupDMLoading(false);
+  }, []);
+  const closeGroupDMModal = useCallback(() => {
+    resetGroupDMModal();
+    setShowGroupDM(false);
+  }, [resetGroupDMModal]);
+  const closeGroupSettingsModal = useCallback(() => {
+    setGroupSettingsTarget(null);
+    setGroupSettingsDraft({ name: "", avatarUrl: "", moderators: [] });
+    setGroupSettingsError(null);
+    setGroupSettingsSaving(false);
+    setGroupAddSelection([]);
+    setGroupAddQuery("");
+    setGroupAddError(null);
+    setGroupAddSaving(false);
+  }, []);
+  const openGroupSettingsModal = useCallback(
+    (dmId: string) => {
+      const dm = dms.find((entry) => entry.id === dmId);
+      if (!dm) return;
+      setGroupSettingsTarget(dmId);
+      setGroupSettingsDraft({
+        name: dm.title || "",
+        avatarUrl: dm.avatarUrl || "",
+        moderators: dmModerators(dm),
+      });
+      setGroupSettingsError(null);
+      setGroupSettingsSaving(false);
+      setGroupAddSelection([]);
+      setGroupAddQuery("");
+      setGroupAddError(null);
+      setGroupAddSaving(false);
+    },
+    [dms],
+  );
+  const saveGroupSettings = useCallback(async () => {
+    if (!groupSettingsTarget) return;
+    setGroupSettingsSaving(true);
+    setGroupSettingsError(null);
+    try {
+      const res = await fetch('/api/dms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'group-meta',
+          dmId: groupSettingsTarget,
+          title: groupSettingsDraft.name,
+          avatarUrl: groupSettingsDraft.avatarUrl,
+          moderators: groupSettingsDraft.moderators,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.dm) {
+        throw new Error(data?.error || 'Could not update group settings');
+      }
+      setDMs((prev) => prev.map((dm) => (dm.id === data.dm.id ? data.dm : dm)));
+      try {
+        socketRef.current?.emit('dm-updated', { dm: data.dm });
+      } catch {}
+      notify({ title: 'Group updated', type: 'success' });
+      closeGroupSettingsModal();
+    } catch (err: any) {
+      setGroupSettingsError(err?.message || 'Unable to update group settings');
+    } finally {
+      setGroupSettingsSaving(false);
+    }
+  }, [groupSettingsDraft.avatarUrl, groupSettingsDraft.moderators, groupSettingsDraft.name, groupSettingsTarget, closeGroupSettingsModal]);
+  const removeGroupMember = useCallback(
+    async (user: string) => {
+      if (!groupSettingsTarget) return;
+      setGroupSettingsSaving(true);
+      setGroupSettingsError(null);
+      try {
+        const res = await fetch('/api/dms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'group-remove', dmId: groupSettingsTarget, target: user }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.dm) {
+          throw new Error(data?.error || 'Unable to update members');
+        }
+        setDMs((prev) => prev.map((dm) => (dm.id === data.dm.id ? data.dm : dm)));
+        try {
+          socketRef.current?.emit('dm-updated', { dm: data.dm });
+        } catch {}
+        if (data?.removed) {
+          setDMs((prev) => prev.filter((dm) => dm.id !== groupSettingsTarget));
+          if (selectedDM === groupSettingsTarget) setSelectedDM(null);
+          closeGroupSettingsModal();
+          notify({ title: 'Left group DM', type: 'info' });
+          return;
+        }
+        setGroupSettingsDraft((prev) => ({
+          ...prev,
+          moderators: prev.moderators.filter((m) => m !== user),
+        }));
+      } catch (err: any) {
+        setGroupSettingsError(err?.message || 'Unable to update members');
+      } finally {
+        setGroupSettingsSaving(false);
+      }
+    },
+    [groupSettingsTarget, selectedDM, closeGroupSettingsModal],
+  );
+  const toggleDraftModerator = useCallback((user: string) => {
+    setGroupSettingsDraft((prev) => {
+      const exists = prev.moderators.includes(user);
+      if (exists) {
+        return { ...prev, moderators: prev.moderators.filter((m) => m !== user) };
+      }
+      return { ...prev, moderators: [...prev.moderators, user] };
+    });
+  }, []);
+  const toggleGroupDMUser = (user: string) => {
+    setGroupDMSelection((prev) => {
+      if (prev.includes(user)) {
+        const next = prev.filter((u) => u !== user);
+        if (next.length !== prev.length) setGroupDMError(null);
+        return next;
+      }
+      if (prev.length >= MAX_GROUP_DM_TARGETS) {
+        setGroupDMError(`You can add up to ${MAX_GROUP_DM_TARGETS} friends (${MAX_GROUP_DM_MEMBERS} people total including you).`);
+        return prev;
+      }
+      setGroupDMError(null);
+      return [...prev, user];
+    });
+  };
+  const handleGroupDMSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (groupDMSelection.length < 2) {
+      setGroupDMError("Select at least two friends to start a group DM.");
+      return;
+    }
+    if (groupDMSelection.length > MAX_GROUP_DM_TARGETS) {
+      setGroupDMError(`Group DMs support up to ${MAX_GROUP_DM_TARGETS} friends (${MAX_GROUP_DM_MEMBERS} total).`);
+      return;
+    }
+    setGroupDMLoading(true);
+    try {
+      const payload = {
+        action: 'group',
+        targets: groupDMSelection,
+        title: groupDMName.trim(),
+        avatarUrl: groupDMAvatar.trim(),
+      };
+      const res = await fetch('/api/dms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.dm) {
+        throw new Error(data?.error || 'Could not create group DM');
+      }
+      setDMs((prev) => {
+        const filtered = prev.filter((dm) => dm.id !== data.dm.id);
+        return [...filtered, data.dm];
+      });
+      try {
+        socketRef.current?.emit('dm-added', { dm: data.dm });
+      } catch {}
+      if (data?.existed) {
+        notify({ title: 'Existing group found', body: 'Reopening your previous conversation.', type: 'info' });
+      } else {
+        notify({ title: 'Group DM created', type: 'success' });
+      }
+      setSelectedHaven('__dms__');
+      setSelectedDM(data.dm.id);
+      closeGroupDMModal();
+    } catch (err: any) {
+      setGroupDMError(err?.message || 'Could not create group DM');
+    } finally {
+      setGroupDMLoading(false);
+    }
+  };
+  const toggleGroupAddUser = (user: string) => {
+    setGroupAddSelection((prev) => {
+      if (prev.includes(user)) {
+        const next = prev.filter((u) => u !== user);
+        if (next.length !== prev.length) setGroupAddError(null);
+        return next;
+      }
+      const dm = groupSettingsTarget ? dms.find((entry) => entry.id === groupSettingsTarget) : null;
+      const currentCount = dm?.users?.length || 0;
+      if (currentCount + prev.length + 1 > MAX_GROUP_DM_MEMBERS) {
+        setGroupAddError(`Group DMs support up to ${MAX_GROUP_DM_MEMBERS} people.`);
+        return prev;
+      }
+      setGroupAddError(null);
+      return [...prev, user];
+    });
+  };
+  const addMembersToGroup = useCallback(async () => {
+    if (!groupSettingsTarget || groupAddSelection.length === 0) return;
+    setGroupAddSaving(true);
+    setGroupAddError(null);
+    try {
+      const res = await fetch('/api/dms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'group-add', dmId: groupSettingsTarget, targets: groupAddSelection }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.dm) {
+        throw new Error(data?.error || 'Unable to add members');
+      }
+      setDMs((prev) => prev.map((dm) => (dm.id === data.dm.id ? data.dm : dm)));
+      try {
+        socketRef.current?.emit('dm-updated', { dm: data.dm });
+      } catch {}
+      setGroupAddSelection([]);
+      setGroupAddQuery("");
+      notify({ title: 'Members added', type: 'success' });
+    } catch (err: any) {
+      setGroupAddError(err?.message || 'Unable to add members');
+    } finally {
+      setGroupAddSaving(false);
+    }
+  }, [groupAddSelection, groupSettingsTarget, dms]);
 
   const ensureDM = async (target: string) => {
     try {
@@ -813,7 +2332,42 @@ export default function Main({ username }: { username: string }) {
     };
     const handleEditEvent = (payload: { message: Message }) => setMessages(prev => prev.map(m => m.id === payload.message.id ? payload.message : m));
     const handleDeleteEvent = (payload: { messageId: string }) => setMessages(prev => prev.filter(m => m.id !== payload.messageId));
+    const dmAddedHandler = (payload: { dm: DMThread }) => {
+      const dm = payload?.dm;
+      if (!dm || !Array.isArray(dm.users) || !dm.users.includes(username)) return;
+      setDMs((prev) => {
+        const exists = prev.some((existing) => existing.id === dm.id);
+        if (exists) {
+          return prev.map((existing) => (existing.id === dm.id ? dm : existing));
+        }
+        return [...prev, dm];
+      });
+    };
+    const dmUpdatedHandler = (payload: { dm: DMThread }) => {
+      const dm = payload?.dm;
+      if (!dm || typeof dm.id !== 'string') return;
+      setDMs((prev) => {
+        const includesSelf = Array.isArray(dm.users) && dm.users.includes(username);
+        if (!includesSelf) {
+          const filtered = prev.filter((entry) => entry.id !== dm.id);
+          if (filtered.length !== prev.length && selectedDM === dm.id) {
+            setSelectedDM(null);
+          }
+          if (groupSettingsTarget === dm.id) {
+            closeGroupSettingsModal();
+          }
+          return filtered;
+        }
+        const exists = prev.some((entry) => entry.id === dm.id);
+        if (exists) {
+          return prev.map((entry) => (entry.id === dm.id ? dm : entry));
+        }
+        return [...prev, dm];
+      });
+    };
     socketRef.current.on("message", handleSocketMessage);
+    socketRef.current.on("dm-added", dmAddedHandler);
+    socketRef.current.on("dm-updated", dmUpdatedHandler);
     socketRef.current.on("react", handleReact);
     socketRef.current.on("pin", handlePin);
     socketRef.current.on("edit", handleEditEvent);
@@ -821,12 +2375,14 @@ export default function Main({ username }: { username: string }) {
     return () => {
       ignore = true;
       socketRef.current?.off("message", handleSocketMessage);
+      socketRef.current?.off("dm-added", dmAddedHandler);
+      socketRef.current?.off("dm-updated", dmUpdatedHandler);
       socketRef.current?.off("react", handleReact);
       socketRef.current?.off("pin", handlePin);
       socketRef.current?.off("edit", handleEditEvent);
       socketRef.current?.off("delete", handleDeleteEvent);
     };
-  }, [selectedHaven, selectedChannel, selectedDM]);
+  }, [selectedHaven, selectedChannel, selectedDM, username, groupSettingsTarget, closeGroupSettingsModal]);
 
   useEffect(() => {
     if (isAtBottom) {
@@ -861,26 +2417,59 @@ export default function Main({ username }: { username: string }) {
     });
   }, [messages, chResolved]);
 
-  // Load haven members when sidebar is open in a haven
-  useEffect(() => {
-    let ignore = false;
-    if (!showMembers || selectedHaven === '__dms__') return;
-    fetch(`/api/haven-members?haven=${encodeURIComponent(selectedHaven)}`)
-      .then(r => r.json())
-      .then(d => {
-        if (ignore) return;
-        const list = Array.isArray(d.users) ? d.users : [];
-        setHavenMembers(list);
-        if (list.length > 0) {
-          fetch(`/api/user-status?users=${encodeURIComponent(list.join(','))}`)
-            .then(r=>r.json())
-            .then(s => { if (!ignore && s?.statuses) setPresenceMap(prev => ({ ...prev, ...s.statuses })); })
-            .catch(()=>{});
+  const loadHavenMembers = useCallback(
+    async (target: string, opts?: { force?: boolean }) => {
+      if (!target || target === '__dms__') return;
+      if (!opts?.force && havenMembersCacheRef.current[target]) {
+        if (target === selectedHaven) {
+          setHavenMembers(havenMembersCacheRef.current[target]);
         }
-      })
-      .catch(()=>{});
-    return () => { ignore = true; };
-  }, [showMembers, selectedHaven]);
+        return;
+      }
+      setHavenMembersLoading(true);
+      try {
+        const res = await fetch(`/api/haven-members?haven=${encodeURIComponent(target)}`);
+        const data = await res.json().catch(() => null);
+        const rawList = Array.isArray(data?.users) ? data.users : [];
+        const uniqueList = Array.from(new Set([username, ...rawList])).sort();
+        havenMembersCacheRef.current[target] = uniqueList;
+        if (target === selectedHaven) {
+          setHavenMembers(uniqueList);
+        }
+        if (uniqueList.length > 0) {
+          fetch(`/api/user-status?users=${encodeURIComponent(uniqueList.join(','))}`)
+            .then((r) => r.json())
+            .then((s) => {
+              applyUserStatusPayload(s);
+            })
+            .catch(() => {});
+        }
+      } catch {
+        if (!havenMembersCacheRef.current[target] && target === selectedHaven) {
+          setHavenMembers([]);
+        }
+      } finally {
+        if (target === selectedHaven) {
+          setHavenMembersLoading(false);
+        }
+      }
+    },
+    [selectedHaven, username],
+  );
+
+  useEffect(() => {
+    if (!selectedHaven || selectedHaven === '__dms__') {
+      setHavenMembers([]);
+      return;
+    }
+    loadHavenMembers(selectedHaven);
+  }, [selectedHaven, loadHavenMembers]);
+
+  useEffect(() => {
+    if (showMembers && selectedHaven && selectedHaven !== '__dms__') {
+      loadHavenMembers(selectedHaven, { force: true });
+    }
+  }, [showMembers, selectedHaven, loadHavenMembers]);
 
   // Load permissions for current haven and compute Discord-like abilities
   useEffect(() => {
@@ -985,7 +2574,14 @@ export default function Main({ username }: { username: string }) {
         const dm = dms.find(d => d.id === room);
         const updatedRoster = applyParticipantUpdate([
           { user: data.from, status: 'connected' },
-          { user: username, status: 'connected' },
+          {
+            user: username,
+            status: 'connected',
+            muted: isMuted,
+            deafened: isDeafened,
+            videoEnabled: isCameraOn,
+            screenSharing: isScreenSharing,
+          },
           ...(dm ? dm.users.map(user => ({ user, status: 'ringing' as const })) : []),
         ]);
         if (!callInitiator) setCallInitiator(username);
@@ -1031,6 +2627,11 @@ export default function Main({ username }: { username: string }) {
         : null;
       if (normalizedList && normalizedList.length) {
         applyParticipantUpdate(normalizedList, { reset: true });
+        const selfParticipant = normalizedList.find((p) => p.user === username);
+        if (selfParticipant) {
+          if (typeof selfParticipant.muted === 'boolean') setIsMuted(selfParticipant.muted);
+          if (typeof selfParticipant.deafened === 'boolean') setIsDeafened(selfParticipant.deafened);
+        }
         // When we see participants supplied, cancel any fallback timers
         if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
         if (callEndTimerRef.current) { window.clearTimeout(callEndTimerRef.current); callEndTimerRef.current = null; }
@@ -1045,27 +2646,28 @@ export default function Main({ username }: { username: string }) {
         );
         if (fallback.length) applyParticipantUpdate(fallback, { reset: true });
       }
-      if (state === 'in-call') {
-        setActiveCallDM(room);
-        setCallState('in-call');
-        if (startedAt) setCallStartedAt(startedAt);
+        if (state === 'in-call') {
+          setActiveCallDM(room);
+          setCallState('in-call');
+          if (startedAt) setCallStartedAt(startedAt);
         // Cancel any previously scheduled end or ring fallbacks
         if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
         if (callEndTimerRef.current) { window.clearTimeout(callEndTimerRef.current); callEndTimerRef.current = null; }
-      } else if (state === 'calling') {
-        setActiveCallDM(room);
-        if (callState === 'idle') setCallState('calling');
-        // schedule a fallback in case ringing doesn't resolve (avoid infinite ringing)
-        if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
-        ringFallbackTimerRef.current = window.setTimeout(() => {
-          // If still calling and no connected participants, mark idle
-          try {
-            const connected = callParticipantsRef.current.filter(p => p.status === 'connected').length;
-            if (callStateRef.current === 'calling' && connected === 0) {
-              setCallState('idle');
-            }
-          } catch {}
-        }, 60 * 1000);
+        } else if (state === 'calling') {
+          setActiveCallDM(room);
+          const isInitiator = callInitiator === username;
+          if (isInitiator || callState !== 'idle') {
+            if (callState === 'idle') setCallState('calling');
+            if (ringFallbackTimerRef.current) { window.clearTimeout(ringFallbackTimerRef.current); ringFallbackTimerRef.current = null; }
+            ringFallbackTimerRef.current = window.setTimeout(() => {
+              try {
+                const connected = callParticipantsRef.current.filter(p => p.status === 'connected').length;
+                if (callStateRef.current === 'calling' && connected === 0) {
+                  setCallState('idle');
+                }
+              } catch {}
+            }, 60 * 1000);
+          }
       } else if (state === 'idle') {
         // allow a tiny grace window for transient transitions before fully ending
         if (callEndTimerRef.current) window.clearTimeout(callEndTimerRef.current);
@@ -1095,12 +2697,45 @@ export default function Main({ username }: { username: string }) {
         endCall();
       }
     };
+    const renegotiateOfferHandler = async (data: { room: string; offer: RTCSessionDescriptionInit; from: string }) => {
+      const { room, offer } = data || {};
+      if (!room || !offer) return;
+      const relevant =
+        room === activeCallDM ||
+        room === selectedDM ||
+        (!activeCallDM && !selectedDM);
+      if (!relevant || !pcRef.current) return;
+      try {
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pcRef.current.createAnswer();
+        await pcRef.current.setLocalDescription(answer);
+        socketRef.current?.emit('call-renegotiate-answer', { room, answer, from: username });
+      } catch (e) {
+        console.warn('Failed to handle renegotiation offer', e);
+      }
+    };
+    const renegotiateAnswerHandler = async (data: { room: string; answer: RTCSessionDescriptionInit }) => {
+      const { room, answer } = data || {};
+      if (!room || !answer) return;
+      const relevant =
+        room === activeCallDM ||
+        room === selectedDM ||
+        (!activeCallDM && !selectedDM);
+      if (!relevant || !pcRef.current) return;
+      try {
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (e) {
+        console.warn('Failed to apply renegotiation answer', e);
+      }
+    };
     socketRef.current.on('call-offer', offerHandler);
     socketRef.current.on('call-answer', answerHandler);
     socketRef.current.on('ice-candidate', iceHandler);
     socketRef.current.on('call-state', callStateHandler);
     socketRef.current.on('call-decline', callDeclineHandler);
     socketRef.current.on('call-ended', callEndedHandler);
+    socketRef.current.on('call-renegotiate', renegotiateOfferHandler);
+    socketRef.current.on('call-renegotiate-answer', renegotiateAnswerHandler);
     return () => {
       socketRef.current?.off('presence', handler);
       socketRef.current?.off('online-count', countHandler);
@@ -1110,8 +2745,10 @@ export default function Main({ username }: { username: string }) {
       socketRef.current?.off('call-state', callStateHandler);
       socketRef.current?.off('call-decline', callDeclineHandler);
       socketRef.current?.off('call-ended', callEndedHandler);
+      socketRef.current?.off('call-renegotiate', renegotiateOfferHandler);
+      socketRef.current?.off('call-renegotiate-answer', renegotiateAnswerHandler);
     };
-  }, [selectedDM, username, activeCallDM, callState, callStartedAt, dms, incomingCall, callInitiator, notify]);
+  }, [selectedDM, username, activeCallDM, callState, callStartedAt, dms, incomingCall, callInitiator, notify, isMuted, isDeafened, isCameraOn, isScreenSharing]);
 
   // Broadcast my current status when settings or socket change
   useEffect(() => {
@@ -1130,6 +2767,106 @@ export default function Main({ username }: { username: string }) {
       if (!isDeafened) remoteAudioRef.current.play?.().catch(() => {});
     }
   }, [isDeafened, userSettings?.notifications?.volume]);
+
+  useEffect(() => {
+    isScreenSharingRef.current = isScreenSharing;
+  }, [isScreenSharing]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPipPosition({
+      x: Math.max(PIP_MARGIN, window.innerWidth - (DEFAULT_PIP_WIDTH + PIP_MARGIN * 2)),
+      y: Math.max(PIP_TOP_MARGIN, window.innerHeight - (DEFAULT_PIP_HEIGHT + PIP_MARGIN * 2)),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleMove = (event: MouseEvent) => {
+      const ctx = pipInteractionRef.current;
+      if (!ctx) return;
+      event.preventDefault();
+      if (ctx.mode === "move") {
+        const deltaX = event.clientX - ctx.startX;
+        const deltaY = event.clientY - ctx.startY;
+        const maxX = Math.max(PIP_MARGIN, window.innerWidth - ctx.originWidth - PIP_MARGIN);
+        const maxY = Math.max(PIP_TOP_MARGIN, window.innerHeight - ctx.originHeight - PIP_MARGIN);
+        setPipPosition({
+          x: Math.min(Math.max(PIP_MARGIN, ctx.originX + deltaX), maxX),
+          y: Math.min(Math.max(PIP_TOP_MARGIN, ctx.originY + deltaY), maxY),
+        });
+      } else if (ctx.mode === "resize") {
+        const deltaX = event.clientX - ctx.startX;
+        const deltaY = event.clientY - ctx.startY;
+        const width = Math.min(Math.max(MIN_PIP_WIDTH, ctx.originWidth + deltaX), window.innerWidth - PIP_MARGIN * 2);
+        const height = Math.min(Math.max(MIN_PIP_HEIGHT, ctx.originHeight + deltaY), window.innerHeight - PIP_MARGIN - PIP_TOP_MARGIN);
+        setPipSize({ width, height });
+        setPipPosition((prev) => ({
+          x: Math.min(prev.x, Math.max(PIP_MARGIN, window.innerWidth - width - PIP_MARGIN)),
+          y: Math.min(prev.y, Math.max(PIP_TOP_MARGIN, window.innerHeight - height - PIP_MARGIN)),
+        }));
+      }
+    };
+    const handleUp = () => {
+      pipInteractionRef.current = null;
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleResize = () => {
+      setPipPosition((prev) => {
+        const maxX = Math.max(PIP_MARGIN, window.innerWidth - pipSize.width - PIP_MARGIN);
+        const maxY = Math.max(PIP_TOP_MARGIN, window.innerHeight - pipSize.height - PIP_MARGIN);
+        return {
+          x: Math.min(Math.max(PIP_MARGIN, prev.x), maxX),
+          y: Math.min(Math.max(PIP_TOP_MARGIN, prev.y), maxY),
+        };
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [pipSize.height, pipSize.width]);
+
+  useEffect(() => {
+    if (!showFullscreenCall) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowFullscreenCall(false);
+    };
+    window.addEventListener('keydown', handleKey);
+    attachLocalPreview();
+    attachRemoteVideo();
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [showFullscreenCall, attachLocalPreview, attachRemoteVideo]);
+
+  useEffect(() => {
+    if (callState === 'idle') {
+      setShowFullscreenCall(false);
+      stopCamera();
+      stopScreenShare();
+      setRemoteVideoAvailable(false);
+      setScreenShareError(null);
+    }
+  }, [callState, stopCamera, stopScreenShare]);
+
+  useEffect(() => {
+    if (callState === "idle") {
+      pipInteractionRef.current = null;
+      if (pipLocalVideoRef.current) pipLocalVideoRef.current.srcObject = null;
+      if (pipRemoteVideoRef.current) pipRemoteVideoRef.current.srcObject = null;
+      return;
+    }
+    attachLocalPreview();
+    attachRemoteVideo();
+  }, [callState, attachLocalPreview, attachRemoteVideo]);
 
   // Auto-idle: mark activity and toggle idle when inactive
   useEffect(() => {
@@ -1157,6 +2894,15 @@ export default function Main({ username }: { username: string }) {
       clearInterval(timer);
     };
   }, [autoIdleEnabled, currentStatus, autoIdle]);
+
+  useEffect(() => {
+    if (!showNewHavenModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeNewHavenModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showNewHavenModal, closeNewHavenModal]);
 
   // Close context menu on click elsewhere / Escape
   useEffect(() => {
@@ -1241,9 +2987,12 @@ export default function Main({ username }: { username: string }) {
       }
     }
     if (t.type === 'dm' && t.data) {
-      const dm = t.data as { id: string; users: string[] };
+      const dm = t.data as DMThread;
       if (act === 'copy_users') copyText(dm.users.join(', '));
       if (act === 'close') setDMs(prev => prev.filter(x => x.id !== dm.id));
+      if (act === 'group_settings' && dm.id && isGroupDMThread(dm) && canManageGroupDM(dm)) {
+        openGroupSettingsModal(dm.id);
+      }
     }
     if (t.type === 'call') {
       const room = activeCallDM || selectedDM || (t.data && t.data.room);
@@ -1322,7 +3071,10 @@ export default function Main({ username }: { username: string }) {
       items.push({ id: `h:${h}`, label: `Haven · ${h}`, type: 'haven', haven: h });
       (havens[h] || []).forEach(ch => items.push({ id: `c:${h}:${ch}`, label: `#${ch} — ${h}`, type: 'channel', haven: h, channel: ch }));
     });
-    dms.forEach(dm => items.push({ id: `d:${dm.id}`, label: `DM · ${dm.users.filter(u => u !== username).join(', ')}`, type: 'dm', dmId: dm.id }));
+    dms.forEach(dm => {
+      const prefix = isGroupDMThread(dm) ? 'Group DM' : 'DM';
+      items.push({ id: `d:${dm.id}`, label: `${prefix} · ${getDMTitle(dm)}`, type: 'dm', dmId: dm.id });
+    });
     return items;
   };
   const filterQuickItems = (items: QuickItem[], q: string) => {
@@ -1385,7 +3137,7 @@ export default function Main({ username }: { username: string }) {
       try {
         const r = await fetch(`/api/user-status?users=${encodeURIComponent(others.join(','))}`);
         const d = await r.json();
-        if (d && d.statuses) setPresenceMap(prev => ({ ...prev, ...d.statuses }));
+        applyUserStatusPayload(d);
       } catch {}
     })();
   }, [selectedDM, dms, username]);
@@ -1658,12 +3410,21 @@ export default function Main({ username }: { username: string }) {
       setHavens(prev => ({ ...prev, [name]: ["general"] }));
       // Set creator as Owner role for this haven
       try {
-        await fetch("/api/permissions", {
+        const res = await fetch("/api/permissions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ haven: name, action: "set-owner", user: username })
         });
-      } catch {}
+        if (!res.ok) {
+          throw new Error(await res.text().catch(() => 'Failed'));
+        }
+      } catch (err: any) {
+        notify({
+          title: "Owner assignment failed",
+          body: typeof err?.message === 'string' ? err.message : 'Please verify permissions inside Haven Settings.',
+          type: "error",
+        });
+      }
     }
     setSelectedHaven(name);
     setSelectedChannel("general");
@@ -1728,10 +3489,8 @@ export default function Main({ username }: { username: string }) {
     });
   };
 
-  // Hover state for message hover controls + shift key tracking used elsewhere in the component
-  const [hoveredMsg, setHoveredMsgState] = useState<string | null>(null);
+  // Shift key tracking for expanded hover tools
   const [shiftDown, setShiftDown] = useState(false);
-
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(true); };
     const onKeyUp = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(false); };
@@ -1742,18 +3501,219 @@ export default function Main({ username }: { username: string }) {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, []);
-
-  // Provide a compatible setter used throughout the component.
-  // Accepts either a string (id) or an updater function like React's setState.
-  const setHoveredMsg = (idOrUpdater: string | ((prev: string | null) => string | null)) => {
-    if (typeof idOrUpdater === "function") {
-      setHoveredMsgState(prev => (idOrUpdater as (prev: string | null) => string | null)(prev));
-    } else {
-      setHoveredMsgState(idOrUpdater);
+  const shellFilterParts: string[] = [];
+  if (isBooting) shellFilterParts.push('blur(4px)');
+  if (privacyBlurActive) shellFilterParts.push('blur(10px)');
+  const shellFilter = shellFilterParts.length ? shellFilterParts.join(' ') : 'none';
+  const shellPointerEvents = isBooting ? 'none' : 'auto';
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleFocus = () => setWindowFocused(true);
+    const handleBlur = () => setWindowFocused(false);
+    const handleVisibility = () => {
+      if (typeof document === "undefined") return;
+      setWindowFocused(!document.hidden);
+    };
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
     }
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      }
+    };
+  }, []);
+  const overlayMessage = "Tab unfocused - focus ChitterHaven to reveal";
+  const overlayBackground = 'rgba(2,6,23,0.55)';
+  const privacyOverlay = !privacyBlurActive ? null : (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
+        padding: 20,
+        background: overlayBackground,
+        color: COLOR_TEXT,
+        fontWeight: 600,
+        letterSpacing: 0.5,
+        zIndex: 120,
+        pointerEvents: 'none',
+        opacity: privacyBlurActive ? 1 : 0,
+        transition: 'opacity 200ms ease'
+      }}
+    >
+      {overlayMessage}
+    </div>
+  );
+  const streamerBadge = streamerMode ? (
+    <div
+      style={{
+        position: 'fixed',
+        top: 16,
+        right: 16,
+        zIndex: 130,
+        padding: '6px 12px',
+        borderRadius: 999,
+        border: '1px solid rgba(99,102,241,0.4)',
+        background: 'rgba(15,23,42,0.85)',
+        color: '#c7d2fe',
+        fontSize: 12,
+        fontWeight: 600,
+        letterSpacing: 0.5,
+        pointerEvents: 'none'
+      }}
+    >
+      Streamer Mode
+    </div>
+  ) : null;
+  const viewerAvatar = userProfileCache[username]?.avatarUrl || '/favicon.ico';
+  const viewerDisplay = displayNameFor(username);
+  const openSelfProfile = () => {
+    setProfileContext("Your Profile");
+    setProfileUser(username);
   };
+  const profileLauncher = (
+    <div
+      style={{
+        position: 'fixed',
+        top: 16,
+        left: 16,
+        zIndex: 131,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0,
+      }}
+      onMouseEnter={() => setProfileLauncherHover(true)}
+      onMouseLeave={() => setProfileLauncherHover(false)}
+    >
+      <button
+        type="button"
+        onClick={openSelfProfile}
+        title="View your profile"
+        style={{
+          width: 48,
+          height: 48,
+          borderRadius: '50%',
+          border: '2px solid rgba(99,102,241,0.4)',
+          boxShadow: '0 10px 24px rgba(0,0,0,0.4)',
+          background: '#020617',
+          padding: 0,
+          cursor: 'pointer',
+          overflow: 'hidden',
+          position: 'relative',
+          zIndex: 2,
+        }}
+      >
+        <img
+          src={viewerAvatar}
+          alt="Your profile"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      </button>
+      <div
+        style={{
+          marginLeft: 12,
+          padding: '10px 18px',
+          background: 'rgba(2,6,23,0.94)',
+          border: '1px solid rgba(99,102,241,0.45)',
+          borderRadius: 18,
+          boxShadow: '0 16px 32px rgba(2,6,23,0.6)',
+          minWidth: 150,
+          display: 'flex',
+          flexDirection: 'column',
+          opacity: profileLauncherHover ? 1 : 0,
+          transform: profileLauncherHover ? 'translateX(0)' : 'translateX(-8px)',
+          pointerEvents: profileLauncherHover ? 'auto' : 'none',
+          transition: 'opacity 160ms ease, transform 160ms ease',
+        }}
+      >
+        <div style={{ fontWeight: 600, color: COLOR_TEXT, fontSize: 13 }}>{viewerDisplay}</div>
+        <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{username}</div>
+      </div>
+    </div>
+  );
+
   if (isMobile) {
     return (
+      <>
+        <div
+          className="ch-shell"
+          style={{
+            display: "flex",
+            height: isMobile ? "calc(100vh - 1rem)" : "70vh",
+            width: "100%",
+            maxWidth: isMobile ? "100%" : 1100,
+            minWidth: 320,
+            margin: isMobile ? "0.5rem auto" : "2rem auto",
+            border: BORDER,
+            borderRadius: isMobile ? 10 : 14,
+            background: "var(--ch-shell-bg)",
+            backgroundSize: "var(--ch-shell-bg-size, cover)",
+            backgroundPosition: "var(--ch-shell-bg-position, center)",
+            backgroundRepeat: "var(--ch-shell-bg-repeat, no-repeat)",
+            boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
+            filter: shellFilter,
+            pointerEvents: shellPointerEvents,
+            transition: 'filter 220ms ease'
+          }}
+        >
+          <MobileApp
+            activeNav={activeNav}
+            setActiveNav={setActiveNav}
+            isMobile={isMobile}
+            setShowMobileNav={setShowMobileNav}
+            havens={havens}
+            setSelectedHaven={setSelectedHaven}
+            selectedHaven={selectedHaven}
+            dms={dms}
+            selectedDM={selectedDM}
+            setSelectedDM={setSelectedDM}
+            setShowUserSettings={setShowUserSettings}
+            setShowServerSettings={setShowServerSettings}
+            setSelectedChannel={setSelectedChannel}
+            selectedChannel={selectedChannel}
+            messages={messages}
+            input={input}
+            setInput={setInput}
+            sendMessage={sendMessage}
+            typingUsers={typingUsers}
+            showTimestamps={showTimestamps}
+            showMobileNav={showMobileNav}
+            currentAvatarUrl={(userProfileCache && userProfileCache[username] && userProfileCache[username].avatarUrl) || '/favicon.ico'}
+            accent={accent}
+            appearance={appearance}
+            lastSelectedDMRef={lastSelectedDMRef}
+            setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
+            statusMessageMap={statusMessageMap}
+            richPresenceMap={richPresenceMap}
+            handleEdit={handleEdit}
+            handleDelete={handleDelete}
+            handleReply={handleReply}
+            editId={editId}
+            editText={editText}
+            setEditText={setEditText}
+            handleEditSubmit={handleEditSubmit}
+            cancelEdit={() => { setEditId(null); setEditText(''); }}
+            toggleReaction={toggleReaction}
+            username={username}
+          />
+        </div>
+        {!isMobile && profileLauncher}
+        {streamerBadge}
+        {privacyOverlay}
+      </>
+    );
+  }
+
+  return (
+    <>
       <div
         className="ch-shell"
         style={{
@@ -1763,72 +3723,18 @@ export default function Main({ username }: { username: string }) {
           maxWidth: isMobile ? "100%" : 1100,
           minWidth: 320,
           margin: isMobile ? "0.5rem auto" : "2rem auto",
-          border: "1px solid #2a3344",
+          border: BORDER,
           borderRadius: isMobile ? 10 : 14,
-          background: "linear-gradient(180deg, rgba(15,23,42,0.85), rgba(17,24,39,0.82))",
+          background: "var(--ch-shell-bg)",
+          backgroundSize: "var(--ch-shell-bg-size, cover)",
+          backgroundPosition: "var(--ch-shell-bg-position, center)",
+          backgroundRepeat: "var(--ch-shell-bg-repeat, no-repeat)",
           boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
-          filter: isBooting ? 'blur(4px)' : 'none',
-          pointerEvents: isBooting ? 'none' : 'auto'
+          filter: shellFilter,
+          pointerEvents: shellPointerEvents,
+          transition: 'filter 220ms ease'
         }}
       >
-        <MobileApp
-          activeNav={activeNav}
-          setActiveNav={setActiveNav}
-          isMobile={isMobile}
-          setShowMobileNav={setShowMobileNav}
-          havens={havens}
-          setSelectedHaven={setSelectedHaven}
-          selectedHaven={selectedHaven}
-          dms={dms}
-          selectedDM={selectedDM}
-          setSelectedDM={setSelectedDM}
-          setShowUserSettings={setShowUserSettings}
-          setShowServerSettings={setShowServerSettings}
-          setSelectedChannel={setSelectedChannel}
-          selectedChannel={selectedChannel}
-          messages={messages}
-          input={input}
-          setInput={setInput}
-          sendMessage={sendMessage}
-          typingUsers={typingUsers}
-          showMobileNav={showMobileNav}
-          currentAvatarUrl={(userProfileCache && userProfileCache[username] && userProfileCache[username].avatarUrl) || '/favicon.ico'}
-          accent={accent}
-          lastSelectedDMRef={lastSelectedDMRef}
-          setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
-          handleEdit={handleEdit}
-          handleDelete={handleDelete}
-          handleReply={handleReply}
-          editId={editId}
-          editText={editText}
-          setEditText={setEditText}
-          handleEditSubmit={handleEditSubmit}
-          cancelEdit={() => { setEditId(null); setEditText(''); }}
-          toggleReaction={toggleReaction}
-          username={username}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="ch-shell"
-      style={{
-        display: "flex",
-        height: isMobile ? "calc(100vh - 1rem)" : "70vh",
-        width: "100%",
-        maxWidth: isMobile ? "100%" : 1100,
-        minWidth: 320,
-        margin: isMobile ? "0.5rem auto" : "2rem auto",
-        border: "1px solid #2a3344",
-        borderRadius: isMobile ? 10 : 14,
-        background: "linear-gradient(180deg, rgba(15,23,42,0.85), rgba(17,24,39,0.82))",
-        boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
-        filter: isBooting ? 'blur(4px)' : 'none',
-        pointerEvents: isBooting ? 'none' : 'auto'
-      }}
-    >
       <NavController
         activeNav={activeNav}
         setActiveNav={setActiveNav}
@@ -1848,40 +3754,149 @@ export default function Main({ username }: { username: string }) {
         setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
       />
       {/* Havens sidebar */}
-      <aside style={{ width: compactSidebar ? 120 : 160, background: '#0b1222', borderRight: '1px solid #1f2937', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb', fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <aside style={{ width: navSidebarWidth, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><FontAwesomeIcon icon={faServer} /> {labelHavens}</span>
-          {selectedHaven !== '__dms__' && permState.canManageServer && (
-            <button title="Server Settings" style={{ background: 'none', border: '1px solid #1f2937', borderRadius: 8, color: accent, cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center' }} onClick={() => setShowServerSettings(true)}>
-              <FontAwesomeIcon icon={faGear} />
-            </button>
-          )}
-        </div>
-        <div style={{ padding: 10, borderBottom: '1px solid #111827' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0f172a', border: '1px solid #1f2937', borderRadius: 8, padding: '6px 8px' }}>
-            <FontAwesomeIcon icon={faMagnifyingGlass} style={{ color: '#9ca3af' }} />
-            <input value={havenFilter} onChange={(e)=> setHavenFilter(e.target.value)} placeholder="Search havens" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e5e7eb', fontSize: 13 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setHavenSearchOpen((prev) => !prev)}
+                aria-label="Toggle haven search"
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 999,
+                  border: BORDER,
+                  background: havenSearchOpen ? COLOR_CARD : COLOR_PANEL_ALT,
+                  color: COLOR_TEXT,
+                  cursor: 'pointer',
+                }}
+              >
+                <FontAwesomeIcon icon={faMagnifyingGlass} />
+              </button>
+              <input
+                value={havenFilter}
+                onChange={(e)=> setHavenFilter(e.target.value)}
+                placeholder="Search havens"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  right: 36,
+                  width: havenSearchOpen ? 140 : 0,
+                  opacity: havenSearchOpen ? 1 : 0,
+                  pointerEvents: havenSearchOpen ? 'auto' : 'none',
+                  transition: 'width 160ms ease, opacity 160ms ease',
+                  padding: havenSearchOpen ? '4px 8px' : 0,
+                  borderRadius: 8,
+                  border: BORDER,
+                  background: COLOR_PANEL_ALT,
+                  color: COLOR_TEXT,
+                  fontSize: 13,
+                }}
+              />
+            </div>
+            {selectedHaven !== '__dms__' && permState.canManageServer && (
+              <button title="Server Settings" style={{ background: 'none', border: BORDER, borderRadius: 8, color: accent, cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center' }} onClick={() => setShowServerSettings(true)}>
+                <FontAwesomeIcon icon={faGear} />
+              </button>
+            )}
           </div>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-          <div key="__dms__" onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel(''); setSelectedDM(null); }} title="Direct Messages" style={{ padding: '10px 10px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: selectedHaven === '__dms__' ? '#111a2e' : '#0b1222', color: selectedHaven === '__dms__' ? accent : '#e5e7eb', fontWeight: selectedHaven === '__dms__' ? 700 : 500, border: '1px solid #1f2937', borderLeft: selectedHaven === '__dms__' ? `3px solid ${accent}` : '3px solid transparent', borderRadius: 10 }}>
-            <FontAwesomeIcon icon={faEnvelope} /> <span>DMs</span>
+        <div style={{ flex: 1, overflowY: 'auto', padding: showHavenIconsOnly ? 8 : 12 }}>
+          <div
+            key="__dms__"
+            onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel(''); setSelectedDM(null); }}
+            title="Direct Messages"
+            style={{
+              padding: showHavenIconsOnly ? 4 : '10px 10px',
+              marginBottom: 6,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: showHavenIconsOnly ? 'center' : 'flex-start',
+              gap: showHavenIconsOnly ? 0 : 8,
+              cursor: 'pointer',
+              background: showHavenIconsOnly ? 'transparent' : (selectedHaven === '__dms__' ? COLOR_CARD : COLOR_PANEL),
+              color: selectedHaven === '__dms__' ? accent : COLOR_TEXT,
+              fontWeight: selectedHaven === '__dms__' ? 700 : 500,
+              border: showHavenIconsOnly ? 'none' : BORDER,
+              borderLeft: showHavenIconsOnly ? undefined : (selectedHaven === '__dms__' ? `3px solid ${accent}` : '3px solid transparent'),
+              borderRadius: showHavenIconsOnly ? 999 : 10,
+            }}
+          >
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#111c32', display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT, border: selectedHaven === '__dms__' ? `2px solid ${accent}` : BORDER }}>
+              <FontAwesomeIcon icon={faEnvelope} />
+            </div>
+            {!showHavenIconsOnly && <span>DMs</span>}
           </div>
-          {Object.keys(havens)
-            .filter(h => h.toLowerCase().includes(havenFilter.trim().toLowerCase()))
-            .map(haven => (
-              <div key={haven} onClick={() => handleHavenChange(haven)} title={`${labelHaven} ${haven} · Code: ${havenCode(haven)}`} style={{ padding: '10px 10px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: selectedHaven === haven ? '#111a2e' : '#0b1222', color: selectedHaven === haven ? accent : '#e5e7eb', fontWeight: selectedHaven === haven ? 700 : 500, border: '1px solid #1f2937', borderLeft: selectedHaven === haven ? `3px solid ${accent}` : '3px solid transparent', borderRadius: 10 }}>
-                <FontAwesomeIcon icon={faServer} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{haven}</span>
-              </div>
-            ))}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${showHavenIconsOnly ? Math.min(5, havenColumns) : 1}, minmax(0, 1fr))`,
+            gap: showHavenIconsOnly ? 12 : 0,
+          }}>
+            {Object.keys(havens)
+              .filter(h => h.toLowerCase().includes(havenFilter.trim().toLowerCase()))
+              .map(haven => {
+                const active = selectedHaven === haven;
+                const revealKey = `haven-${haven}`;
+                const badge = havenBadgeFor(haven);
+                return (
+                  <div
+                    key={haven}
+                    onClick={() => handleHavenChange(haven)}
+                    title={`${labelHaven} ${haven} · Code: ${havenCode(haven)}`}
+                    style={{
+                      padding: showHavenIconsOnly ? 6 : '10px 10px',
+                      marginBottom: showHavenIconsOnly ? 0 : 6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: showHavenIconsOnly ? 'center' : 'flex-start',
+                      gap: showHavenIconsOnly ? 0 : 10,
+                      cursor: 'pointer',
+                      background: showHavenIconsOnly ? 'transparent' : (active ? COLOR_CARD : COLOR_PANEL),
+                      color: active ? accent : COLOR_TEXT,
+                      fontWeight: active ? 700 : 500,
+                      border: showHavenIconsOnly ? 'none' : BORDER,
+                      borderLeft: showHavenIconsOnly ? undefined : (active ? `3px solid ${accent}` : '3px solid transparent'),
+                      borderRadius: showHavenIconsOnly ? 999 : 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: showHavenIconsOnly ? 42 : 34,
+                        height: showHavenIconsOnly ? 42 : 34,
+                        borderRadius: '50%',
+                        background: badge.background,
+                        color: '#f8fafc',
+                        fontWeight: 700,
+                        fontSize: showHavenIconsOnly ? 16 : 14,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        border: active ? `2px solid ${accent}` : '1px solid rgba(255,255,255,0.1)',
+                      }}
+                      onMouseEnter={() => beginStreamerReveal(revealKey)}
+                      onMouseLeave={() => endStreamerReveal(revealKey)}
+                    >
+                      {badge.initials}
+                    </div>
+                    {!showHavenIconsOnly && (
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {renderHavenLabel(haven, revealKey)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
         </div>
-        <div style={{ padding: 10, borderTop: '1px solid #111827' }}>
+        <div style={{ padding: 10, borderTop: BORDER }}>
           <button
             type="button"
             className="btn-ghost"
             title="Join or create haven"
             onClick={() => { setNewHaven(""); setNewHavenType('standard'); setHavenAction('create'); setShowNewHavenModal(true); }}
-            style={{ width: '100%', justifyContent: 'center', padding: '8px 10px', color: accent, borderRadius: 8, border: '1px solid #1f2937', background: '#020617' }}
+            style={{ width: '100%', justifyContent: 'center', padding: '8px 10px', color: accent, borderRadius: 8, border: BORDER, background: '#020617' }}
           >
             <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} /> New Haven
           </button>
@@ -1914,26 +3929,48 @@ export default function Main({ username }: { username: string }) {
           setInput={setInput}
           sendMessage={sendMessage}
           typingUsers={typingUsers}
+          showTimestamps={showTimestamps}
           currentAvatarUrl={(userProfileCache && userProfileCache[username] && userProfileCache[username].avatarUrl) || '/favicon.ico'}
+          userProfileCache={userProfileCache}
           accent={accent}
+          appearance={appearance}
           lastSelectedDMRef={lastSelectedDMRef}
           setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
+          friendsState={friendsState}
+          friendsTab={friendsTab}
+          friendAction={friendAction}
+          ensureDM={ensureDM}
+          statusMessageMap={statusMessageMap}
+          richPresenceMap={richPresenceMap}
+          presenceMap={presenceMap}
+          callsEnabled={callsEnabled}
+          callState={callState}
+          startCall={startCall}
+          endCall={endCall}
+          activeCallDM={activeCallDM}
+          callParticipants={callParticipants}
+          callElapsed={callElapsed}
+          callInitiator={callInitiator}
+          isMuted={isMuted}
+          isDeafened={isDeafened}
+          toggleMute={toggleMute}
+          toggleDeafen={toggleDeafen}
         />
       )}
 
       {/* Mobile-only Profile view */}
       {isMobile && activeNav === 'profile' && (
-        <div className="block md:hidden" style={{ width: '100%', padding: 12, background: '#071127', borderBottom: '1px solid #111827' }}>
+        <div className="block md:hidden" style={{ width: '100%', padding: 12, background: '#071127', borderBottom: BORDER }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#e5e7eb' }}><FontAwesomeIcon icon={faUser} /> Profile</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: COLOR_TEXT }}><FontAwesomeIcon icon={faUser} /> Profile</div>
             <button className="btn-ghost" onClick={() => setShowUserSettings(true)} style={{ padding: '6px 8px' }}>Edit</button>
           </div>
           <div style={{ color: '#9ca3af' }}>Mobile profile view — separate from desktop profile UI.</div>
         </div>
       )}
       {/* Channels / DMs sidebar */}
-      <aside style={{ width: compactSidebar ? 180 : 220, background: '#0f172a', borderRight: '1px solid #1f2937', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb', fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      <aside style={{ width: channelSidebarWidth, background: COLOR_PANEL_ALT, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={selectedHaven === "__dms__" ? faEnvelope : faHashtag} />
             {selectedHaven === "__dms__" ? 'Direct Messages' : 'Channels'}
@@ -1963,9 +4000,9 @@ export default function Main({ username }: { username: string }) {
             </div>
           )}
         </div>
-        <div style={{ padding: 10, borderBottom: '1px solid #111827' }}>
+        <div style={{ padding: 10, borderBottom: BORDER }}>
           {showInvitePanel && selectedHaven !== '__dms__' && (
-            <div style={{ marginBottom: 8, padding: 8, borderRadius: 8, border: '1px solid #1f2937', background: '#020617', color: '#e5e7eb', fontSize: 12 }}>
+            <div style={{ marginBottom: 8, padding: 8, borderRadius: 8, border: BORDER, background: '#020617', color: COLOR_TEXT, fontSize: 12 }}>
               <div style={{ marginBottom: 6 }}>Invite to <span style={{ color: accent }}>{selectedHaven}</span></div>
               <div style={{ marginBottom: 6 }}>
                 <span style={{ color: '#9ca3af' }}>Expires in:</span>
@@ -1980,8 +4017,8 @@ export default function Main({ username }: { username: string }) {
                         padding: '2px 6px',
                         fontSize: 11,
                         borderRadius: 999,
-                        border: inviteDays === d ? `1px solid ${accent}` : '1px solid #1f2937',
-                        color: inviteDays === d ? accent : '#e5e7eb'
+                        border: inviteDays === d ? `1px solid ${accent}` : BORDER,
+                        color: inviteDays === d ? accent : COLOR_TEXT
                       }}
                     >
                       {d === 0 ? 'Never' : `${d}d`}
@@ -2002,8 +4039,8 @@ export default function Main({ username }: { username: string }) {
                         padding: '2px 6px',
                         fontSize: 11,
                         borderRadius: 999,
-                        border: inviteMaxUses === n ? `1px solid ${accent}` : '1px solid #1f2937',
-                        color: inviteMaxUses === n ? accent : '#e5e7eb'
+                        border: inviteMaxUses === n ? `1px solid ${accent}` : BORDER,
+                        color: inviteMaxUses === n ? accent : COLOR_TEXT
                       }}
                     >
                       {n === 0 ? 'Unlimited' : n}
@@ -2021,64 +4058,193 @@ export default function Main({ username }: { username: string }) {
                 {creatingInvite ? 'Creating…' : 'Generate Invite'}
               </button>
               {inviteCode && (
-                <div style={{ marginTop: 6, color: '#9ca3af' }}>Last invite: <span style={{ color: '#e5e7eb' }}>{inviteCode}</span></div>
+                <div style={{ marginTop: 6, color: '#9ca3af' }}>Last invite: <span style={{ color: COLOR_TEXT }}>{inviteCode}</span></div>
               )}
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#0b1222', border: '1px solid #1f2937', borderRadius: 8, padding: '6px 8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: COLOR_PANEL, border: BORDER, borderRadius: 8, padding: '6px 8px' }}>
             <FontAwesomeIcon icon={faMagnifyingGlass} style={{ color: '#9ca3af' }} />
             {selectedHaven === "__dms__" ? (
-              <input value={dmFilter} onChange={(e)=> setDmFilter(e.target.value)} placeholder="Search DMs" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e5e7eb', fontSize: 13 }} />
+              <input value={dmFilter} onChange={(e)=> setDmFilter(e.target.value)} placeholder="Search DMs" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: COLOR_TEXT, fontSize: 13 }} />
             ) : (
-              <input value={channelFilter} onChange={(e)=> setChannelFilter(e.target.value)} placeholder="Search channels" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e5e7eb', fontSize: 13 }} />
+              <input value={channelFilter} onChange={(e)=> setChannelFilter(e.target.value)} placeholder="Search channels" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: COLOR_TEXT, fontSize: 13 }} />
             )}
           </div>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
           {selectedHaven === "__dms__" ? (
             <>
-              <div key="friends-home" onClick={() => setSelectedDM(null)} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedDM === null ? '#111a2e' : 'transparent', color: selectedDM === null ? accent : '#e5e7eb', fontWeight: selectedDM === null ? 700 : 500, borderRadius: 10, border: selectedDM === null ? '1px solid #1f2937' : '1px solid transparent', marginBottom: 6 }}>
+              <div key="friends-home" onClick={() => setSelectedDM(null)} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedDM === null ? COLOR_CARD : 'transparent', color: selectedDM === null ? accent : COLOR_TEXT, fontWeight: selectedDM === null ? 700 : 500, borderRadius: 10, border: selectedDM === null ? BORDER : '1px solid transparent', marginBottom: 6 }}>
                 <FontAwesomeIcon icon={faEnvelope} /> Friends
               </div>
-              {dms.length === 0 ? (
-                <div style={{ color: '#9ca3af', padding: 12 }}>No DMs yet.</div>
+              {filteredDMs.length === 0 ? (
+                <div style={{ color: '#9ca3af', padding: 12 }}>
+                  {dms.length === 0 ? 'No DMs yet.' : 'No DMs match your search.'}
+                </div>
               ) : (
-                dms
-                  .filter(dm => dm.users.filter(u => u !== username).join(', ').toLowerCase().includes(dmFilter.trim().toLowerCase()))
-                  .map(dm => {
-                    const others = dm.users.filter(u => u !== username);
-                    const status = statusColor(presenceMap[others[0]]);
-                    return (
-                      <div key={dm.id} onClick={() => { setSelectedDM(dm.id); }} onContextMenu={(e) => openCtx(e, { type: 'dm', data: dm })} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedDM === dm.id ? '#111a2e' : 'transparent', color: selectedDM === dm.id ? accent : '#e5e7eb', fontWeight: selectedDM === dm.id ? 700 : 500, borderRadius: 10, border: selectedDM === dm.id ? '1px solid #1f2937' : '1px solid transparent', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ width: 8, height: 8, borderRadius: 999, background: status }} />
-                        <FontAwesomeIcon icon={faUsers} /> {others.join(', ')}
+                filteredDMs.map(dm => {
+                  const revealKey = `dm-${dm.id}`;
+                  const members = dmMembersWithoutSelf(dm);
+                  const isGroup = isGroupDMThread(dm);
+                  const first = members[0];
+                  const avatar = first ? userProfileCache[first]?.avatarUrl || '/favicon.ico' : '/favicon.ico';
+                  const groupAvatar = getDMAvatar(dm);
+                  const showGroupAvatar = isGroup && !!groupAvatar;
+                  const dotColor = statusColor(first ? presenceMap[first] : undefined);
+                  const statusMessage = !isGroup && first ? statusMessageMap[first] : "";
+                  const richPresence = !isGroup && first ? formatRichPresence(richPresenceMap[first]) : null;
+                  const extraMembers = Math.max(0, members.length - 3);
+                  const previewNames = members.slice(0, 3).map((user, idx) => (
+                    <Fragment key={`${dm.id}-${user}`}>
+                      {idx > 0 && ', '}
+                      {renderDisplayName(user, { revealKey })}
+                    </Fragment>
+                  ));
+                  const titleNode = renderDMLabel(dm, { revealKey });
+                  const titleText = getDMTitle(dm);
+                  return (
+                    <div
+                      key={dm.id}
+                      onClick={() => { setSelectedDM(dm.id); }}
+                      onContextMenu={(e) => openCtx(e, { type: 'dm', data: dm })}
+                      style={{
+                        padding: '10px 12px',
+                        cursor: 'pointer',
+                        background: selectedDM === dm.id ? COLOR_CARD : 'transparent',
+                        color: selectedDM === dm.id ? accent : COLOR_TEXT,
+                        fontWeight: selectedDM === dm.id ? 700 : 500,
+                        borderRadius: 10,
+                        border: selectedDM === dm.id ? BORDER : '1px solid transparent',
+                        marginBottom: 6,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10
+                      }}
+                    >
+                      <div
+                        style={{ position: 'relative', width: 40, flex: '0 0 auto', display: 'flex', alignItems: 'center' }}
+                        onMouseEnter={() => beginStreamerReveal(revealKey)}
+                        onMouseLeave={() => endStreamerReveal(revealKey)}
+                      >
+                        {isGroup ? (
+                          showGroupAvatar ? (
+                            <img
+                              src={groupAvatar}
+                              alt={titleText || 'Group avatar'}
+                              style={{ width: 40, height: 40, borderRadius: '35%', border: BORDER, objectFit: 'cover', background: COLOR_PANEL }}
+                            />
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                              {members.slice(0, 3).map((user, idx) => {
+                                const profile = userProfileCache[user];
+                                const src = profile?.avatarUrl || '/favicon.ico';
+                                return (
+                                  <img
+                                    key={`${dm.id}-avatar-${user}`}
+                                    src={src}
+                                    alt={user}
+                                    style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: '50%',
+                                      border: BORDER,
+                                      objectFit: 'cover',
+                                      marginLeft: idx === 0 ? 0 : -10,
+                                      background: COLOR_PANEL,
+                                    }}
+                                  />
+                                );
+                              })}
+                              {extraMembers > 0 && (
+                                <div style={{ marginLeft: -10, width: 26, height: 26, borderRadius: '50%', border: BORDER, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>
+                                  +{extraMembers}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        ) : (
+                          <>
+                            <img
+                              src={avatar}
+                              alt={first || 'DM'}
+                              style={{ width: 36, height: 36, borderRadius: '50%', border: BORDER, objectFit: 'cover' }}
+                            />
+                            <span
+                              style={{
+                                position: 'absolute',
+                                bottom: 2,
+                                right: 2,
+                                width: 10,
+                                height: 10,
+                                borderRadius: '50%',
+                                border: `2px solid ${COLOR_PANEL}`,
+                                background: dotColor
+                              }}
+                            />
+                          </>
+                        )}
                       </div>
-                    );
-                  })
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <span>{titleNode}</span>
+                        <span style={{ fontSize: 11, color: '#9ca3af', display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                          {isGroup ? (
+                            <>
+                              {previewNames}
+                              {extraMembers > 0 && <> +{extraMembers}</>}
+                              <span style={{ opacity: 0.7 }}>• {dm.users.length} members</span>
+                            </>
+                          ) : (
+                            previewNames
+                          )}
+                        </span>
+                        {!isGroup && statusMessage && (
+                          <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>{statusMessage}</span>
+                        )}
+                        {!isGroup && richPresence && (
+                          <span style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
               )}
-            </> 
+            </>
           ) : (
             (havens[selectedHaven] || [])
               .filter(ch => ch.toLowerCase().includes(channelFilter.trim().toLowerCase()))
               .map((ch) => (
-                <div key={ch} onClick={() => { setSelectedDM(null); handleChannelChange(ch); }} onContextMenu={(e) => openCtx(e, { type: 'channel', data: ch })} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedChannel === ch ? '#111a2e' : 'transparent', color: selectedChannel === ch ? accent : '#e5e7eb', fontWeight: selectedChannel === ch ? 700 : 500, borderRadius: 10, border: selectedChannel === ch ? '1px solid #1f2937' : '1px solid transparent', marginBottom: 6 }}>
+                <div key={ch} onClick={() => { setSelectedDM(null); handleChannelChange(ch); }} onContextMenu={(e) => openCtx(e, { type: 'channel', data: ch })} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? accent : COLOR_TEXT, fontWeight: selectedChannel === ch ? 700 : 500, borderRadius: 10, border: selectedChannel === ch ? BORDER : '1px solid transparent', marginBottom: 6 }}>
                   <FontAwesomeIcon icon={faHashtag} /> #{ch}
                 </div>
               ))
           )}
         </div>
-        {selectedHaven !== "__dms__" && permState.canManageChannels && (
-          <div style={{ padding: 12, borderTop: '1px solid #111827', background: '#0f172a' }}>
+        {selectedHaven === "__dms__" ? (
+          <div style={{ padding: 12, borderTop: BORDER, background: COLOR_PANEL_ALT }}>
             <button
               type="button"
               className="btn-ghost"
-              title="Create channel"
-              onClick={() => { setNewChannel(""); setNewChannelType('text'); setShowNewChannelModal(true); }}
-              style={{ width: '100%', justifyContent: 'center', padding: '8px 10px', color: accent, borderRadius: 8, border: '1px solid #1f2937', background: '#020617' }}
+              title="Start a group DM"
+              onClick={() => { resetGroupDMModal(); setShowGroupDM(true); }}
+              style={{ width: '100%', justifyContent: 'center', padding: '8px 10px', color: accent, borderRadius: 8, border: BORDER, background: '#020617' }}
             >
-              <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} /> New Channel
+              <FontAwesomeIcon icon={faUsers} style={{ marginRight: 6 }} /> New Group DM
             </button>
           </div>
+        ) : (
+          permState.canManageChannels && (
+            <div style={{ padding: 12, borderTop: BORDER, background: COLOR_PANEL_ALT }}>
+              <button
+                type="button"
+                className="btn-ghost"
+                title="Create channel"
+                onClick={() => { setNewChannel(""); setNewChannelType('text'); setShowNewChannelModal(true); }}
+                style={{ width: '100%', justifyContent: 'center', padding: '8px 10px', color: accent, borderRadius: 8, border: BORDER, background: '#020617' }}
+              >
+                <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} /> New Channel
+              </button>
+            </div>
+          )
         )}
       </aside>
       {/* Main chat area */}
@@ -2100,7 +4266,13 @@ export default function Main({ username }: { username: string }) {
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
                 {showAddFriend && (
                   <form onSubmit={(e)=>{ e.preventDefault(); const t = addFriendName.trim(); if (t) { friendAction('request', t); setAddFriendName(''); setShowAddFriend(false);} }} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <input value={addFriendName} onChange={(e)=> setAddFriendName(e.target.value)} placeholder="Add friend by username" className="input-dark" style={{ padding: '6px 8px', width: 220 }} />
+                    <input
+                      value={addFriendName}
+                      onChange={(e)=> setAddFriendName(e.target.value)}
+                      placeholder="Add friend by username"
+                      className="input-dark"
+                      style={{ padding: '6px 8px', width: 'min(360px, 42vw)', minWidth: 220, flex: '1 1 220px', boxSizing: 'border-box' }}
+                    />
                     <button className="btn-ghost" type="submit" style={{ padding: '6px 10px' }}><FontAwesomeIcon icon={faPlus} /> Add</button>
                   </form>
                 )}
@@ -2131,15 +4303,134 @@ export default function Main({ username }: { username: string }) {
           ) : selectedHaven === "__dms__" && selectedDM ? (
             (() => {
               const dm = dms.find(d => d.id === selectedDM);
-              const others = dm ? dm.users.filter(u => u !== username) : [];
-              const title = others.join(', ') || 'Direct Message';
-              const dotColor = statusColor(presenceMap[others[0]]);
+              const members = dmMembersWithoutSelf(dm);
+              const isGroup = isGroupDMThread(dm);
+              const titleRevealKey = `dm-title-${dm?.id || 'dm'}`;
+              const titleLabel = renderDMLabel(dm, { revealKey: titleRevealKey });
+              const handlesLine = renderDMHandles(dm);
+              const first = members[0];
+              const statusMessage = !isGroup && first ? statusMessageMap[first] : "";
+              const richPresence = !isGroup && first ? formatRichPresence(richPresenceMap[first]) : null;
+              const dotColor = statusColor(first ? presenceMap[first] : undefined);
+              const groupAvatar = isGroup ? getDMAvatar(dm) : "";
+              const showGroupSettingsButton = isGroup && canManageGroupDM(dm);
+              const totalMembers = dm?.users?.length || (members.length + 1);
+              const remainingSlots = MAX_GROUP_DM_MEMBERS - totalMembers;
+              const renderGroupAvatar = () => {
+                if (!isGroup) return null;
+                if (groupAvatar) {
+                  return <img src={groupAvatar} alt={getDMTitle(dm)} style={{ width: 44, height: 44, borderRadius: '35%', border: BORDER, objectFit: 'cover' }} />;
+                }
+                const previewMembers = (dm?.users || []).slice(0, 3);
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    {previewMembers.map((user, idx) => (
+                      <img
+                        key={`gdm-avatar-${user}`}
+                        src={getUserAvatar(user)}
+                        alt={user}
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: '50%',
+                          border: BORDER,
+                          objectFit: 'cover',
+                          marginLeft: idx === 0 ? 0 : -10,
+                          background: COLOR_PANEL,
+                        }}
+                      />
+                    ))}
+                    {totalMembers > previewMembers.length && (
+                      <div style={{ marginLeft: -10, width: 26, height: 26, borderRadius: '50%', border: BORDER, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>
+                        +{totalMembers - previewMembers.length}
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+              const renderDirectAvatar = () => {
+                const target = members[0];
+                const avatar = target ? getUserAvatar(target) : '/favicon.ico';
+                return (
+                  <>
+                    <img src={avatar} alt={target || 'DM'} style={{ width: 44, height: 44, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
+                    <span
+                      style={{
+                        position: 'absolute',
+                        bottom: 4,
+                        right: 4,
+                        width: 10,
+                        height: 10,
+                        borderRadius: '50%',
+                        border: `2px solid ${COLOR_PANEL}`,
+                        background: dotColor,
+                      }}
+                    />
+                  </>
+                );
+              };
               return (
                 <>
-                  <FontAwesomeIcon icon={faEnvelope} />
-                  <span style={{ width: 8, height: 8, borderRadius: 999, background: dotColor, display: 'inline-block', marginLeft: 8, marginRight: 6 }} />
-                  <span style={{ color: accent }}>{title}</span>
+                  <div
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: isGroup ? '35%' : '50%',
+                      border: BORDER,
+                      background: COLOR_PANEL_ALT,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: 12,
+                      position: 'relative',
+                      cursor: showGroupSettingsButton ? 'pointer' : 'default',
+                    }}
+                    title={isGroup && showGroupSettingsButton ? 'Group settings' : undefined}
+                    onClick={() => showGroupSettingsButton && dm && openGroupSettingsModal(dm.id)}
+                  >
+                    {isGroup ? renderGroupAvatar() : renderDirectAvatar()}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ color: accent, display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                      {titleLabel}
+                      {!isGroup && renderCallStatusBadge(first)}
+                    </span>
+                    {handlesLine && (
+                      <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {handlesLine}
+                      </span>
+                    )}
+                    {!isGroup && statusMessage && (
+                      <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{statusMessage}</span>
+                    )}
+                    {!isGroup && richPresence && (
+                      <span style={{ fontSize: 11, color: '#93c5fd' }}>{richPresence}</span>
+                    )}
+                    {isGroup && (
+                      <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                        {totalMembers} member{totalMembers === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => updateAppearance({ readingMode: !readingMode })}
+                      title={readingMode ? 'Exit reading mode' : 'Reading mode'}
+                      style={{ padding: '6px 8px' }}
+                    >
+                      <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
+                    </button>
+                    {isGroup && showGroupSettingsButton && remainingSlots > 0 && dm && (
+                      <button
+                        className="btn-ghost"
+                        onClick={() => openGroupSettingsModal(dm.id)}
+                        title="Add members"
+                        style={{ padding: '6px 8px' }}
+                      >
+                        <FontAwesomeIcon icon={faUserPlus} />
+                      </button>
+                    )}
                     {callsEnabled && (
                       <button
                         className="btn-ghost"
@@ -2150,17 +4441,14 @@ export default function Main({ username }: { username: string }) {
                         <FontAwesomeIcon icon={faPhone} />
                       </button>
                     )}
-                    {userSettings.showOnlineCount !== false && (() => {
-                      const onlineUsers = Object.entries(presenceMap)
-                        .filter(([_, s]) => s && s !== 'offline')
-                        .map(([u]) => u)
-                        .sort();
-                      const title = onlineUsers.length
-                        ? `Online (${onlineUsers.length}): ${onlineUsers.join(', ')}`
-                        : 'Online: 0';
+                    {userSettings.showOnlineCount !== false && dm && (() => {
+                      const roster = Array.isArray(dm.users) ? dm.users : [];
+                      const onlineMembers = roster.filter((member) => isUserOnline(member));
+                      if (onlineMembers.length === 0) return null;
+                      const title = roster.length ? `Participants (${roster.length}): ${roster.join(', ')}` : 'Participants';
                       return (
                         <span className="btn-ghost" style={{ padding: '6px 8px', color: '#9ca3af' }} title={title}>
-                          <FontAwesomeIcon icon={faUsers} /> {onlineCount}
+                          <FontAwesomeIcon icon={faUsers} /> {onlineMembers.length}/{roster.length || '…'} online
                         </span>
                       );
                     })()}
@@ -2178,26 +4466,33 @@ export default function Main({ username }: { username: string }) {
             <>
               <FontAwesomeIcon icon={faServer} /> {selectedHaven} {selectedChannel && (<span style={{ color: accent }}>/ #{selectedChannel}</span>)}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-                {userSettings.showOnlineCount !== false && (() => {
-                  const onlineUsers = Object.entries(presenceMap)
-                    .filter(([_, s]) => s && s !== 'offline')
-                    .map(([u]) => u)
-                    .sort();
-                  const title = onlineUsers.length
-                    ? `Online (${onlineUsers.length}): ${onlineUsers.join(', ')}`
-                    : 'Online: 0';
+                {userSettings.showOnlineCount !== false && selectedHaven !== '__dms__' && (() => {
+                  const onlineMembers = havenMembers.filter((member) => isUserOnline(member));
+                  if (onlineMembers.length === 0) return null;
+                  const title = havenMembers.length
+                    ? `Members (${havenMembers.length}): ${havenMembers.join(', ')}`
+                    : 'Members';
                   return (
                     <button
                       type="button"
                       className="btn-ghost"
-                      onClick={() => setShowMembers(v => !v)}
+                      onClick={() => setShowMembers((v) => !v)}
                       title={title}
-                      style={{ padding: '6px 8px', color: '#9ca3af' }}
+                      style={{ padding: '6px 8px', color: '#9ca3af', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
-                      <FontAwesomeIcon icon={faUsers} /> {onlineCount}
+                      <FontAwesomeIcon icon={faUsers} />
+                      <span>{onlineMembers.length}/{havenMembers.length || '…'} online</span>
                     </button>
                   );
                 })()}
+                <button
+                  className="btn-ghost"
+                  onClick={() => updateAppearance({ readingMode: !readingMode })}
+                  title={readingMode ? 'Exit reading mode' : 'Reading mode'}
+                  style={{ padding: '6px 8px' }}
+                >
+                  <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
+                </button>
                 <button className="btn-ghost" onClick={() => setShowPinned(true)} title="Pinned messages" style={{ padding: '6px 8px' }}>
                   <FontAwesomeIcon icon={faThumbtack} />
                 </button>
@@ -2208,11 +4503,36 @@ export default function Main({ username }: { username: string }) {
             </>
           )}
         </div>
+        {showGlobalCallBar && callLocationInfo && (
+          <div style={{ margin: '8px 16px', padding: '10px 14px', borderRadius: 12, background: '#030711', border: BORDER, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: COLOR_TEXT, fontWeight: 600 }}>
+              {renderCallStatusIconGraphic(viewerCallMeta, 16)}
+              <span>In Call</span>
+            </div>
+            <div style={{ color: '#9ca3af', fontSize: 12 }}>{callLocationInfo.label}</div>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {callParticipantPreview.map((p) => {
+                const meta: CallStatusMeta = getCallStatusMeta(p.user) || { type: 'talking', color: '#22c55e', label: 'In Call' };
+                return (
+                  <div key={`call-preview-${p.user}`} style={{ position: 'relative', width: 32, height: 32 }}>
+                    <img src={userProfileCache[p.user]?.avatarUrl || '/favicon.ico'} alt={p.user} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover', filter: 'blur(0.6px)' }} />
+                    <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(2,6,23,0.5)', borderRadius: '50%' }}>
+                      {renderCallStatusIconGraphic(meta, 12)}
+                    </span>
+                  </div>
+                );
+              })}
+              {extraCallParticipants > 0 && (
+                <div style={{ width: 32, height: 32, borderRadius: '50%', border: '1px dashed #334155', display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT, fontSize: 12 }}>+{extraCallParticipants}</div>
+              )}
+            </div>
+          </div>
+        )}
         <div
           style={{
             flex: 1,
             overflowY: "auto",
-            background: userSettings.chatStyle === 'classic' ? "#0f172a" : "linear-gradient(180deg, rgba(15,23,42,0.45), rgba(17,24,39,0.35))",
+            background: isClassic ? COLOR_PANEL_ALT : isBubbles ? "#040910" : isMinimalLog ? "#05080f" : isFocusStyle ? "#050b14" : isThreadForward ? "#050b16" : isRetro ? "#040b12" : "#030712",
             padding: compact ? 12 : 16,
             paddingBottom: (compact ? 12 : 16) + (viewingCallDM ? 140 : 0),
             color: "#fff",
@@ -2230,6 +4550,7 @@ export default function Main({ username }: { username: string }) {
           onDragOver={(e) => { e.preventDefault(); }}
           onDrop={async (e) => { e.preventDefault(); const files = Array.from(e.dataTransfer?.files || []); for (const f of files) { if (f.size > 25*1024*1024) { alert(`File ${f.name} exceeds 25MB limit`); continue; } await startUpload(f); } }}
         >
+          <div style={{ maxWidth: maxContentWidth ? `${maxContentWidth}px` : '100%', margin: '0 auto', width: '100%' }}>
           {viewingCallDM && (() => {
             const dmId = selectedDM && selectedDM === activeCallDM ? selectedDM : activeCallDM;
             const dm = dms.find(d => d.id === dmId);
@@ -2248,16 +4569,31 @@ export default function Main({ username }: { username: string }) {
                   zIndex: 82,
                   padding: 12,
                   borderRadius: 12,
-                  background: '#0b1222',
-                  border: '1px solid #1f2937',
-                  color: '#e5e7eb',
+                  background: COLOR_PANEL,
+                  border: BORDER,
+                  color: COLOR_TEXT,
                   boxShadow: '0 16px 40px rgba(0,0,0,0.35)'
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                   <span style={{ width: 10, height: 10, borderRadius: 999, background: callState === 'calling' ? '#f59e0b' : '#22c55e', display: 'inline-block' }} />
                   <div style={{ fontWeight: 700 }}>{label}</div>
-                  {callInitiator && <div style={{ fontSize: 12, color: '#a5b4fc' }}>Started by @{callInitiator}</div>}
+                  {callInitiator && (() => {
+                    const revealKey = `call-init-${callInitiator}`;
+                    const initiatorAvatar = userProfileCache[callInitiator]?.avatarUrl || '/favicon.ico';
+                    return (
+                      <div style={{ fontSize: 12, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div
+                          style={{ width: 22, height: 22, borderRadius: '50%', overflow: 'hidden', border: BORDER }}
+                          onMouseEnter={() => beginStreamerReveal(revealKey)}
+                          onMouseLeave={() => endStreamerReveal(revealKey)}
+                        >
+                          <img src={initiatorAvatar} alt={callInitiator} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        </div>
+                        <span>Started by {renderDisplayName(callInitiator, { prefix: '@', revealKey })}</span>
+                      </div>
+                    );
+                  })()}
                   <div style={{ marginLeft: 'auto', color: '#a5b4fc', fontVariantNumeric: 'tabular-nums' }}>
                     {`${Math.floor(callElapsed / 60).toString().padStart(1, '0')}:${(callElapsed % 60).toString().padStart(2, '0')}`}
                   </div>
@@ -2269,11 +4605,46 @@ export default function Main({ username }: { username: string }) {
                     const avatar = profile?.avatarUrl || '/favicon.ico';
                     const display = profile?.displayName || user;
                     const color = part.status === 'connected' ? '#22c55e' : '#f59e0b';
+                    const meta: CallStatusMeta = getCallStatusMeta(user) || { type: 'talking', color, label: 'In Call' };
+                    const revealKey = `callbar-${user}`;
                     return (
-                      <div key={user} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', display: 'flex', alignItems: 'center', gap: 8, minWidth: 160, flex: '1 1 220px' }}>
-                        <img src={avatar} alt={display} style={{ width: 32, height: 32, borderRadius: '50%', border: `2px solid ${color}` }} />
+                      <div key={user} style={{ padding: '6px 10px', borderRadius: 8, border: BORDER, background: COLOR_PANEL_ALT, display: 'flex', alignItems: 'center', gap: 8, minWidth: 160, flex: '1 1 220px' }}>
+                        <div
+                          style={{ position: 'relative', width: 44, height: 44, flex: '0 0 auto' }}
+                          onMouseEnter={() => beginStreamerReveal(revealKey)}
+                          onMouseLeave={() => endStreamerReveal(revealKey)}
+                        >
+                          <img
+                            src={avatar}
+                            alt={display}
+                            style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: '50%',
+                              border: `2px solid ${color}`,
+                              filter: 'blur(1px)',
+                              objectFit: 'cover'
+                            }}
+                          />
+                          <span
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: 'rgba(2,6,23,0.55)',
+                              borderRadius: '50%',
+                            }}
+                          >
+                            {renderCallStatusIconGraphic(meta, 18)}
+                          </span>
+                        </div>
                         <div style={{ display: 'grid', gap: 2 }}>
-                          <div style={{ fontWeight: 600 }}>{display}{user === username ? ' (you)' : ''}</div>
+                          <div style={{ fontWeight: 600 }}>
+                            {renderDisplayName(user, { revealKey })}
+                            {user === username ? ' (you)' : ''}
+                          </div>
                           <div style={{ fontSize: 12, color }}>{part.status === 'connected' ? 'Connected' : 'Ringing'}</div>
                         </div>
                       </div>
@@ -2288,7 +4659,7 @@ export default function Main({ username }: { username: string }) {
                     type="button"
                     onClick={toggleMute}
                     className="btn-ghost"
-                    style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #1f2937', background: isMuted ? '#111827' : '#0f172a', color: '#e5e7eb' }}
+                    style={{ padding: '8px 12px', borderRadius: 8, border: BORDER, background: isMuted ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT }}
                   >
                     <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} /> {isMuted ? 'Unmute' : 'Mute'}
                   </button>
@@ -2296,7 +4667,7 @@ export default function Main({ username }: { username: string }) {
                     type="button"
                     onClick={toggleDeafen}
                     className="btn-ghost"
-                    style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #1f2937', background: isDeafened ? '#111827' : '#0f172a', color: '#e5e7eb' }}
+                    style={{ padding: '8px 12px', borderRadius: 8, border: BORDER, background: isDeafened ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT }}
                   >
                     <FontAwesomeIcon icon={faVolumeXmark} /> {isDeafened ? 'Undeafen' : 'Deafen'}
                   </button>
@@ -2312,9 +4683,17 @@ export default function Main({ username }: { username: string }) {
                       }, 50);
                     }}
                     className="btn-ghost"
-                    style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', color: '#e5e7eb' }}
+                    style={{ padding: '8px 12px', borderRadius: 8, border: BORDER, background: COLOR_PANEL_ALT, color: COLOR_TEXT }}
                   >
                     <FontAwesomeIcon icon={faPhone} /> Jump to DM
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowFullscreenCall(true)}
+                    className="btn-ghost"
+                    style={{ padding: '8px 12px', borderRadius: 8, border: BORDER, background: COLOR_PANEL_ALT, color: COLOR_TEXT }}
+                  >
+                    <FontAwesomeIcon icon={faUpRightAndDownLeftFromCenter} /> Full Screen
                   </button>
                   <button
                     type="button"
@@ -2332,7 +4711,7 @@ export default function Main({ username }: { username: string }) {
             );
           })()}
           {showTipsBanner && !(selectedHaven === "__dms__" && !selectedDM) && (
-            <div style={{ marginBottom: 12, padding: 10, borderRadius: 10, border: '1px solid #1f2937', background: 'rgba(15,23,42,0.9)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ marginBottom: 12, padding: 10, borderRadius: 10, border: BORDER, background: 'rgba(15,23,42,0.9)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <div style={{ fontSize: 18, marginTop: 2 }}>
                 <FontAwesomeIcon icon={faServer} />
               </div>
@@ -2355,17 +4734,16 @@ export default function Main({ username }: { username: string }) {
                     const list = friendsTab === 'online'
                       ? friendsState.friends.filter(u => (presenceMap[u] || 'offline') !== 'offline')
                       : friendsState.friends;
-                    if (list.length === 0) return <div style={{ color: '#94a3b8' }}>No friends {friendsTab === 'online' ? 'online' : 'yet'}.</div>;
-                    return list.map(u => (
-                      <div key={u} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, marginBottom: 8 }}>
-                        <span style={{ width: 10, height: 10, borderRadius: 999, background: statusColor(presenceMap[u]), display: 'inline-block' }} />
-                        <span style={{ fontWeight: 600 }}>{u}</span>
-                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    if (list.length === 0) return <div style={{ color: COLOR_TEXT_MUTED }}>No friends {friendsTab === 'online' ? 'online' : 'yet'}.</div>;
+                    return list.map((u) =>
+                      renderFriendRow(
+                        u,
+                        <>
                           <button className="btn-ghost" onClick={()=> ensureDM(u)} style={{ padding: '6px 10px' }}>Message</button>
                           <button className="btn-ghost" onClick={()=> friendAction('remove', u)} style={{ padding: '6px 10px', color: '#f87171' }}>Remove</button>
-                        </span>
-                      </div>
-                    ));
+                        </>,
+                      )
+                    );
                   })()}
                 </div>
               )}
@@ -2374,34 +4752,32 @@ export default function Main({ username }: { username: string }) {
                   <div>
                     <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 6 }}>Incoming</div>
                     {friendsState.incoming.length === 0 ? (
-                      <div style={{ color: '#94a3b8' }}>No incoming requests.</div>
+                      <div style={{ color: COLOR_TEXT_MUTED }}>No incoming requests.</div>
                     ) : (
-                      friendsState.incoming.map(u => (
-                        <div key={u} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, marginBottom: 8 }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 999, background: statusColor(presenceMap[u]), display: 'inline-block' }} />
-                          <span style={{ fontWeight: 600 }}>{u}</span>
-                          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                      friendsState.incoming.map(u =>
+                        renderFriendRow(
+                          u,
+                          <>
                             <button className="btn-ghost" onClick={()=> friendAction('accept', u)} style={{ padding: '6px 10px', color: '#22c55e' }}>Accept</button>
                             <button className="btn-ghost" onClick={()=> friendAction('decline', u)} style={{ padding: '6px 10px', color: '#f87171' }}>Decline</button>
-                          </span>
-                        </div>
-                      ))
+                          </>,
+                          { key: `incoming-${u}` }
+                        )
+                      )
                     )}
                   </div>
                   <div>
                     <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 6 }}>Outgoing</div>
                     {friendsState.outgoing.length === 0 ? (
-                      <div style={{ color: '#94a3b8' }}>No outgoing requests.</div>
+                      <div style={{ color: COLOR_TEXT_MUTED }}>No outgoing requests.</div>
                     ) : (
-                      friendsState.outgoing.map(u => (
-                        <div key={u} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, marginBottom: 8 }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 999, background: statusColor(presenceMap[u]), display: 'inline-block' }} />
-                          <span style={{ fontWeight: 600 }}>{u}</span>
-                          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                            <button className="btn-ghost" onClick={()=> friendAction('cancel', u)} style={{ padding: '6px 10px', color: '#f59e0b' }}>Cancel</button>
-                          </span>
-                        </div>
-                      ))
+                      friendsState.outgoing.map(u =>
+                        renderFriendRow(
+                          u,
+                          <button className="btn-ghost" onClick={()=> friendAction('cancel', u)} style={{ padding: '6px 10px', color: '#f59e0b' }}>Cancel</button>,
+                          { key: `outgoing-${u}` }
+                        )
+                      )
                     )}
                   </div>
                 </div>
@@ -2409,187 +4785,501 @@ export default function Main({ username }: { username: string }) {
             </div>
           ) : (
           <>
-          {messages.map((msg, idx) => (
-            <div key={msg.id || `${msg.user}-${msg.timestamp}-${idx}`}
-              ref={(el) => { if (msg.id) messageRefs.current[msg.id] = el; }}
-              onContextMenu={(e) => openCtx(e, { type: 'message', id: msg.id })}
-              style={{ marginBottom: compact ? 10 : 16, position: "relative", padding: compact ? 6 : 8, borderRadius: 6, background: "#23232a", transition: "background 0.2s", borderLeft: msg.pinned ? `3px solid ${pinColor}` : "3px solid transparent" }}
-              onMouseEnter={() => setHoveredMsg(msg.id)}
-              onMouseLeave={() => setHoveredMsg(prev => prev === msg.id ? null : prev)}
-            >
-              {/* In-box actions: show on hover. Configurable quick buttons, Shift = full tools */}
-              {hoveredMsg === msg.id && (
-                <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 6 }}>
-                  {(() => {
-                    if (shiftDown) {
-                      return (
-                        <>
-                          {permState.canPin && (
-                            <button onClick={() => togglePin(msg.id, !msg.pinned)} className="btn-ghost" title={msg.pinned ? 'Unpin' : 'Pin'} style={{ padding: '2px 6px' }}>
-                              <FontAwesomeIcon icon={faThumbtack} />
-                            </button>
-                          )}
-                          <button onClick={() => openEditHistory(msg.id)} className="btn-ghost" title="Edit history" style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faClockRotateLeft} />
-                          </button>
-                          {((msg.user === username && (msg as any).systemType !== 'call-summary') || permState.canManageMessages) && (
-                            <>
-                              {msg.user === username && (msg as any).systemType !== 'call-summary' && (
-                                <button onClick={() => handleEdit(msg.id, msg.text)} className="btn-ghost" title="Edit" style={{ padding: '2px 6px' }}>
-                                  <FontAwesomeIcon icon={faEdit} />
-                                </button>
-                              )}
-                              <button onClick={() => handleDelete(msg.id)} className="btn-ghost" title="Delete" style={{ padding: '2px 6px', color: boldColor }}>
-                                <FontAwesomeIcon icon={faTrash} />
-                              </button>
-                            </>
-                          )}
-                        </>
-                      );
-                    }
-                    const isOwn = msg.user === username;
-                    const base = isOwn ? quickButtonsOwn : quickButtonsOthers;
-                    const havenPreset = adminQuickButtons && (permState.canManageServer || permState.canManageMessages)
-                      ? (isOwn ? adminQuickButtons.own : adminQuickButtons.others)
-                      : null;
-                    const keys = (havenPreset && havenPreset.length ? havenPreset : base) || [];
-                    const uniqueKeys = Array.from(new Set(keys));
-                    const buttons: React.ReactElement[] = [];
-                    uniqueKeys.forEach(key => {
-                      if (key === 'reply') {
-                        buttons.push(
-                          <button key="qb-reply" onClick={() => handleReply(msg)} className="btn-ghost" title="Reply" style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faReply} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'react') {
-                        if (!permState.canReact) return;
-                        buttons.push(
-                          <button key="qb-react" onClick={() => setPickerFor(p => p === msg.id ? null : msg.id)} className="btn-ghost" title="Add Reaction" style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faFaceSmile} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'pin') {
-                        if (!permState.canPin) return;
-                        buttons.push(
-                          <button key="qb-pin" onClick={() => togglePin(msg.id, !msg.pinned)} className="btn-ghost" title={msg.pinned ? 'Unpin' : 'Pin'} style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faThumbtack} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'edit') {
-                        if (!(isOwn && (msg as any).systemType !== 'call-summary')) return;
-                        buttons.push(
-                          <button key="qb-edit" onClick={() => handleEdit(msg.id, msg.text)} className="btn-ghost" title="Edit" style={{ padding: '2px 6px' }}>
+          {messages.map((msg, idx) => {
+            const messageKey = msg.id ? `${msg.id}-${idx}` : `${msg.user}-${msg.timestamp}-${idx}`;
+            const revealKey = `msg-${messageKey}`;
+            const avatarSrc = (userProfileCache[msg.user]?.avatarUrl) || '/favicon.ico';
+            const isOwn = msg.user === username;
+            const prevMessage = messages[idx - 1];
+            const showDateDivider = idx === 0 || !isSameDay(prevMessage?.timestamp, msg.timestamp);
+            const isSystemMessage = !!(msg as any).systemType;
+            const prevIsSystem = !!(prevMessage as any)?.systemType;
+            const groupingWindowMs = messageGrouping === 'aggressive' ? 30 * 60 * 1000 : messageGrouping === 'compact' ? 5 * 60 * 1000 : 0;
+            const isGrouped =
+              messageGrouping !== 'none' &&
+              !showDateDivider &&
+              !!prevMessage &&
+              !isSystemMessage &&
+              !prevIsSystem &&
+              prevMessage.user === msg.user &&
+              (msg.timestamp - prevMessage.timestamp) <= groupingWindowMs;
+            const groupId = groupIds[idx] || messageKey;
+            const replyCount = msg.id ? replyCounts[msg.id] || 0 : 0;
+            const hasReplies = replyCount > 0;
+            const showHeader = !isGrouped && !isSystemMessage;
+            const showAvatar = showHeader && !readingMode;
+            const showTimestamp = showTimestamps && (!isGrouped || timestampGranularity === 'perMessage');
+            const timeMeta = showTimestamp ? formatTimestampLabel(msg.timestamp) : null;
+            const systemKey = msg.id || messageKey;
+            const isCollapsible = isSystemMessage && systemMessageEmphasis === 'collapsible';
+            const isCollapsed = isCollapsible && (collapsedSystemMessages[systemKey] ?? true);
+            const paddingVal = isBubbles ? 12 : isMinimalLog ? (compact ? 4 : 6) : compact ? 6 : 8;
+            const baseRadius = isBubbles ? 22 : isRetro ? 6 : isMinimalLog ? 6 : 10;
+            let backgroundColor = '#0c1524';
+            let borderStyle: string | undefined = '1px solid #131c2d';
+            let textColor = COLOR_TEXT;
+            if (isClassic) {
+              backgroundColor = COLOR_PANEL_STRONG;
+              borderStyle = BORDER;
+            } else if (isBubbles) {
+              backgroundColor = isOwn ? (accentIntensity === 'subtle' ? COLOR_PANEL_STRONG : accent) : COLOR_PANEL_STRONG;
+              borderStyle = accentIntensity === 'subtle' && isOwn ? '1px solid rgba(148,163,184,0.25)' : 'none';
+              textColor = contrastColorFor(backgroundColor);
+            } else if (isMinimalLog) {
+              backgroundColor = 'transparent';
+              borderStyle = 'none';
+              textColor = COLOR_TEXT;
+            } else if (isRetro) {
+              backgroundColor = isOwn ? 'rgba(10,16,28,0.92)' : 'rgba(6,10,20,0.85)';
+              borderStyle = '1px solid rgba(148,163,184,0.22)';
+            } else if (isFocusStyle) {
+              backgroundColor = isOwn ? 'rgba(12,18,30,0.72)' : 'rgba(8,14,26,0.62)';
+              borderStyle = '1px solid rgba(148,163,184,0.14)';
+            } else {
+              backgroundColor = isOwn
+                ? 'rgba(23,33,62,0.78)'
+                : 'rgba(9,14,30,0.68)';
+              borderStyle = '1px solid rgba(99,102,241,0.12)';
+            }
+            const messageCardStyle: React.CSSProperties = {
+              marginBottom: isMinimalLog ? 0 : (isBubbles ? 12 : (compact ? 10 : 16)),
+              marginTop: isGrouped ? (isBubbles ? 2 : 6) : 0,
+              position: "relative",
+              padding: paddingVal,
+              borderRadius: baseRadius,
+              background: backgroundColor,
+              border: borderStyle,
+              transition: isFocusStyle ? "none" : "background 0.2s, transform 0.2s, box-shadow 0.2s",
+              color: textColor,
+              boxShadow: isMinimalLog
+                ? 'none'
+                : isBubbles
+                ? '0 12px 32px rgba(0,0,0,0.35)'
+                : isSleek
+                  ? '0 14px 32px rgba(2,6,23,0.55)'
+                  : '0 4px 14px rgba(0,0,0,0.2)',
+              width: isBubbles ? 'fit-content' : '100%',
+              marginLeft: isBubbles && isOwn ? 'auto' : undefined,
+              marginRight: isBubbles && !isOwn ? 'auto' : undefined,
+              maxWidth: isBubbles ? 'min(72%, 540px)' : '100%',
+            };
+            if (accentIntensity === 'bold') {
+              (messageCardStyle as any)['--ch-selection'] = rgbaFromHex(accent, 0.35);
+            }
+            if (isSleek) {
+              messageCardStyle.backdropFilter = 'blur(18px)';
+              messageCardStyle.border = borderStyle;
+              messageCardStyle.background = backgroundColor;
+            }
+            if (isMinimalLog) {
+              messageCardStyle.borderBottom = '1px solid rgba(148,163,184,0.14)';
+              messageCardStyle.borderRadius = 0;
+              messageCardStyle.padding = compact ? 4 : 6;
+            }
+            if (isThreadForward && hasReplies) {
+              messageCardStyle.paddingLeft = Math.max(typeof messageCardStyle.padding === 'number' ? messageCardStyle.padding : paddingVal, 24);
+            }
+            if (isFocusStyle) {
+              const focusWindow = 20;
+              const isOlder = idx < messages.length - focusWindow;
+              if (isOlder && focusHoverGroupId !== groupId) {
+                messageCardStyle.opacity = 0.6;
+              }
+            }
+            if (isSystemMessage) {
+              if (systemMessageEmphasis === 'normal') {
+                messageCardStyle.opacity = 0.9;
+                messageCardStyle.padding = Math.max(6, paddingVal - 2);
+              } else if (systemMessageEmphasis === 'dimmed') {
+                messageCardStyle.opacity = 0.65;
+                messageCardStyle.padding = Math.max(6, paddingVal - 2);
+              }
+              if (isMinimalLog) {
+                messageCardStyle.background = 'transparent';
+                messageCardStyle.border = 'none';
+                messageCardStyle.borderBottom = '1px solid rgba(148,163,184,0.2)';
+                messageCardStyle.padding = '6px 2px';
+                messageCardStyle.marginBottom = 8;
+                messageCardStyle.textAlign = 'center';
+              } else if (isBubbles) {
+                messageCardStyle.background = 'transparent';
+                messageCardStyle.border = 'none';
+                messageCardStyle.boxShadow = 'none';
+                messageCardStyle.padding = '6px 10px';
+                messageCardStyle.marginBottom = 8;
+                messageCardStyle.textAlign = 'center';
+              } else if (isRetro) {
+                messageCardStyle.background = 'transparent';
+                messageCardStyle.border = 'none';
+                messageCardStyle.boxShadow = 'none';
+                messageCardStyle.padding = '6px 8px';
+                messageCardStyle.textAlign = 'center';
+              }
+            }
+            if (!isBubbles) {
+              messageCardStyle.borderLeft = msg.pinned ? `3px solid ${pinColor}` : "3px solid transparent";
+            } else {
+              messageCardStyle.borderTopLeftRadius = isOwn ? 18 : 6;
+              messageCardStyle.borderTopRightRadius = isOwn ? 6 : 18;
+              messageCardStyle.borderBottomLeftRadius = 18;
+              messageCardStyle.borderBottomRightRadius = 18;
+              if (msg.pinned) {
+                messageCardStyle.boxShadow = `0 0 0 2px rgba(250,204,21,0.45), ${messageCardStyle.boxShadow}`;
+              }
+            }
+            const metaColor = isBubbles && isOwn ? 'rgba(248,250,252,0.75)' : isMinimalLog ? '#cbd5e1' : '#a1a1aa';
+            const timestampColor = isBubbles ? 'rgba(203,213,225,0.8)' : isRetro ? '#9ca3af' : '#666';
+            const replyBackground = isBubbles ? 'rgba(15,23,42,0.7)' : COLOR_PANEL;
+            const replyBorder = isBubbles ? '1px solid rgba(30,41,59,0.8)' : BORDER;
+            const timestampFontFamily = (isMinimalLog || isRetro) ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' : undefined;
+            const avatarSize = isMinimalLog ? 26 : isRetro ? 34 : 38;
+            const actionContent = (() => {
+              if (shiftDown) {
+                return (
+                  <>
+                    {permState.canPin && (
+                      <button onClick={() => togglePin(msg.id, !msg.pinned)} className="btn-ghost" title={msg.pinned ? 'Unpin' : 'Pin'} style={{ padding: '2px 6px' }}>
+                        <FontAwesomeIcon icon={faThumbtack} />
+                      </button>
+                    )}
+                    <button onClick={() => openEditHistory(msg.id)} className="btn-ghost" title="Edit history" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faClockRotateLeft} />
+                    </button>
+                    {((msg.user === username && !isCallSystemMessage(msg)) || permState.canManageMessages) && (
+                      <>
+                        {msg.user === username && !isCallSystemMessage(msg) && (
+                          <button onClick={() => handleEdit(msg.id, msg.text)} className="btn-ghost" title="Edit" style={{ padding: '2px 6px' }}>
                             <FontAwesomeIcon icon={faEdit} />
                           </button>
-                        );
-                        return;
-                      }
-                      if (key === 'delete') {
-                        if (!(isOwn || permState.canManageMessages)) return;
-                        buttons.push(
-                          <button key="qb-delete" onClick={() => handleDelete(msg.id)} className="btn-ghost" title="Delete" style={{ padding: '2px 6px', color: boldColor }}>
-                            <FontAwesomeIcon icon={faTrash} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'history') {
-                        buttons.push(
-                          <button key="qb-history" onClick={() => openEditHistory(msg.id)} className="btn-ghost" title="Edit history" style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faClockRotateLeft} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'copy') {
-                        buttons.push(
-                          <button key="qb-copy" onClick={() => copyText(msg.text || '')} className="btn-ghost" title="Copy text" style={{ padding: '2px 6px' }}>
-                            <FontAwesomeIcon icon={faCopy} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'link') {
-                        buttons.push(
-                          <button
-                            key="qb-link"
-                            onClick={() => {
-                              try {
-                                const url = new URL(window.location.href);
-                                url.searchParams.set('room', roomKey());
-                                url.searchParams.set('mid', msg.id);
-                                copyText(url.toString());
-                                notify({ title: 'Link copied', type: 'success' });
-                              } catch {}
-                            }}
-                            className="btn-ghost"
-                            title="Copy link"
-                            style={{ padding: '2px 6px' }}
-                          >
-                            <FontAwesomeIcon icon={faLink} />
-                          </button>
-                        );
-                        return;
-                      }
-                      if (key === 'more') {
-                        buttons.push(
-                          <button
-                            key="qb-more"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              setCtxMenu({ open: true, x: (e as any).clientX, y: (e as any).clientY, target: { type: 'message', id: msg.id } });
-                            }}
-                            className="btn-ghost"
-                            title="More"
-                            style={{ padding: '2px 6px' }}
-                          >
-                            <FontAwesomeIcon icon={faBars} />
-                          </button>
-                        );
-                      }
-                    });
-                    if (!buttons.length) {
-                      // Fallback to More if user removed everything
-                      buttons.push(
-                        <button
-                          key="qb-more-fallback"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            setCtxMenu({ open: true, x: (e as any).clientX, y: (e as any).clientY, target: { type: 'message', id: msg.id } });
-                          }}
-                          className="btn-ghost"
-                          title="More"
-                          style={{ padding: '2px 6px' }}
-                        >
-                          <FontAwesomeIcon icon={faBars} />
+                        )}
+                        <button onClick={() => handleDelete(msg.id)} className="btn-ghost" title="Delete" style={{ padding: '2px 6px', color: boldColor }}>
+                          <FontAwesomeIcon icon={faTrash} />
                         </button>
-                      );
-                    }
-                    return buttons;
-                  })()}
+                      </>
+                    )}
+                  </>
+                );
+              }
+              const isOwnMsg = msg.user === username;
+              const base = isOwnMsg ? quickButtonsOwn : quickButtonsOthers;
+              const havenPreset = adminQuickButtons && (permState.canManageServer || permState.canManageMessages)
+                ? (isOwnMsg ? adminQuickButtons.own : adminQuickButtons.others)
+                : null;
+              const keys = (havenPreset && havenPreset.length ? havenPreset : base) || [];
+              const uniqueKeys = Array.from(new Set(keys));
+              const buttons: React.ReactElement[] = [];
+              uniqueKeys.forEach(key => {
+                if (key === 'reply') {
+                  buttons.push(
+                    <button key="qb-reply" onClick={() => handleReply(msg)} className="btn-ghost" title="Reply" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faReply} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'react') {
+                  if (!permState.canReact) return;
+                  buttons.push(
+                    <button key="qb-react" onClick={() => setPickerFor(p => p === msg.id ? null : msg.id)} className="btn-ghost" title="Add Reaction" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faFaceSmile} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'pin') {
+                  if (!permState.canPin) return;
+                  buttons.push(
+                    <button key="qb-pin" onClick={() => togglePin(msg.id, !msg.pinned)} className="btn-ghost" title={msg.pinned ? 'Unpin' : 'Pin'} style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faThumbtack} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'edit') {
+                  if (!(isOwnMsg && !isCallSystemMessage(msg))) return;
+                  buttons.push(
+                    <button key="qb-edit" onClick={() => handleEdit(msg.id, msg.text)} className="btn-ghost" title="Edit" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faEdit} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'delete') {
+                  if (!(isOwnMsg || permState.canManageMessages)) return;
+                  buttons.push(
+                    <button key="qb-delete" onClick={() => handleDelete(msg.id)} className="btn-ghost" title="Delete" style={{ padding: '2px 6px', color: boldColor }}>
+                      <FontAwesomeIcon icon={faTrash} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'history') {
+                  buttons.push(
+                    <button key="qb-history" onClick={() => openEditHistory(msg.id)} className="btn-ghost" title="Edit history" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faClockRotateLeft} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'copy') {
+                  buttons.push(
+                    <button key="qb-copy" onClick={() => copyText(msg.text || '')} className="btn-ghost" title="Copy text" style={{ padding: '2px 6px' }}>
+                      <FontAwesomeIcon icon={faCopy} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'link') {
+                  buttons.push(
+                    <button
+                      key="qb-link"
+                      onClick={() => {
+                        try {
+                          const url = new URL(window.location.href);
+                          url.searchParams.set('room', roomKey());
+                          url.searchParams.set('mid', msg.id);
+                          copyText(url.toString());
+                          notify({ title: 'Link copied', type: 'success' });
+                        } catch {}
+                      }}
+                      className="btn-ghost"
+                      title="Copy link"
+                      style={{ padding: '2px 6px' }}
+                    >
+                      <FontAwesomeIcon icon={faLink} />
+                    </button>
+                  );
+                  return;
+                }
+                if (key === 'more') {
+                  buttons.push(
+                    <button
+                      key="qb-more"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setCtxMenu({ open: true, x: (e as any).clientX, y: (e as any).clientY, target: { type: 'message', id: msg.id } });
+                      }}
+                      className="btn-ghost"
+                      title="More"
+                      style={{ padding: '2px 6px' }}
+                    >
+                      <FontAwesomeIcon icon={faBars} />
+                    </button>
+                  );
+                }
+              });
+              if (!buttons.length) {
+                buttons.push(
+                  <button
+                    key="qb-more-fallback"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCtxMenu({ open: true, x: (e as any).clientX, y: (e as any).clientY, target: { type: 'message', id: msg.id } });
+                    }}
+                    className="btn-ghost"
+                    title="More"
+                    style={{ padding: '2px 6px' }}
+                  >
+                    <FontAwesomeIcon icon={faBars} />
+                  </button>
+                );
+              }
+              return buttons;
+            })();
+            const allowActions = !readingMode && !isSystemMessage;
+            const hasActions = allowActions && (Array.isArray(actionContent) ? actionContent.length > 0 : !!actionContent);
+            const messageCardClasses = ['ch-message-card'];
+            messageCardClasses.push(`style-${messageStyle}`);
+            if (isSystemMessage) {
+              messageCardClasses.push('is-system');
+            }
+            if (isBubbles) {
+              messageCardClasses.push('is-bubble');
+              messageCardClasses.push(isOwn ? 'is-own' : 'is-other');
+            }
+            const dateLabel = formatDateLine(msg.timestamp);
+            const collapsedStyle: React.CSSProperties = {
+              ...messageCardStyle,
+              padding: Math.max(6, paddingVal - 2),
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              cursor: 'pointer',
+            };
+            const systemTextStyle: React.CSSProperties = isSystemMessage && systemMessageEmphasis === 'dimmed'
+              ? { fontSize: msgFontSize - 1 }
+              : {};
+            const systemContent = isSystemMessage ? (() => {
+              const label = msg.text || '';
+              const timeLabel = showTimestamp && timeMeta ? timeMeta.label : null;
+              const baseStyle: React.CSSProperties = { color: metaColor, ...systemTextStyle };
+              if (isMinimalLog) {
+                return (
+                  <div style={{ ...baseStyle, fontSize: msgFontSize - 2, letterSpacing: 0.4 }}>
+                    -- {label} --
+                    {timeLabel && <span style={{ marginLeft: 8, fontSize: 11, color: timestampColor, fontFamily: timestampFontFamily }}>[{timeLabel}]</span>}
+                  </div>
+                );
+              }
+              if (isRetro) {
+                return (
+                  <div style={{ ...baseStyle, fontSize: msgFontSize - 2, fontFamily: timestampFontFamily }}>
+                    [SYSTEM] {label}
+                    {timeLabel && <span style={{ marginLeft: 8, color: timestampColor }}>[{timeLabel}]</span>}
+                  </div>
+                );
+              }
+              if (isBubbles) {
+                return (
+                  <div style={{ ...baseStyle, fontSize: msgFontSize - 2 }}>
+                    {label}
+                    {timeLabel && <span style={{ marginLeft: 8, fontSize: 11, color: timestampColor }}>{timeLabel}</span>}
+                  </div>
+                );
+              }
+              if (isClassic || isThreadForward) {
+                return (
+                  <div style={{ ...baseStyle, display: 'flex', alignItems: 'center', gap: 8, fontSize: msgFontSize - 2 }}>
+                    {timeLabel && <span style={{ fontSize: 11, color: timestampColor, fontFamily: timestampFontFamily }}>{timeLabel}</span>}
+                    <span>{label}</span>
+                  </div>
+                );
+              }
+              if (isSleek || isFocusStyle) {
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <span style={{ padding: '4px 10px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)', color: metaColor, fontSize: msgFontSize - 2 }}>
+                      {label}
+                      {timeLabel && <span style={{ marginLeft: 8, fontSize: 11, color: timestampColor }}>{timeLabel}</span>}
+                    </span>
+                  </div>
+                );
+              }
+              return <div style={baseStyle}>{label}</div>;
+            })() : null;
+            return (
+            <Fragment key={messageKey}>
+              {showDateDivider && (
+                <div className="ch-date-divider">
+                  <span>{dateLabel}</span>
                 </div>
               )}
-              <div style={{ fontSize: msgFontSize - 1, color: "#a1a1aa", marginBottom: compact ? 4 : 6, wordBreak: "break-word", whiteSpace: "pre-line", display: 'flex', alignItems: 'center' }}>
-                <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(presenceMap[msg.user]), marginRight: 6 }} />
-                <button onClick={() => { setProfileUser(msg.user); setProfileContext(selectedHaven !== '__dms__' ? 'Viewing Haven Profile' : undefined); }} style={{ color: accent, fontWeight: 600, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{msg.user}</button>
-                {showTimestamps && (
-                  <span style={{ marginLeft: 8, fontSize: 11, color: "#666" }}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                )}
-                {msg.edited && <span style={{ marginLeft: 6, fontSize: 10, color: "#facc15" }}>(edited)</span>}
-              </div>
+              {isCollapsible && isCollapsed ? (
+                <div
+                  ref={(el) => { if (msg.id) messageRefs.current[msg.id] = el; }}
+                  onClick={() => setCollapsedSystemMessages((prev) => ({ ...prev, [systemKey]: false }))}
+                  style={collapsedStyle}
+                  className={messageCardClasses.join(' ')}
+                >
+                  <FontAwesomeIcon icon={faChevronRight} />
+                  <div style={{ fontSize: msgFontSize - 1, color: metaColor, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {msg.text}
+                  </div>
+                  {showTimestamp && timeMeta && (
+                    <span style={{ fontSize: 11, color: timestampColor }} title={timeMeta.title || undefined}>{timeMeta.label}</span>
+                  )}
+                </div>
+              ) : (
+              <div
+                ref={(el) => { if (msg.id) messageRefs.current[msg.id] = el; }}
+                onContextMenu={(e) => openCtx(e, { type: 'message', id: msg.id })}
+                onMouseEnter={() => { if (isFocusStyle) setFocusHoverGroupId(groupId); }}
+                onMouseLeave={() => { if (isFocusStyle) setFocusHoverGroupId(null); }}
+                style={messageCardStyle}
+                className={messageCardClasses.join(' ')}
+              >
+              {/* In-box actions: show on hover. Configurable quick buttons, Shift = full tools */}
+              {hasActions && (
+                <div
+                  className={`ch-message-actions${isBubbles ? ' ch-message-actions-bubble' : ''}`}
+                  data-shift={shiftDown ? 'full' : 'quick'}
+                  data-own={isOwn ? 'own' : 'other'}
+                >
+                  {actionContent}
+                </div>
+              )}
+              {isThreadForward && hasReplies && (
+                <div className="ch-branch-indicator" aria-hidden="true">
+                  <span className="ch-branch-line" />
+                  <span className="ch-branch-hook" />
+                </div>
+              )}
+              {(showHeader || showTimestamp) && (
+                <div style={{ fontSize: isMinimalLog ? msgFontSize - 2 : msgFontSize - 1, color: metaColor, marginBottom: compact ? 4 : 6, wordBreak: "break-word", whiteSpace: "pre-line", display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {showAvatar && (
+                    <div
+                      className="ch-message-avatar"
+                      style={{ position: 'relative', width: avatarSize, height: avatarSize, flex: '0 0 auto' }}
+                      onMouseEnter={() => beginStreamerReveal(revealKey)}
+                      onMouseLeave={() => endStreamerReveal(revealKey)}
+                    >
+                      <img
+                        src={avatarSrc}
+                        alt={displayNameFor(msg.user)}
+                        style={{
+                          width: avatarSize,
+                          height: avatarSize,
+                          borderRadius: '50%',
+                          border: BORDER,
+                          objectFit: 'cover'
+                        }}
+                      />
+                      <span
+                        style={{
+                          position: 'absolute',
+                          bottom: 2,
+                          right: 2,
+                          width: 10,
+                          height: 10,
+                          borderRadius: '50%',
+                          border: `2px solid ${COLOR_PANEL}`,
+                          background: statusColor(presenceMap[msg.user]),
+                        }}
+                      />
+                    </div>
+                  )}
+                  {showTimestamp && timeMeta && isMinimalLog && (
+                    <span style={{ fontSize: 11, color: timestampColor, fontFamily: timestampFontFamily }} title={timeMeta.title || undefined}>[{timeMeta.label}]</span>
+                  )}
+                  {showHeader && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button
+                        onClick={() => { setProfileUser(msg.user); setProfileContext(selectedHaven !== '__dms__' ? 'Viewing Haven Profile' : undefined); }}
+                        style={{ color: isBubbles ? textColor : accent, fontWeight: 600, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+                      >
+                        {renderDisplayName(msg.user, { revealKey })}
+                      </button>
+                      {renderCallStatusBadge(msg.user)}
+                      {isThreadForward && hasReplies && (
+                        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.2)', color: '#cbd5e1', background: 'rgba(2,6,23,0.6)' }}>
+                          {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {showTimestamp && timeMeta && !isMinimalLog && (
+                    <span style={{ marginLeft: showHeader ? 8 : 0, fontSize: 11, color: timestampColor, fontFamily: timestampFontFamily }} title={timeMeta.title || undefined}>{timeMeta.label}</span>
+                  )}
+                  {msg.edited && <span style={{ marginLeft: 6, fontSize: 10, color: "#facc15" }}>(edited)</span>}
+                  {isCollapsible && (
+                    <button
+                      type="button"
+                      onClick={() => setCollapsedSystemMessages((prev) => ({ ...prev, [systemKey]: true }))}
+                      className="btn-ghost"
+                      style={{ padding: '2px 6px', marginLeft: 'auto' }}
+                      title="Collapse"
+                    >
+                      <FontAwesomeIcon icon={faChevronDown} />
+                    </button>
+                  )}
+                </div>
+              )}
               {msg.replyToId && (() => {
                 const parent = messages.find(m => m.id === msg.replyToId);
                 if (!parent) return null;
                 return (
-                  <div onClick={() => { const el = messageRefs.current[msg.replyToId!]; el?.scrollIntoView({ behavior: "smooth", block: "center" }); }} style={{ fontSize: 12, color: "#94a3b8", background: "#0b1222", border: "1px solid #1f2937", borderRadius: 6, padding: 6, marginBottom: 6, cursor: "pointer" }}>
-                    <FontAwesomeIcon icon={faReply} style={{ marginRight: 6 }} /> Replying to <strong>@{parent.user}</strong>: <span style={{ opacity: 0.8 }}>{parent.text.slice(0, 64)}{parent.text.length > 64 ? "..." : ""}</span>
+                  <div onClick={() => { const el = messageRefs.current[msg.replyToId!]; el?.scrollIntoView({ behavior: "smooth", block: "center" }); }} style={{ fontSize: 12, color: COLOR_TEXT_MUTED, background: replyBackground, border: replyBorder, borderRadius: 6, padding: 6, marginBottom: 6, cursor: "pointer" }}>
+                    <FontAwesomeIcon icon={faReply} style={{ marginRight: 6 }} /> Replying to <strong>{renderDisplayName(parent.user, { prefix: '@', revealKey })}</strong>: <span style={{ opacity: 0.8 }}>{parent.text.slice(0, 64)}{parent.text.length > 64 ? "..." : ""}</span>
                   </div>
                 );
               })()}
@@ -2604,68 +5294,72 @@ export default function Main({ username }: { username: string }) {
                   <button onClick={() => setEditId(null)} style={{ background: "#23232a", color: "#fff", border: "none", borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}>Cancel</button>
                 </div>
               ) : (
-                <div style={{ wordBreak: "break-word", whiteSpace: "pre-line", fontSize: msgFontSize, fontFamily: monospaceMessages ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' : undefined }}>
-                  {(() => {
-                    const base = chResolved[msg.id] ?? msg.text ?? "";
-                    const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
-                    return (
-                  <ReactMarkdown
-                    // `breaks` is supported at runtime but missing in the type defs
-                    // @ts-expect-error `breaks` is a valid react-markdown prop
-                    breaks
-                    components={{
-                      a: (props: any) => {
-                        const href = props.href || '';
-                        if (href === 'mention://self') {
-                          return <span style={{ color: mentionColor, fontWeight: 600 }}>{props.children}</span>;
-                        }
-                        return <a {...props} style={{ color: accent }} />;
-                      },
-                      code: (props: any) => {
-                        const { children, ...rest } = props;
-                        const text = String(children ?? '');
-                        return (
-                          <code
-                            {...rest}
-                            onDoubleClick={() => { try { navigator.clipboard.writeText(text); } catch {} }}
-                            style={{
-                              background: "#23232a",
-                              color: codeColor,
-                              padding: "2px 4px",
-                              borderRadius: 4,
-                            }}
-                          >
-                            {children}
-                          </code>
-                        );
-                      },
-                      strong: (props) => <strong {...props} style={{ color: boldColor }} />,
-                      em: (props) => <em {...props} style={{ color: italicColor }} />,
-                      blockquote: (props) => <blockquote {...props} style={{ borderLeft: `3px solid ${accent}`, margin: 0, paddingLeft: 12, color: "#a1a1aa" }} />,
-                      img: (props) => {
-                        const { alt, ...rest } = props as React.ImgHTMLAttributes<HTMLImageElement>;
-                        // Right-click images in markdown to set avatar/banner
-                        return (
-                          <img
-                            {...rest}
-                            alt={alt ?? ""}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              const src = (rest.src as string) || "";
-                              const name = alt || "";
-                              openCtx(e as any, { type: "attachment", data: { url: src, name, type: "image/*" } });
-                            }}
-                            style={{ maxWidth: "360px", borderRadius: 6, border: "1px solid #1f2937", background: "#0b1222" }}
-                          />
-                        );
-                      },
-                      li: (props) => <li {...props} style={{ marginLeft: 16 }} />,
-                    }}
-                  >
-                    {withMentions}
-                  </ReactMarkdown>
-                    );
-                  })()}
+                <div style={{ wordBreak: "break-word", whiteSpace: "pre-line", fontSize: msgFontSize, fontFamily: monospaceMessages ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' : undefined, ...systemTextStyle }}>
+                  {isSystemMessage ? (
+                    systemContent
+                  ) : (
+                    (() => {
+                      const base = chResolved[msg.id] ?? msg.text ?? "";
+                      const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
+                      return (
+                    <ReactMarkdown
+                      // `breaks` is supported at runtime but missing in the type defs
+                      // @ts-expect-error `breaks` is a valid react-markdown prop
+                      breaks
+                      components={{
+                        a: (props: any) => {
+                          const href = props.href || '';
+                          if (href === 'mention://self') {
+                            return <span style={{ color: mentionColor, fontWeight: 600 }}>{props.children}</span>;
+                          }
+                          return <a {...props} style={{ color: accent }} />;
+                        },
+                        code: (props: any) => {
+                          const { children, ...rest } = props;
+                          const text = String(children ?? '');
+                          return (
+                            <code
+                              {...rest}
+                              onDoubleClick={() => { try { navigator.clipboard.writeText(text); } catch {} }}
+                              style={{
+                                background: "#23232a",
+                                color: codeColor,
+                                padding: "2px 4px",
+                                borderRadius: 4,
+                              }}
+                            >
+                              {children}
+                            </code>
+                          );
+                        },
+                        strong: (props) => <strong {...props} style={{ color: boldColor }} />,
+                        em: (props) => <em {...props} style={{ color: italicColor }} />,
+                        blockquote: (props) => <blockquote {...props} style={{ borderLeft: `3px solid ${accent}`, margin: 0, paddingLeft: 12, color: "#a1a1aa" }} />,
+                        img: (props) => {
+                          const { alt, ...rest } = props as React.ImgHTMLAttributes<HTMLImageElement>;
+                          // Right-click images in markdown to set avatar/banner
+                          return (
+                            <img
+                              {...rest}
+                              alt={alt ?? ""}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                const src = (rest.src as string) || "";
+                                const name = alt || "";
+                                openCtx(e as any, { type: "attachment", data: { url: src, name, type: "image/*" } });
+                              }}
+                              style={{ maxWidth: "360px", borderRadius: 6, border: BORDER, background: COLOR_PANEL }}
+                            />
+                          );
+                        },
+                        li: (props) => <li {...props} style={{ marginLeft: 16 }} />,
+                      }}
+                    >
+                      {withMentions}
+                    </ReactMarkdown>
+                      );
+                    })()
+                  )}
                 </div>
               )}
               {msg.attachments && msg.attachments.length > 0 && (
@@ -2678,14 +5372,29 @@ export default function Main({ username }: { username: string }) {
                 </div>
               )}
               {(msg.reactions && Object.keys(msg.reactions).length > 0) && (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, opacity: readingMode ? 0.5 : 1 }}>
                   {Object.entries(msg.reactions).map(([emoji, users]) => {
                     const reacted = users.includes(username);
                     const count = users.length;
                     return (
-                      <button key={emoji} onClick={() => toggleReaction(msg.id, emoji)} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 8px", borderRadius: 999, border: "1px solid #1f2937", background: reacted ? "#111a2e" : "#0b1222", color: reacted ? "#93c5fd" : "#cbd5e1", cursor: "pointer" }}>
-                        <span style={{ fontSize: 14 }}>{emoji}</span>
-                        <span style={{ fontSize: 12 }}>{count}</span>
+                      <button
+                        key={emoji}
+                        onClick={() => toggleReaction(msg.id, emoji)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: isMinimalLog ? "1px 6px" : "2px 8px",
+                          borderRadius: 999,
+                          border: BORDER,
+                          background: reacted ? COLOR_CARD : COLOR_PANEL,
+                          color: reacted ? "#93c5fd" : isMinimalLog ? "#94a3b8" : "#cbd5e1",
+                          cursor: "pointer",
+                          opacity: isMinimalLog ? 0.85 : 1,
+                        }}
+                      >
+                        <span style={{ fontSize: isMinimalLog ? 12 : 14 }}>{emoji}</span>
+                        <span style={{ fontSize: isMinimalLog ? 10 : 12 }}>{count}</span>
                       </button>
                     );
                   })}
@@ -2694,8 +5403,8 @@ export default function Main({ username }: { username: string }) {
               {pickerFor === msg.id && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80, zIndex: 70 }}>
                   <div className="glass" style={{ width: 'min(720px, 92vw)', maxHeight: '70vh', overflow: 'hidden', borderRadius: 14 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderBottom: '1px solid #2a3344' }}>
-                      <div style={{ color: '#e5e7eb', fontWeight: 600 }}>Add Reaction</div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderBottom: BORDER }}>
+                      <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>Add Reaction</div>
                       <button onClick={() => setPickerFor(null)} className="btn-ghost" style={{ padding: '4px 8px' }}><FontAwesomeIcon icon={faXmark} /></button>
                     </div>
                     <div style={{ padding: 10 }}>
@@ -2705,7 +5414,10 @@ export default function Main({ username }: { username: string }) {
                 </div>
               )}
             </div>
-          ))}
+            )}
+            </Fragment>
+            );
+          })}
       {typingUsers.length > 0 && (
         <div style={{ color: "#60a5fa", fontSize: 13, margin: "8px 0 0 16px" }}>
           {typingUsers.join(", ")} {typingUsers.length === 1 ? "is" : "are"} typing...
@@ -2716,17 +5428,18 @@ export default function Main({ username }: { username: string }) {
       )}
           {(!isAtBottom || newSinceScroll > 0) && (
             <div style={{ position: 'absolute', right: 16, bottom: 16 }}>
-              <button className="btn-ghost" onClick={() => { messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' as ScrollBehavior }); setIsAtBottom(true); setNewSinceScroll(0); }} style={{ padding: '8px 12px', border: '1px solid #1f2937', borderRadius: 999, background: '#0b1222', color: '#e5e7eb' }}>
+              <button className="btn-ghost" onClick={() => { messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' as ScrollBehavior }); setIsAtBottom(true); setNewSinceScroll(0); }} style={{ padding: '8px 12px', border: BORDER, borderRadius: 999, background: COLOR_PANEL, color: COLOR_TEXT }}>
                 Jump to latest {newSinceScroll > 0 ? `(${newSinceScroll})` : ''}
               </button>
             </div>
           )}
+          </div>
         </div>
         {/* Members sidebar with smooth slide + search */}
         {selectedHaven !== '__dms__' && (
-          <aside style={{ position: 'absolute', top: 0, right: showMembers ? 0 : -260, bottom: 0, width: 260, borderLeft: '1px solid #2a3344', background: '#0b1222', padding: 12, transition: 'right 160ms ease', pointerEvents: showMembers ? 'auto' : 'none', opacity: showMembers ? 1 : 0.0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #111827', paddingBottom: 8 }}>
-              <div style={{ color: '#e5e7eb', fontWeight: 600 }}>
+          <aside style={{ position: 'absolute', top: 0, right: showMembers ? 0 : -260, bottom: 0, width: 260, borderLeft: BORDER, background: COLOR_PANEL, padding: 12, transition: 'right 160ms ease', pointerEvents: showMembers ? 'auto' : 'none', opacity: showMembers ? 1 : 0.0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: BORDER, paddingBottom: 8 }}>
+              <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>
                 Members
               </div>
               <button className="btn-ghost" onClick={() => setShowMembers(false)} title="Close" style={{ padding: '4px 8px' }}>
@@ -2735,20 +5448,27 @@ export default function Main({ username }: { username: string }) {
             </div>
             <div style={{ paddingTop: 8 }}>
               <input value={membersQuery} onChange={(e)=> setMembersQuery(e.target.value)} placeholder="Search members" className="input-dark" style={{ width: '100%', padding: 8, borderRadius: 8 }} />
+              <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, marginTop: 6 }}>
+                {havenMembersLoading
+                  ? 'Loading members…'
+                  : `${havenMembers.filter((name) => isUserOnline(name)).length} online · ${havenMembers.length} total`}
+              </div>
             </div>
             <div style={{ overflowY: 'auto', maxHeight: 'calc(100% - 88px)', paddingTop: 8 }}>
-              {havenMembers.length === 0 ? (
-                <div style={{ color: '#94a3b8' }}>No members found.</div>
+              {havenMembersLoading && havenMembers.length === 0 ? (
+                <div style={{ color: COLOR_TEXT_MUTED }}>Fetching members…</div>
+              ) : havenMembers.length === 0 ? (
+                <div style={{ color: COLOR_TEXT_MUTED }}>No members found.</div>
               ) : (() => {
                 const query = membersQuery.trim().toLowerCase();
                 const filtered = havenMembers.filter(name => name.toLowerCase().includes(query));
-                const online = filtered.filter(name => (presenceMap[name] || 'offline') !== 'offline');
-                const offline = filtered.filter(name => (presenceMap[name] || 'offline') === 'offline');
+                const online = filtered.filter(name => isUserOnline(name));
+                const offline = filtered.filter(name => !isUserOnline(name));
                 const ordered = [...online, ...offline];
                 return ordered.map((name) => (
-                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderBottom: '1px solid #111827' }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(presenceMap[name]) }} />
-                    <button onClick={() => { setProfileUser(name); setProfileContext('Viewing Haven Profile'); }} className="btn-ghost" style={{ padding: 0, color: '#e5e7eb' }}>@{name}</button>
+                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderBottom: BORDER }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(statusForUser(name)) }} />
+                    <button onClick={() => { setProfileUser(name); setProfileContext('Viewing Haven Profile'); }} className="btn-ghost" style={{ padding: 0, color: COLOR_TEXT }}>@{name}</button>
                   </div>
                 ));
               })()}
@@ -2761,7 +5481,7 @@ export default function Main({ username }: { username: string }) {
           style={{
             display: "flex",
             alignItems: "center",
-            borderTop: "1px solid #2a3344",
+            borderTop: BORDER,
             padding: 12,
             background: "rgba(17,24,39,0.6)",
             position: 'relative'
@@ -2769,10 +5489,10 @@ export default function Main({ username }: { username: string }) {
         >
           {/* Reply bar */}
           {replyTo && (
-            <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, right: 12, background: '#0b1222', border: '1px solid #1f2937', borderRadius: 10, zIndex: 11, padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, right: 12, background: COLOR_PANEL, border: BORDER, borderRadius: 10, zIndex: 11, padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
               <FontAwesomeIcon icon={faReply} />
-              <div style={{ color: '#e5e7eb', fontSize: 13 }}>
-                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: '#94a3b8' }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? '…' : ''}</span>
+              <div style={{ color: COLOR_TEXT, fontSize: 13 }}>
+                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: COLOR_TEXT_MUTED }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? '…' : ''}</span>
               </div>
               <button type="button" className="btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
@@ -2781,9 +5501,9 @@ export default function Main({ username }: { username: string }) {
           )}
           {/* Mention popup */}
           {mentionOpen && (
-            <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, background: '#0b1222', border: '1px solid #1f2937', borderRadius: 10, zIndex: 10, width: 360, maxHeight: '40vh', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, borderBottom: '1px solid #111827' }}>
-                <div style={{ color: '#e5e7eb', fontWeight: 600 }}>@ Mention</div>
+            <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, background: COLOR_PANEL, border: BORDER, borderRadius: 10, zIndex: 10, width: 360, maxHeight: '40vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, borderBottom: BORDER }}>
+                <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>@ Mention</div>
                 <button type="button" className="btn-ghost" onClick={() => setMentionOpen(false)} style={{ padding: '2px 6px' }}><FontAwesomeIcon icon={faXmark} /></button>
               </div>
               <div style={{ padding: 8 }}>
@@ -2791,14 +5511,14 @@ export default function Main({ username }: { username: string }) {
               </div>
               <div>
                 {mentionList.map(u => (
-                  <div key={u.username} onClick={() => { const at = `@${u.username} `; const el = inputRef.current; if (el) { const pos = el.selectionStart || el.value.length; const v = el.value; const b = v.slice(0, pos); const a = v.slice(pos); el.value = b + at + a; setInput(el.value); setMentionOpen(false); setMentionQuery(""); el.focus(); el.setSelectionRange((b+at).length, (b+at).length); } }} style={{ padding: '8px 12px', borderBottom: '1px solid #111827', cursor: 'pointer', color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div key={u.username} onClick={() => { const at = `@${u.username} `; const el = inputRef.current; if (el) { const pos = el.selectionStart || el.value.length; const v = el.value; const b = v.slice(0, pos); const a = v.slice(pos); el.value = b + at + a; setInput(el.value); setMentionOpen(false); setMentionQuery(""); el.focus(); el.setSelectionRange((b+at).length, (b+at).length); } }} style={{ padding: '8px 12px', borderBottom: BORDER, cursor: 'pointer', color: COLOR_TEXT, display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(presenceMap[u.username]) }} />
                     <span>@{u.username}</span>
                     <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 12 }}>{u.displayName}</span>
                   </div>
                 ))}
                 {mentionList.length === 0 && (
-                  <div style={{ padding: 12, color: '#94a3b8' }}>No users found</div>
+                  <div style={{ padding: 12, color: COLOR_TEXT_MUTED }}>No users found</div>
                 )}
               </div>
             </div>
@@ -2807,7 +5527,7 @@ export default function Main({ username }: { username: string }) {
           {(uploadItems.length > 0 || pendingFiles.length > 0) && (
             <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, right: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {uploadItems.map(u => (
-                <div key={u.id} style={{ border: '1px solid #1f2937', background: '#0b1222', borderRadius: 8, padding: 8, width: 260 }}>
+                <div key={u.id} style={{ border: BORDER, background: COLOR_PANEL, borderRadius: 8, padding: 8, width: 260 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     {u.type?.startsWith('image/') && u.localUrl ? (
                       <img src={u.localUrl} alt={u.name} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6 }} />
@@ -2816,13 +5536,13 @@ export default function Main({ username }: { username: string }) {
                     )}
                     <div style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>{(u.size/1024).toFixed(1)} KB</div>
                   </div>
-                  <div style={{ marginTop: 6, height: 6, background: '#111827', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ marginTop: 6, height: 6, background: COLOR_PANEL_STRONG, borderRadius: 6, overflow: 'hidden' }}>
                     <div style={{ width: `${u.progress}%`, height: '100%', background: '#60a5fa', transition: 'width .15s linear' }} />
                   </div>
                 </div>
               ))}
               {pendingFiles.map((f, i) => (
-                <div key={`pf-${i}`} style={{ border: '1px solid #1f2937', background: '#0b1222', borderRadius: 8, padding: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div key={`pf-${i}`} style={{ border: BORDER, background: COLOR_PANEL, borderRadius: 8, padding: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
                   {f.type?.startsWith('image/') ? (
                     <img src={f.url} alt={f.name} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6 }} />
                   ) : (
@@ -2848,7 +5568,7 @@ export default function Main({ username }: { username: string }) {
               }
             }}
             placeholder={permState.canSend
-              ? (selectedDM ? `Message ${(() => { const dm = dms.find(d => d.id === selectedDM); return dm ? dm.users.filter(u => u !== username).join(', ') : 'DM'; })()}` : `Message #${selectedChannel}`)
+              ? (selectedDM ? `Message ${(() => { const dm = dms.find(d => d.id === selectedDM); return dm ? getDMTitle(dm) : 'DM'; })()}` : `Message #${selectedChannel}`)
               : "You don\u2019t have permission to send messages in this channel"}
             disabled={!permState.canSend}
             style={{
@@ -2910,22 +5630,23 @@ export default function Main({ username }: { username: string }) {
             zIndex: 85,
             padding: 10,
             borderRadius: 10,
-            border: '1px solid #1f2937',
+            border: BORDER,
             background: 'rgba(15,23,42,0.96)',
-            color: '#e5e7eb',
+            color: COLOR_TEXT,
             maxWidth: isMobile ? 'calc(100vw - 16px)' : 320,
             boxShadow: '0 10px 30px rgba(0,0,0,0.6)'
           }}
         >
           {(() => {
             const dm = dms.find(d => d.id === incomingCall.room);
-            const others = dm ? dm.users.filter(u => u !== username) : [];
-            const label = others.length ? others.join(', ') : 'Direct Message';
+            const label = dm
+              ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'} • ${getDMTitle(dm)}`
+              : 'Direct Message';
             return (
               <>
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Incoming call</div>
                 <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
-                  {incomingCall.from} is calling you in <span style={{ color: '#e5e7eb' }}>{label}</span>.
+                  {incomingCall.from} is calling you in <span style={{ color: COLOR_TEXT }}>{label}</span>.
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
                   <button
@@ -2976,7 +5697,14 @@ export default function Main({ username }: { username: string }) {
                         const startedAt = Date.now();
                         setCallStartedAt(startedAt);
                         const roster = applyParticipantUpdate([
-                          { user: username, status: 'connected' },
+                          {
+                            user: username,
+                            status: 'connected',
+                            muted: isMuted,
+                            deafened: isDeafened,
+                            videoEnabled: isCameraOn,
+                            screenSharing: isScreenSharing,
+                          },
                           { user: caller, status: 'connected' },
                         ]);
                         socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, startedAt, participants: roster });
@@ -3004,7 +5732,9 @@ export default function Main({ username }: { username: string }) {
         const preview = roster.slice(0, 3);
         const extra = roster.length - preview.length;
         const label = callState === 'calling' ? 'Calling...' : 'In call';
-        const title = dm ? dm.users.filter(u => u !== username).join(', ') || 'Direct Message' : 'Direct Message';
+        const title = dm
+          ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'} • ${getDMTitle(dm)}`
+          : 'Direct Message';
         return (
           <div
             onContextMenu={(e) => openCtx(e, { type: 'call', data: { room: activeCallDM } })}
@@ -3015,9 +5745,9 @@ export default function Main({ username }: { username: string }) {
               zIndex: 80,
               padding: 12,
               borderRadius: 12,
-              border: '1px solid #1f2937',
+              border: BORDER,
               background: 'rgba(15,23,42,0.95)',
-              color: '#e5e7eb',
+              color: COLOR_TEXT,
               width: isMobile ? 'calc(100vw - 16px)' : 320,
               boxShadow: '0 12px 30px rgba(0,0,0,0.45)'
             }}
@@ -3044,7 +5774,7 @@ export default function Main({ username }: { username: string }) {
                   );
                 })}
                 {extra > 0 && (
-                  <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#1f2937', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: '50%', background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
                     +{extra}
                   </div>
                 )}
@@ -3054,19 +5784,25 @@ export default function Main({ username }: { username: string }) {
               <button
                 type="button"
                 className="btn-ghost"
-                onClick={() => {
-                  setSelectedHaven('__dms__');
-                  setSelectedDM(activeCallDM);
-                  setActiveCallDM(activeCallDM);
-                  setShowMobileNav(false);
-                  setTimeout(() => {
-                    const el = chatScrollRef.current;
-                    if (el) el.scrollTop = el.scrollHeight;
-                  }, 50);
+                onClick={toggleMute}
+                style={{
+                  flex: 1,
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: BORDER,
+                  background: isMuted ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT,
+                  color: COLOR_TEXT,
                 }}
-                style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0f172a', color: '#e5e7eb' }}
               >
-                <FontAwesomeIcon icon={faPhone} /> Popup
+                <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} /> {isMuted ? 'Unmute' : 'Mute'}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowFullscreenCall(true)}
+                style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: BORDER, background: COLOR_PANEL_ALT, color: COLOR_TEXT }}
+              >
+                <FontAwesomeIcon icon={faUpRightAndDownLeftFromCenter} /> Full Screen
               </button>
               <button
                 type="button"
@@ -3076,6 +5812,533 @@ export default function Main({ username }: { username: string }) {
               >
                 Hang Up
               </button>
+            </div>
+          </div>
+        );
+      })()}
+      {showCallPiP && activeCallDM && (
+        <div
+          style={{
+            position: 'fixed',
+            left: pipPosition.x,
+            top: pipPosition.y,
+            width: pipSize.width,
+            height: pipSize.height,
+            minWidth: MIN_PIP_WIDTH,
+            minHeight: MIN_PIP_HEIGHT,
+            borderRadius: 18,
+            border: BORDER,
+            background: 'rgba(4,7,17,0.95)',
+            boxShadow: '0 24px 60px rgba(0,0,0,0.55)',
+            color: COLOR_TEXT,
+            display: 'flex',
+            flexDirection: 'column',
+            zIndex: 115,
+            backdropFilter: 'blur(16px)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            onMouseDown={beginPipInteraction('move')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '8px 12px',
+              gap: 10,
+              borderBottom: '1px solid rgba(100,116,139,0.25)',
+              cursor: isMobile ? 'default' : 'move',
+              userSelect: 'none',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', background: 'rgba(59,130,246,0.15)' }}>
+                {renderCallStatusIconGraphic(viewerCallMeta, 14)}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2, minWidth: 0 }}>
+                <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED, textTransform: 'uppercase', letterSpacing: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {callLocationInfo?.label || 'Direct Call'}
+                </span>
+                <span style={{ fontWeight: 600 }}>Live Call</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontVariantNumeric: 'tabular-nums', fontSize: 12, color: '#cbd5f5' }}>
+                {`${Math.floor(callElapsed / 60).toString().padStart(1, '0')}:${(callElapsed % 60).toString().padStart(2, '0')}`}
+              </div>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={toggleMute}
+                title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
+                style={{ padding: '6px 8px', borderRadius: 999, border: BORDER, background: isMuted ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT }}
+              >
+                <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} />
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setShowFullscreenCall(true)}
+                title="Open call controls"
+                style={{ padding: '6px 8px', borderRadius: 999, border: BORDER, background: COLOR_PANEL_ALT, color: COLOR_TEXT }}
+              >
+                <FontAwesomeIcon icon={faUpRightAndDownLeftFromCenter} />
+              </button>
+            </div>
+          </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 12, gap: 8, minHeight: 0 }}>
+            <div style={{ flex: 1, position: 'relative', borderRadius: 14, border: BORDER, background: '#01050e', overflow: 'hidden' }}>
+              {remoteVideoAvailable ? (
+                <video
+                  ref={pipRemoteVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+              ) : (
+                <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: COLOR_TEXT_MUTED, fontSize: 12, padding: '0 16px', textAlign: 'center' }}>
+                  <FontAwesomeIcon icon={faVideo} style={{ fontSize: 22, color: '#60a5fa' }} />
+                  <span>Waiting for someone to share a camera or screen.</span>
+                </div>
+              )}
+              {(isCameraOn || isScreenSharing) && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 12,
+                    right: 12,
+                    width: Math.max(120, Math.min(180, pipSize.width / 2.5)),
+                    borderRadius: 12,
+                    border: BORDER,
+                    overflow: 'hidden',
+                    background: 'rgba(4,7,17,0.85)',
+                  }}
+                >
+                  <video
+                    ref={pipLocalVideoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{
+                      width: '100%',
+                      height: Math.max(80, Math.min(140, pipSize.height * 0.45)),
+                      objectFit: isScreenSharing ? 'contain' : 'cover',
+                      background: COLOR_PANEL_STRONG,
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+            <div style={{ borderRadius: 12, border: BORDER, background: 'rgba(3,6,16,0.8)', padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 54 }}>
+              {pipParticipantPreview.length === 0 ? (
+                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>Waiting for participants...</div>
+              ) : (
+                pipParticipantPreview.map((p) => {
+                  const profile = userProfileCache[p.user];
+                  const avatar = profile?.avatarUrl || '/favicon.ico';
+                  const meta = getCallStatusMeta(p.user) || defaultCallMeta;
+                  const revealKey = `pip-${p.user}`;
+                  return (
+                    <div
+                      key={`pip-${p.user}`}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.25)', background: 'rgba(8,13,26,0.9)' }}
+                      onMouseEnter={() => beginStreamerReveal(revealKey)}
+                      onMouseLeave={() => endStreamerReveal(revealKey)}
+                    >
+                      <div style={{ position: 'relative', width: 28, height: 28 }}>
+                        <img src={avatar} alt={p.user} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+                        <span style={{ position: 'absolute', bottom: -4, right: -4 }}>
+                          {renderCallStatusIconGraphic(meta, 10)}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{renderDisplayName(p.user, { revealKey })}</span>
+                    </div>
+                  );
+                })
+              )}
+              {pipParticipantOverflow > 0 && (
+                <div style={{ width: 32, height: 32, borderRadius: '50%', border: '1px dashed rgba(148,163,184,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
+                  +{pipParticipantOverflow}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ padding: '8px 12px', borderTop: '1px solid rgba(100,116,139,0.25)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {callLocationInfo?.label || 'Direct Call'}
+            </div>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={endCall}
+              style={{ padding: '6px 12px', borderRadius: 999, border: '1px solid #7f1d1d', background: '#7f1d1d', color: '#fff' }}
+            >
+              Hang Up
+            </button>
+          </div>
+          {!isMobile && (
+            <div
+              onMouseDown={beginPipInteraction('resize')}
+              style={{
+                position: 'absolute',
+                width: 22,
+                height: 22,
+                bottom: 4,
+                right: 4,
+                cursor: 'nwse-resize',
+                borderRight: '2px solid rgba(148,163,184,0.4)',
+                borderBottom: '2px solid rgba(148,163,184,0.4)',
+                borderBottomRightRadius: 8,
+              }}
+            />
+          )}
+        </div>
+      )}
+      {showGroupDM && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 90,
+          }}
+          onClick={closeGroupDMModal}
+        >
+          <div
+            className="glass"
+            style={{ width: 'min(520px, 94vw)', maxHeight: '90vh', overflow: 'hidden', borderRadius: 16 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderBottom: BORDER }}>
+              <div style={{ fontWeight: 600 }}>New Group DM</div>
+              <button className="btn-ghost" onClick={closeGroupDMModal} style={{ padding: '4px 8px' }}>
+                <FontAwesomeIcon icon={faXmark} />
+              </button>
+            </div>
+            <form onSubmit={handleGroupDMSubmit} style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, color: COLOR_TEXT }}>
+              <div style={{ fontSize: 13, color: COLOR_TEXT_MUTED }}>
+                Select up to {MAX_GROUP_DM_TARGETS} friends ({MAX_GROUP_DM_MEMBERS} people total with you) to start a group conversation.
+              </div>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span style={{ fontSize: 12, color: '#9ca3af' }}>Group name (optional)</span>
+                <input
+                  value={groupDMName}
+                  onChange={(e) => setGroupDMName(e.target.value)}
+                  className="input-dark"
+                  placeholder="e.g. Game Squad"
+                  style={{ padding: 8, borderRadius: 8 }}
+                />
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: '#9ca3af' }}>
+                  <span>Select friends</span>
+                  <span>{groupDMSelection.length + 1}/{MAX_GROUP_DM_MEMBERS} members</span>
+                </div>
+                <input
+                  value={groupDMSearch}
+                  onChange={(e) => setGroupDMSearch(e.target.value)}
+                  placeholder="Search friends"
+                  className="input-dark"
+                  style={{ padding: 8, borderRadius: 8 }}
+                />
+                <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {filteredGroupFriends.length === 0 ? (
+                    <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>
+                      {friendsState.friends.length === 0 ? 'Add some friends to start a group DM.' : 'No friends match your search.'}
+                    </div>
+                  ) : (
+                    filteredGroupFriends.map((user) => {
+                      const selected = groupDMSelection.includes(user);
+                      const disabled = !selected && groupDMSelection.length >= MAX_GROUP_DM_TARGETS;
+                      const avatar = userProfileCache[user]?.avatarUrl || '/favicon.ico';
+                      const status = presenceMap[user];
+                      return (
+                        <label
+                          key={`gdm-${user}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            padding: '8px 10px',
+                            borderRadius: 10,
+                            border: BORDER,
+                            background: selected ? COLOR_CARD : COLOR_PANEL_ALT,
+                            cursor: disabled ? 'not-allowed' : 'pointer',
+                            opacity: disabled ? 0.45 : 1,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => toggleGroupDMUser(user)}
+                            disabled={disabled}
+                            style={{ accentColor: accent }}
+                          />
+                          <div style={{ position: 'relative' }}>
+                            <img src={avatar} alt={user} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
+                            <span style={{ position: 'absolute', bottom: -1, right: -1, width: 10, height: 10, borderRadius: '50%', border: '2px solid #0f172a', background: statusColor(status) }} />
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontWeight: 600 }}>{renderDisplayName(user, { revealKey: `gdm-${user}` })}</span>
+                            <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{user}</span>
+                          </div>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              {groupDMError && (
+                <div style={{ color: '#fca5a5', fontSize: 12 }}>
+                  {groupDMError}
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button type="button" className="btn-ghost" onClick={closeGroupDMModal} style={{ padding: '6px 10px' }}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-ghost"
+                  disabled={groupDMSelection.length < 2 || groupDMLoading}
+                  style={{
+                    padding: '6px 14px',
+                    color: groupDMSelection.length >= 2 && !groupDMLoading ? accent : '#6b7280',
+                    cursor: groupDMSelection.length >= 2 && !groupDMLoading ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {groupDMLoading ? 'Creating…' : 'Create Group DM'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {groupSettingsTarget && (() => {
+        const dm = dms.find((entry) => entry.id === groupSettingsTarget);
+        if (!dm) return null;
+        const members = dm.users;
+        const owner = dmOwner(dm);
+        const moderators = dmModerators(dm);
+        const isOwner = owner === username;
+        const isModerator = currentIsGroupModerator(dm);
+        const canRemoveMember = (member: string) => {
+          if (!isModerator) return member === username;
+          if (member === owner) return isOwner && member === username;
+          if (member === username) return true;
+          if (isOwner) return true;
+          return !moderators.includes(member);
+        };
+        const addableFriends = friendsState.friends.filter((friend) => !members.includes(friend));
+        const addQuery = groupAddQuery.trim().toLowerCase();
+        const filteredAddable = addQuery
+          ? addableFriends.filter((friend) => friend.toLowerCase().includes(addQuery) || displayNameFor(friend).toLowerCase().includes(addQuery))
+          : addableFriends;
+        const remainingSlots = MAX_GROUP_DM_MEMBERS - members.length;
+        const showAddSection = isGroupDMThread(dm) && remainingSlots > 0 && addableFriends.length > 0;
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.65)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 95,
+            }}
+            onClick={closeGroupSettingsModal}
+          >
+            <div
+              className="glass"
+              style={{ width: 'min(520px, 96vw)', maxHeight: '92vh', overflow: 'hidden', borderRadius: 16 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderBottom: BORDER }}>
+                <div style={{ fontWeight: 600 }}>Group Settings</div>
+                <button className="btn-ghost" onClick={closeGroupSettingsModal} style={{ padding: '4px 8px' }}>
+                  <FontAwesomeIcon icon={faXmark} />
+                </button>
+              </div>
+              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, color: COLOR_TEXT, maxHeight: 'calc(92vh - 120px)', overflowY: 'auto' }}>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#9ca3af' }}>Group name</span>
+                  <input
+                    value={groupSettingsDraft.name}
+                    onChange={(e) => setGroupSettingsDraft((prev) => ({ ...prev, name: e.target.value }))}
+                    className="input-dark"
+                    style={{ padding: 8, borderRadius: 8 }}
+                    placeholder="Group name"
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#9ca3af' }}>Avatar URL</span>
+                  <input
+                    value={groupSettingsDraft.avatarUrl}
+                    onChange={(e) => setGroupSettingsDraft((prev) => ({ ...prev, avatarUrl: e.target.value }))}
+                    className="input-dark"
+                    style={{ padding: 8, borderRadius: 8 }}
+                    placeholder="https://example.com/avatar.png"
+                  />
+                  {groupSettingsDraft.avatarUrl && (
+                    <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <img src={groupSettingsDraft.avatarUrl} alt="Preview" style={{ width: 48, height: 48, borderRadius: 12, objectFit: 'cover', border: BORDER }} />
+                      <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>Preview</span>
+                    </div>
+                  )}
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>Members</div>
+                  {members.map((member) => {
+                    const profile = userProfileCache[member];
+                    const avatar = profile?.avatarUrl || '/favicon.ico';
+                    const display = renderDisplayName(member, { revealKey: `group-settings-${member}` });
+                    const isMemberOwner = member === owner;
+                    const isMemberModerator = moderators.includes(member);
+                    const removable = canRemoveMember(member);
+                    const allowModToggle = isOwner && !isMemberOwner;
+                    const checked = groupSettingsDraft.moderators.includes(member);
+                    return (
+                      <div
+                        key={`group-settings-${member}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '8px 10px',
+                          borderRadius: 10,
+                          border: BORDER,
+                          background: '#030617',
+                          flexWrap: 'wrap',
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                          <img src={avatar} alt={member} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              {display}
+                              {isMemberOwner && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: 'rgba(59,130,246,0.15)', color: '#93c5fd' }}>Owner</span>}
+                              {!isMemberOwner && isMemberModerator && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: 'rgba(16,185,129,0.15)', color: '#6ee7b7' }}>Moderator</span>}
+                            </span>
+                            <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{member}</span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <label style={{ fontSize: 11, color: '#9ca3af', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <input
+                              type="checkbox"
+                              disabled={!allowModToggle}
+                              checked={allowModToggle ? checked : isMemberModerator}
+                              onChange={() => allowModToggle && toggleDraftModerator(member)}
+                            />
+                            Mod
+                          </label>
+                          <button
+                            className="btn-ghost"
+                            disabled={!removable || groupSettingsSaving}
+                            onClick={() => {
+                              if (!removable) return;
+                              const label = member === username ? 'Leave this group DM?' : `Remove ${member}?`;
+                              if (typeof window === 'undefined' || window.confirm(label)) {
+                                removeGroupMember(member);
+                              }
+                            }}
+                            style={{ padding: '4px 8px', color: removable ? '#f87171' : '#475569' }}
+                          >
+                            {member === username ? 'Leave' : 'Remove'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {groupSettingsError && (
+                  <div style={{ color: '#fca5a5', fontSize: 12 }}>{groupSettingsError}</div>
+                )}
+                {showAddSection && (
+                  <div style={{ border: BORDER, borderRadius: 12, padding: 12, background: '#020617', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 12, color: '#9ca3af', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Add members ({members.length}/{MAX_GROUP_DM_MEMBERS})</span>
+                      <span>{remainingSlots} open seat{remainingSlots === 1 ? '' : 's'}</span>
+                    </div>
+                    <input
+                      value={groupAddQuery}
+                      onChange={(e) => setGroupAddQuery(e.target.value)}
+                      placeholder="Search friends"
+                      className="input-dark"
+                      style={{ padding: 8, borderRadius: 8 }}
+                    />
+                    <div style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {filteredAddable.length === 0 ? (
+                        <div style={{ color: COLOR_TEXT_MUTED, fontSize: 12 }}>No friends available.</div>
+                      ) : (
+                        filteredAddable.map((friend) => {
+                          const disabled = !groupAddSelection.includes(friend) && groupAddSelection.length >= remainingSlots;
+                          return (
+                            <label
+                              key={`add-${friend}`}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 8,
+                                padding: '6px 8px',
+                                borderRadius: 8,
+                                border: BORDER,
+                                opacity: disabled ? 0.5 : 1,
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <img src={getUserAvatar(friend)} alt={friend} style={{ width: 28, height: 28, borderRadius: '50%', border: BORDER }} />
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                  <span style={{ fontWeight: 600 }}>{renderDisplayName(friend, { revealKey: `add-${friend}`, allowFriend: true })}</span>
+                                  <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</span>
+                                </div>
+                              </div>
+                              <input
+                                type="checkbox"
+                                checked={groupAddSelection.includes(friend)}
+                                onChange={() => toggleGroupAddUser(friend)}
+                                disabled={disabled}
+                              />
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                    {groupAddError && <div style={{ color: '#fca5a5', fontSize: 12 }}>{groupAddError}</div>}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={addMembersToGroup}
+                        disabled={groupAddSelection.length === 0 || groupAddSaving}
+                        style={{ padding: '6px 12px', color: groupAddSelection.length ? accent : '#6b7280' }}
+                      >
+                        {groupAddSaving ? 'Adding...' : `Add ${groupAddSelection.length || ''} Member${groupAddSelection.length === 1 ? '' : 's'}`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button type="button" className="btn-ghost" onClick={closeGroupSettingsModal} style={{ padding: '6px 10px' }} disabled={groupSettingsSaving}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={saveGroupSettings}
+                    disabled={groupSettingsSaving}
+                    style={{ padding: '6px 14px', color: groupSettingsSaving ? '#6b7280' : accent }}
+                  >
+                    {groupSettingsSaving ? 'Savingƒ?İ' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         );
@@ -3105,22 +6368,27 @@ export default function Main({ username }: { username: string }) {
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
             <div className="glass" style={{ width: 'min(640px, 90vw)', maxHeight: '70vh', overflowY: 'auto', padding: 16, borderRadius: 12 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#e5e7eb', fontWeight: 600 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: COLOR_TEXT, fontWeight: 600 }}>
                   <FontAwesomeIcon icon={faThumbtack} /> Pinned Messages
                 </div>
                 <button className="btn-ghost" onClick={() => setShowPinned(false)} style={{ padding: '4px 8px' }}><FontAwesomeIcon icon={faXmark} /></button>
               </div>
               {pinned.length === 0 ? (
-                <div style={{ color: '#94a3b8', fontSize: 14 }}>No pinned messages.</div>
+                <div style={{ color: COLOR_TEXT_MUTED, fontSize: 14 }}>No pinned messages.</div>
               ) : (
-                pinned.map(pm => (
-                  <div key={pm.id} onClick={() => { setShowPinned(false); const el = messageRefs.current[pm.id]; el?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} style={{ padding: 10, border: '1px solid #2a3344', borderRadius: 8, marginBottom: 8, cursor: 'pointer', background: '#0f172a' }}>
-                    <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>
-                      <strong style={{ color: '#93c5fd' }}>@{pm.user}</strong> - {new Date(pm.timestamp).toLocaleString()}
+                pinned.map(pm => {
+                  const meta = formatTimestampLabel(pm.timestamp);
+                  const dateLabel = formatDateLine(pm.timestamp);
+                  return (
+                    <div key={pm.id} onClick={() => { setShowPinned(false); const el = messageRefs.current[pm.id]; el?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} style={{ padding: 10, border: BORDER, borderRadius: 8, marginBottom: 8, cursor: 'pointer', background: COLOR_PANEL_ALT }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>
+                        <strong style={{ color: '#93c5fd' }}>@{pm.user}</strong>{' '}
+                        <span title={meta.title || undefined}>{dateLabel} • {meta.label}</span>
+                      </div>
+                      <div style={{ fontSize: 14, color: COLOR_TEXT }}>{pm.text}</div>
                     </div>
-                    <div style={{ fontSize: 14, color: '#e5e7eb' }}>{pm.text}</div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -3129,37 +6397,46 @@ export default function Main({ username }: { username: string }) {
       {showEditHistory && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 67 }}>
           <div className="glass" style={{ width: 'min(640px,90vw)', maxHeight: '70vh', overflow: 'auto', borderRadius: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344' }}>
-              <div style={{ color: '#e5e7eb', fontWeight: 600 }}>Edit History</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER }}>
+              <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>Edit History</div>
               <button className="btn-ghost" onClick={() => setShowEditHistory(null)} style={{ padding: '4px 8px' }}><FontAwesomeIcon icon={faXmark} /></button>
             </div>
             <div style={{ padding: 12 }}>
               {showEditHistory.items.length === 0 ? (
-                <div style={{ color: '#94a3b8' }}>No prior edits.</div>
+                <div style={{ color: COLOR_TEXT_MUTED }}>No prior edits.</div>
               ) : (
-                showEditHistory.items.slice().reverse().map((h, i) => (
-                  <div key={i} style={{ borderBottom: '1px solid #111827', padding: '8px 0' }}>
-                    <div style={{ fontSize: 12, color: '#9ca3af' }}>{new Date(h.timestamp).toLocaleString(undefined, { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' })}</div>
-                    <div style={{ whiteSpace: 'pre-wrap', color: '#e5e7eb' }}>{h.text}</div>
-                  </div>
-                ))
+                showEditHistory.items.slice().reverse().map((h, i) => {
+                  const meta = formatTimestampLabel(h.timestamp);
+                  const dateLabel = formatDateLine(h.timestamp);
+                  return (
+                    <div key={i} style={{ borderBottom: BORDER, padding: '8px 0' }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }} title={meta.title || undefined}>
+                        {dateLabel} • {meta.label}
+                      </div>
+                      <div style={{ whiteSpace: 'pre-wrap', color: COLOR_TEXT }}>{h.text}</div>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
         </div>
       )}
       {showNewHavenModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 73 }}>
-          <div className="glass" style={{ width: 'min(420px, 92vw)', borderRadius: 12, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #1f2937', color: '#e5e7eb' }}>
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 73 }}
+          onClick={closeNewHavenModal}
+        >
+          <div className="glass" style={{ width: 'min(420px, 92vw)', borderRadius: 12, overflow: 'hidden' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Create Haven</div>
-              <button className="btn-ghost" onClick={() => setShowNewHavenModal(false)} style={{ padding: '4px 8px' }}>
+              <button className="btn-ghost" onClick={closeNewHavenModal} style={{ padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
               </button>
             </div>
             <form
               onSubmit={handleCreateHaven}
-              style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12, color: '#e5e7eb' }}
+              style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12, color: COLOR_TEXT }}
             >
               <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
                 <button
@@ -3169,9 +6446,9 @@ export default function Main({ username }: { username: string }) {
                     flex: 1,
                     padding: 8,
                     borderRadius: 999,
-                    border: '1px solid ' + (havenAction === 'create' ? accent : '#1f2937'),
+                    border: '1px solid ' + (havenAction === 'create' ? accent : COLOR_PANEL_STRONG),
                     background: havenAction === 'create' ? '#020617' : '#020617',
-                    color: '#e5e7eb',
+                    color: COLOR_TEXT,
                     fontSize: 13,
                     cursor: 'pointer'
                   }}
@@ -3185,9 +6462,9 @@ export default function Main({ username }: { username: string }) {
                     flex: 1,
                     padding: 8,
                     borderRadius: 999,
-                    border: '1px solid ' + (havenAction === 'join' ? accent : '#1f2937'),
+                    border: '1px solid ' + (havenAction === 'join' ? accent : COLOR_PANEL_STRONG),
                     background: havenAction === 'join' ? '#020617' : '#020617',
-                    color: '#e5e7eb',
+                    color: COLOR_TEXT,
                     fontSize: 13,
                     cursor: 'pointer'
                   }}
@@ -3218,9 +6495,9 @@ export default function Main({ username }: { username: string }) {
                     minWidth: 140,
                     padding: 10,
                     borderRadius: 10,
-                    border: '1px solid ' + (newHavenType === 'standard' ? accent : '#1f2937'),
+                    border: '1px solid ' + (newHavenType === 'standard' ? accent : COLOR_PANEL_STRONG),
                     background: '#020617',
-                    color: '#e5e7eb',
+                    color: COLOR_TEXT,
                     textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
@@ -3228,7 +6505,7 @@ export default function Main({ username }: { username: string }) {
                     cursor: 'pointer'
                   }}
                 >
-                  <span style={{ width: 20, height: 20, borderRadius: 6, background: '#111827', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ width: 20, height: 20, borderRadius: 6, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <FontAwesomeIcon icon={faServer} />
                   </span>
                   <div>
@@ -3274,7 +6551,7 @@ export default function Main({ username }: { username: string }) {
                 </>
               )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
-                <button type="button" className="btn-ghost" onClick={() => setShowNewHavenModal(false)} style={{ padding: '6px 10px' }}>
+                <button type="button" className="btn-ghost" onClick={closeNewHavenModal} style={{ padding: '6px 10px' }}>
                   Cancel
                 </button>
                 <button
@@ -3297,7 +6574,7 @@ export default function Main({ username }: { username: string }) {
       {showNewChannelModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 72 }}>
           <div className="glass" style={{ width: 'min(420px, 92vw)', borderRadius: 12, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #1f2937', color: '#e5e7eb' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Create Channel</div>
               <button className="btn-ghost" onClick={() => setShowNewChannelModal(false)} style={{ padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
@@ -3305,7 +6582,7 @@ export default function Main({ username }: { username: string }) {
             </div>
             <form
               onSubmit={handleCreateChannel}
-              style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12, color: '#e5e7eb' }}
+              style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12, color: COLOR_TEXT }}
             >
               <label style={{ display: 'grid', gap: 6 }}>
                 <span style={{ fontSize: 12, color: '#9ca3af' }}>Channel name</span>
@@ -3328,9 +6605,9 @@ export default function Main({ username }: { username: string }) {
                     minWidth: 140,
                     padding: 10,
                     borderRadius: 10,
-                    border: '1px solid ' + (newChannelType === 'text' ? accent : '#1f2937'),
+                    border: '1px solid ' + (newChannelType === 'text' ? accent : COLOR_PANEL_STRONG),
                     background: newChannelType === 'text' ? '#020617' : '#020617',
-                    color: '#e5e7eb',
+                    color: COLOR_TEXT,
                     textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
@@ -3338,7 +6615,7 @@ export default function Main({ username }: { username: string }) {
                     cursor: 'pointer'
                   }}
                 >
-                  <span style={{ width: 20, height: 20, borderRadius: 6, background: '#111827', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ width: 20, height: 20, borderRadius: 6, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <FontAwesomeIcon icon={faHashtag} />
                   </span>
                   <div>
@@ -3409,32 +6686,14 @@ export default function Main({ username }: { username: string }) {
           username={profileUser}
           me={username}
           contextLabel={profileContext}
-        />
-      )}
-      {showUserSettings && (
-        <UserSettingsModal
-          isOpen={showUserSettings}
-          onClose={() => setShowUserSettings(false)}
-          username={username}
-          onStatusChange={(status) => {
-            try { socketRef.current?.emit('presence', { user: username, status }); } catch {}
-            setPresenceMap(prev => ({ ...prev, [username]: status }));
-          }}
+          callPresence={getCallPresenceForUser(profileUser) || undefined}
         />
       )}
       {toasts.length > 0 && (
         <div style={{ position: 'fixed', right: 16, bottom: 16, display: 'flex', flexDirection: 'column', gap: 8, zIndex: 95 }}>
           {toasts.map(t => (
-            <div key={t.id} style={{ minWidth: 260, maxWidth: 360, background: '#0b1222', border: '1px solid #1f2937', borderLeft: `3px solid ${t.type==='success'?'#22c55e':t.type==='warn'?'#f59e0b':t.type==='error'?'#ef4444':'#60a5fa'}`, borderRadius: 8, padding: 10, color: '#e5e7eb', boxShadow: '0 10px 24px rgba(0,0,0,0.35)' }}>
+            <div key={t.id} style={{ minWidth: 260, maxWidth: 360, background: COLOR_PANEL, border: BORDER, borderLeft: `3px solid ${t.type==='success'?'#22c55e':t.type==='warn'?'#f59e0b':t.type==='error'?'#ef4444':'#60a5fa'}`, borderRadius: 8, padding: 10, color: COLOR_TEXT, boxShadow: '0 10px 24px rgba(0,0,0,0.35)' }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>{t.title}</div>
-            handleEdit={handleEdit}
-            handleDelete={handleDelete}
-            handleReply={handleReply}
-            editId={editId}
-            editText={editText}
-            setEditText={setEditText}
-            handleEditSubmit={handleEditSubmit}
-            cancelEdit={() => { setEditId(null); setEditText(''); }}
               {t.body && <div style={{ color: '#cbd5e1', fontSize: 13 }}>{t.body}</div>}
             </div>
           ))}
@@ -3443,7 +6702,7 @@ export default function Main({ username }: { username: string }) {
       {ctxMenu?.open && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setCtxMenu(null)}>
           <div
-            style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, background: '#0b1222', border: '1px solid #1f2937', borderRadius: 8, minWidth: 200, color: '#e5e7eb', boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }}
+            style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, background: COLOR_PANEL, border: BORDER, borderRadius: 8, minWidth: 200, color: COLOR_TEXT, boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }}
             onClick={(e) => e.stopPropagation()}
           >
             {ctxMenu.target.type === 'message' && (
@@ -3482,7 +6741,7 @@ export default function Main({ username }: { username: string }) {
                     </button>
                   </>
                 )}
-                <div style={{ borderTop: '1px solid #1f2937', margin: '4px 0' }} />
+                <div style={{ borderTop: BORDER, margin: '4px 0' }} />
                 <button className="btn-ghost" onClick={() => handleCtxAction('edit')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
                   <FontAwesomeIcon icon={faEdit} /> Edit
                 </button>
@@ -3514,12 +6773,21 @@ export default function Main({ username }: { username: string }) {
                 <button className="btn-ghost" onClick={() => handleCtxAction('delete')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Delete</button>
               </>
             )}
-            {ctxMenu.target.type === 'dm' && (
-              <>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_users')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Users</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('close')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Close DM</button>
-              </>
-            )}
+            {ctxMenu.target.type === 'dm' && (() => {
+              const dm = ctxMenu.target.data as DMThread | undefined;
+              const canManage = dm && isGroupDMThread(dm) && canManageGroupDM(dm);
+              return (
+                <>
+                  <button className="btn-ghost" onClick={() => handleCtxAction('copy_users')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Users</button>
+                  {canManage && (
+                    <button className="btn-ghost" onClick={() => handleCtxAction('group_settings')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                      Group Settings
+                    </button>
+                  )}
+                  <button className="btn-ghost" onClick={() => handleCtxAction('close')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Close DM</button>
+                </>
+              );
+            })()}
             {ctxMenu.target.type === 'call' && (
               <>
                 <button className="btn-ghost" onClick={() => handleCtxAction('open_dm')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Open Call Screen</button>
@@ -3546,37 +6814,40 @@ export default function Main({ username }: { username: string }) {
       )}
       {isMobile && showMobileNav && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 70 }}>
-          <div style={{ width: '82vw', maxWidth: 360, background: '#0b1222', borderRight: '1px solid #2a3344', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
+          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Navigate</div>
               <button className="btn-ghost" onClick={() => setShowMobileNav(false)} style={{ padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
               </button>
             </div>
-            <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb' }}>
+            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Havens</div>
               {Object.keys(havens).map((h) => (
-                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel(havens[h][0] || ''); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? '#111a2e' : 'transparent', color: selectedHaven === h ? '#93c5fd' : '#e5e7eb' }}>
+                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel(havens[h][0] || ''); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT }}>
                   <FontAwesomeIcon icon={faUsers} style={{ marginRight: 8 }} /> {h}
                 </div>
               ))}
             </div>
-            <div style={{ padding: 12, borderBottom: '1px solid #111827', color: '#e5e7eb' }}>
+            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
               {(havens[selectedHaven] || []).map((ch) => (
-                <div key={ch} onClick={() => { setSelectedChannel(ch); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedChannel === ch ? '#111a2e' : 'transparent', color: selectedChannel === ch ? '#93c5fd' : '#e5e7eb' }}>
+                <div key={ch} onClick={() => { setSelectedChannel(ch); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT }}>
                   <FontAwesomeIcon icon={faHashtag} style={{ marginRight: 8 }} /> #{ch}
                 </div>
               ))}
             </div>
-            <div style={{ padding: 12, color: '#e5e7eb', flex: 1, overflowY: 'auto' }}>
+            <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Direct Messages</div>
-              {dms.length === 0 && (<div style={{ color: '#94a3b8', fontSize: 13 }}>No direct messages.</div>)}
-              {dms.map((dm) => (
-                <div key={dm.id} onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? '#111a2e' : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : '#e5e7eb', display: 'flex', alignItems: 'center' }}>
-                  <FontAwesomeIcon icon={faEnvelope} style={{ marginRight: 8 }} /> {dm.users.filter(u => u !== username).join(', ')}
-                </div>
-              ))}
+              {dms.length === 0 && (<div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>No direct messages.</div>)}
+              {dms.map((dm) => {
+                const isGroup = isGroupDMThread(dm);
+                return (
+                  <div key={dm.id} onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT, display: 'flex', alignItems: 'center' }}>
+                    <FontAwesomeIcon icon={isGroup ? faUsers : faEnvelope} style={{ marginRight: 8 }} /> {getDMTitle(dm)}
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div style={{ flex: 1 }} onClick={() => setShowMobileNav(false)} />
@@ -3585,14 +6856,14 @@ export default function Main({ username }: { username: string }) {
           {/* Mobile bottom tab bar */}
           {isMobile && (
             <div style={{ position: 'fixed', left: 8, right: 8, bottom: 'calc(8px + env(safe-area-inset-bottom))', height: 56, zIndex: 80, display: 'flex', justifyContent: 'space-between', gap: 8, paddingBottom: 'env(safe-area-inset-bottom)', userSelect: 'none' }}>
-              <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-around', background: 'linear-gradient(180deg, rgba(7,12,20,0.9), rgba(9,14,24,0.85))', borderRadius: 12, padding: '8px 10px', border: '1px solid #1f2937' }}>
+              <div style={{ flex: 1, display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-around', background: 'linear-gradient(180deg, rgba(7,12,20,0.9), rgba(9,14,24,0.85))', borderRadius: 12, padding: '8px 10px', border: BORDER }}>
                 <button
                   type="button"
                   aria-label="Home"
                   title="Home"
                   className="btn-ghost"
                   onClick={() => { setActiveNav('home'); setShowMobileNav(false); }}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'home' ? '#93c5fd' : '#e5e7eb' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'home' ? '#93c5fd' : COLOR_TEXT }}
                 >
                   <FontAwesomeIcon icon={faHouse} />
                   <div style={{ fontSize: 11 }}>Home</div>
@@ -3604,7 +6875,7 @@ export default function Main({ username }: { username: string }) {
                   title="Havens"
                   className="btn-ghost"
                   onClick={() => { setActiveNav('havens'); setShowMobileNav(false); }}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven !== '__dms__' ? '#93c5fd' : '#e5e7eb' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven !== '__dms__' ? '#93c5fd' : COLOR_TEXT }}
                 >
                   <FontAwesomeIcon icon={faServer} />
                   <div style={{ fontSize: 11 }}>Havens</div>
@@ -3616,7 +6887,7 @@ export default function Main({ username }: { username: string }) {
                   title="Profile"
                   className="btn-ghost"
                   onClick={() => { setActiveNav('profile'); setShowMobileNav(false); }}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'profile' ? '#93c5fd' : '#e5e7eb' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: activeNav === 'profile' ? '#93c5fd' : COLOR_TEXT }}
                 >
                   <FontAwesomeIcon icon={faUser} />
                   <div style={{ fontSize: 11 }}>Profile</div>
@@ -3628,7 +6899,7 @@ export default function Main({ username }: { username: string }) {
                   title="Direct Messages"
                   className="btn-ghost"
                   onClick={() => { setActiveNav('activity'); navigateToLocation({ haven: '__dms__', dm: lastSelectedDMRef.current ?? null }); setShowMobileNav(false); }}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !!selectedDM ? '#93c5fd' : '#e5e7eb' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !!selectedDM ? '#93c5fd' : COLOR_TEXT }}
                 >
                   <FontAwesomeIcon icon={faEnvelope} />
                   <div style={{ fontSize: 11 }}>DMs</div>
@@ -3640,7 +6911,7 @@ export default function Main({ username }: { username: string }) {
                     title="Activity"
                   className="btn-ghost"
                   onClick={() => { setActiveNav('activity'); navigateToLocation({ haven: '__dms__', dm: null }); setFriendsTab('all'); setShowMobileNav(false); }}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !selectedDM ? '#93c5fd' : '#e5e7eb' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px', color: selectedHaven === '__dms__' && !selectedDM ? '#93c5fd' : COLOR_TEXT }}
                 >
                   <FontAwesomeIcon icon={faUsers} />
                   <div style={{ fontSize: 11 }}>Activity</div>
@@ -3651,19 +6922,19 @@ export default function Main({ username }: { username: string }) {
       {quickOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 80, zIndex: 75 }}>
           <div className="glass" style={{ width: 'min(720px, 92vw)', maxHeight: '70vh', overflow: 'hidden', borderRadius: 14 }}>
-            <div style={{ padding: 12, borderBottom: '1px solid #2a3344' }}>
+            <div style={{ padding: 12, borderBottom: BORDER }}>
               <input autoFocus value={quickQuery} onChange={(e: any) => { setQuickQuery(e.target.value); setQuickIndex(0); }} placeholder="Quick switch (Ctrl/Cmd + K)" style={{ width: '100%', padding: 10, borderRadius: 10 }} className="input-dark" />
             </div>
             <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
               {(() => {
                 const items = filterQuickItems(getQuickItems(), quickQuery);
                 return items.length === 0 ? (
-                  <div style={{ padding: 16, color: '#94a3b8' }}>No matches</div>
+                  <div style={{ padding: 16, color: COLOR_TEXT_MUTED }}>No matches</div>
                 ) : (
                   items.map((it, idx) => (
                     <div key={it.id}
                       onClick={() => selectQuickItem(it)}
-                      style={{ padding: '10px 14px', borderBottom: '1px solid #111827', cursor: 'pointer', background: idx === Math.min(quickIndex, items.length - 1) ? '#0b1222' : 'transparent', color: '#e5e7eb' }}>
+                      style={{ padding: '10px 14px', borderBottom: BORDER, cursor: 'pointer', background: idx === Math.min(quickIndex, items.length - 1) ? COLOR_PANEL : 'transparent', color: COLOR_TEXT }}>
                       {it.label}
                     </div>
                   ))
@@ -3681,12 +6952,216 @@ export default function Main({ username }: { username: string }) {
           }}
         />
       )}
+      {callState !== 'idle' && showFullscreenCall && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(2,6,23,0.92)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 120,
+            padding: isMobile ? 12 : 32,
+          }}
+        >
+          <div
+            style={{
+              width: 'min(1200px, 96vw)',
+              height: 'min(760px, 94vh)',
+              background: '#050c11',
+              borderRadius: 24,
+              border: BORDER,
+              boxShadow: '0 30px 80px rgba(0,0,0,0.65)',
+              padding: isMobile ? 16 : 24,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+              color: COLOR_TEXT,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, textTransform: 'uppercase', letterSpacing: 0.8 }}>
+                  {callLocationInfo?.label || 'Direct Call'}
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>Live Call</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontVariantNumeric: 'tabular-nums', color: '#cbd5f5' }}>
+                  {`${Math.floor(callElapsed / 60).toString().padStart(1, '0')}:${(callElapsed % 60).toString().padStart(2, '0')}`}
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  title="Exit fullscreen"
+                  onClick={() => setShowFullscreenCall(false)}
+                  style={{ padding: '6px 10px', borderRadius: 999, border: BORDER, background: COLOR_PANEL_ALT, color: COLOR_TEXT }}
+                >
+                  <FontAwesomeIcon icon={faDownLeftAndUpRightToCenter} />
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  title="Close"
+                  onClick={() => setShowFullscreenCall(false)}
+                  style={{ padding: '6px 10px', borderRadius: 999, border: '1px solid #7f1d1d', background: '#7f1d1d', color: '#fff' }}
+                >
+                  <FontAwesomeIcon icon={faXmark} />
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '2fr minmax(260px, 1fr)', gap: 16 }}>
+              <div style={{ position: 'relative', borderRadius: 20, border: `1px solid ${COLOR_PANEL_ALT}`, background: '#000', overflow: 'hidden' }}>
+                {remoteVideoAvailable ? (
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    muted={isDeafened}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'radial-gradient(circle at top, rgba(59,130,246,0.15), transparent)' }}>
+                    <FontAwesomeIcon icon={faVideo} style={{ fontSize: 32, color: '#1d4ed8' }} />
+                    <div style={{ fontSize: 14, color: '#9ca3af', maxWidth: 360, textAlign: 'center' }}>
+                      Waiting for participants to share their video. You can still talk, mute, or share your screen.
+                    </div>
+                  </div>
+                )}
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 16,
+                    right: 16,
+                    width: isMobile ? 140 : 200,
+                    borderRadius: 16,
+                    border: BORDER,
+                    background: 'rgba(5,12,26,0.85)',
+                    padding: 6,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    boxShadow: '0 10px 24px rgba(0,0,0,0.35)',
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                    {isScreenSharing ? 'Sharing Screen' : isCameraOn ? 'Camera Preview' : 'Preview'}
+                  </div>
+                  {isCameraOn || isScreenSharing ? (
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      style={{ width: '100%', borderRadius: 12, background: COLOR_PANEL_STRONG, minHeight: 90, objectFit: isScreenSharing ? 'contain' : 'cover' }}
+                    />
+                  ) : (
+                    <div style={{ padding: 18, borderRadius: 12, border: `1px dashed ${COLOR_BORDER}`, textAlign: 'center', color: '#9ca3af' }}>
+                      Camera off
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
+                <div style={{ borderRadius: 16, border: `1px solid ${COLOR_PANEL_ALT}`, background: '#050b18', padding: 12, flex: 1, overflowY: 'auto' }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Participants</div>
+                  {normalizedCallParticipants.length === 0 ? (
+                    <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>No one else is connected yet.</div>
+                  ) : (
+                    normalizedCallParticipants.map((p) => {
+                      const profile = userProfileCache[p.user];
+                      const avatar = profile?.avatarUrl || '/favicon.ico';
+                      const meta = getCallStatusMeta(p.user) || { type: 'talking', color: '#22c55e', label: 'In Call' };
+                      const revealKey = `fullscreen-${p.user}`;
+                      return (
+                        <div key={`fullscreen-participant-${p.user}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid #0b1324' }}>
+                          <div
+                            style={{ position: 'relative' }}
+                            onMouseEnter={() => beginStreamerReveal(revealKey)}
+                            onMouseLeave={() => endStreamerReveal(revealKey)}
+                          >
+                            <img src={avatar} alt={p.user} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${meta.color}` }} />
+                            <span style={{ position: 'absolute', bottom: -2, right: -2 }}>{renderCallStatusIconGraphic(meta, 12)}</span>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600 }}>{renderDisplayName(p.user, { revealKey })} {p.user === username && <span style={{ color: COLOR_TEXT_MUTED }}>(you)</span>}</div>
+                            <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{meta.label}</div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                {screenShareError && (
+                  <div style={{ borderRadius: 12, border: '1px solid #7f1d1d', background: 'rgba(127,29,29,0.15)', color: '#fecaca', padding: 10, fontSize: 12 }}>
+                    {screenShareError}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                {viewerCallMeta.label} • {callLocationInfo?.label || 'Direct Call'}
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={toggleMute}
+                  style={{ padding: '10px 16px', borderRadius: 999, border: BORDER, background: isMuted ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT, minWidth: 120 }}
+                >
+                  <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} /> {isMuted ? 'Unmute' : 'Mute'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={toggleCamera}
+                  style={{ padding: '10px 16px', borderRadius: 999, border: BORDER, background: isCameraOn ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT, minWidth: 150 }}
+                >
+                  <FontAwesomeIcon icon={isCameraOn ? faVideoSlash : faVideo} /> {isCameraOn ? 'Stop Camera' : 'Start Camera'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={toggleScreenShare}
+                  style={{ padding: '10px 16px', borderRadius: 999, border: BORDER, background: isScreenSharing ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT, minWidth: 160 }}
+                >
+                  <FontAwesomeIcon icon={faDisplay} /> {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={toggleDeafen}
+                  style={{ padding: '10px 16px', borderRadius: 999, border: BORDER, background: isDeafened ? COLOR_PANEL_STRONG : COLOR_PANEL_ALT, color: COLOR_TEXT, minWidth: 130 }}
+                >
+                  <FontAwesomeIcon icon={faVolumeXmark} /> {isDeafened ? 'Undeafen' : 'Deafen'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={endCall}
+                  style={{ padding: '10px 16px', borderRadius: 999, border: '1px solid #7f1d1d', background: '#7f1d1d', color: '#fff', minWidth: 120 }}
+                >
+                  Hang Up
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {(callState !== 'idle' || localStreamRef.current || remoteStreamRef.current) && (
         <>
           <audio ref={localAudioRef} autoPlay muted playsInline style={{ display: 'none' }} />
           <audio ref={remoteAudioRef} autoPlay playsInline muted={isDeafened} style={{ display: 'none' }} />
         </>
       )}
+      </div>
+      {profileLauncher}
+      {streamerBadge}
+      {privacyOverlay}
+      {userSettings?.enableOneko && <Oneko />}
       <style jsx global>{`
         .ch-shell {
           position: relative;
@@ -3709,12 +7184,126 @@ export default function Main({ username }: { username: string }) {
           85% { opacity: 0; }
           100% { opacity: 1; --p: 0%; }
         }
+        .ch-streamer-mask {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          padding: 0 1px;
+        }
+        .ch-streamer-mask-text {
+          filter: blur(6px);
+          display: inline-block;
+          transition: filter 140ms ease;
+        }
+        .ch-date-divider {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 12px;
+          margin: 18px 0 10px;
+          color: #a5b4fc;
+          font-size: 12px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .ch-date-divider::before,
+        .ch-date-divider::after {
+          content: "";
+          flex: 1;
+          border-bottom: 1px solid rgba(148,163,184,0.25);
+          opacity: 0.9;
+        }
+        .ch-message-card {
+          position: relative;
+        }
+        .ch-message-card.style-retro::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+          background-size: 100% 3px;
+          opacity: 0.35;
+          pointer-events: none;
+          border-radius: inherit;
+        }
+        .ch-branch-indicator {
+          position: absolute;
+          left: 6px;
+          top: 12px;
+          bottom: 12px;
+          width: 12px;
+          pointer-events: none;
+        }
+        .ch-branch-line {
+          position: absolute;
+          left: 5px;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: rgba(148,163,184,0.25);
+        }
+        .ch-branch-hook {
+          position: absolute;
+          left: 5px;
+          top: 10px;
+          width: 10px;
+          height: 10px;
+          border-bottom: 1px solid rgba(148,163,184,0.3);
+          border-left: 1px solid rgba(148,163,184,0.3);
+          border-bottom-left-radius: 6px;
+        }
+        .ch-message-card ::selection {
+          background: var(--ch-selection, rgba(148,163,184,0.25));
+          color: #fff;
+        }
+        .ch-message-actions {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+          display: flex;
+          gap: 6px;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 150ms ease;
+        }
+        .ch-message-card:hover .ch-message-actions {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .ch-message-card.is-bubble {
+          position: relative;
+        }
+        .ch-message-actions-bubble {
+          top: -32px;
+          background: rgba(5,13,28,0.95);
+          border: 1px solid rgba(148,163,184,0.25);
+          border-radius: 999px;
+          padding: 4px 8px;
+          box-shadow: 0 14px 30px rgba(0,0,0,0.45);
+          right: auto;
+          left: 12px;
+        }
+        .ch-message-actions-bubble[data-own="own"] {
+          left: auto;
+          right: 12px;
+        }
+        .ch-message-actions-bubble::after {
+          content: "";
+          position: absolute;
+          bottom: -6px;
+          left: 26px;
+          width: 12px;
+          height: 12px;
+          background: inherit;
+          border-left: 1px solid rgba(148,163,184,0.25);
+          border-bottom: 1px solid rgba(148,163,184,0.25);
+          transform: rotate(45deg);
+        }
+        .ch-message-actions-bubble[data-own="own"]::after {
+          left: auto;
+          right: 26px;
+        }
       `}</style>
-    </div>
+    </>
   );
 }
-
-
-
-
-

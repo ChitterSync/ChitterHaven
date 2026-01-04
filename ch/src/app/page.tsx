@@ -17,7 +17,7 @@ export default function Home() {
   }, []);
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
-      <h1 className="text-3xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-cyan-300">
+      <h1 className="hidden md:block text-3xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-cyan-300">
         ChitterHaven Community
       </h1>
       {loading ? (
@@ -25,8 +25,8 @@ export default function Home() {
       ) : user ? <Main username={user} /> : <Login onLogin={setUser} />}
       <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
         <p>ChitterSync © {new Date().getFullYear()}</p>
-        <p className="opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
-        <p className="opacity-80">v0.1.0 BETA</p>
+        <p className="hidden md:block opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
+        <p className="hidden md:block opacity-80">v0.1.0 BETA</p>
       </footer>
     </div>
   );

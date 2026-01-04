@@ -18,7 +18,7 @@ The auth revamp (migrating fully to the shared `auth.chittersync.com` service an
  - [x] Rebuild navigation for <768px screens (slide-over sidebars, bottom tab bar for Havens/DMs/Friends/Settings).
  - [x] Ensure calling UI, context menus, and dropdowns adapt to touch + mobile viewport.
  - [x] Persist “last open page” per device and gracefully fall back to Friends tab when nothing stored.
-- [ ] Add media queries for compact sidebar + channel list that now defaults on.
+- [x] Add media queries for compact sidebar + channel list that now defaults on.
 
 -## 4. Messaging Enhancements
 ## 4. Messaging Enhancements
@@ -43,3 +43,22 @@ The auth revamp (migrating fully to the shared `auth.chittersync.com` service an
 - [x] Add show/hide password toggle on the login screen (eye / eye-slash toggle)
 
 Once these are complete and tested, we can safely focus on the centralized auth migration (cookie domain, R2-backed sessions, requireUser everywhere, etc.).
+
+## Manual test checklist (Appearance)
+- Verify message grouping settings (none/compact/aggressive) update headers and timestamps as expected.
+- Validate time format/time display settings across message headers, pinned list, and edit history.
+- Toggle system message emphasis styles, including collapsible behavior for call events.
+- Test max content width options and reading mode (avatars/actions/reactions) in DM + channel views.
+- Confirm appearance profiles create/switch/duplicate/delete locally and apply instantly without reload.
+
+## Manual QA checklist (UX bugfixes)
+- Click channel rows (ex: #random) to verify they always switch channels without opening User Settings.
+- Click "New Group DM" and "Add Friend" to verify they always trigger their intended flows.
+- Open Create Haven, confirm Cancel, Escape, and backdrop click all close the modal.
+- Open Friends/Add Friend and verify placeholder reads "Add friend by username" without truncation at normal and large font sizes.
+
+## Manual QA checklist (Message styles)
+- Switch each message style in Appearance and verify it applies instantly in a DM and a channel.
+- Check hover actions, reactions, and reply indicators for each style (minimal log, focus, thread forward, retro).
+- Verify system messages render with the correct style and stay readable in light/dark themes.
+- Confirm mobile message list remains readable and actions remain usable in every style.

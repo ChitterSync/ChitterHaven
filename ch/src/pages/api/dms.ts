@@ -8,9 +8,72 @@ import { verifyJWT } from "./jwt";
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const DMS_PATH = path.join(process.cwd(), "src/pages/api/dms.json");
+const MAX_GROUP_DM_MEMBERS = 25;
+const MAX_GROUP_DM_NAME = 64;
+const MAX_GROUP_DM_AVATAR_URL = 2048;
 
-export type DM = { id: string; users: string[]; title?: string; group?: boolean };
+export type DM = {
+  id: string;
+  users: string[];
+  title?: string;
+  group?: boolean;
+  owner?: string;
+  moderators?: string[];
+  avatarUrl?: string;
+};
 type DMData = { dms: DM[] };
+
+const sortStrings = (list: string[]) => list.slice().sort((a, b) => a.localeCompare(b));
+const arraysEqual = (a: string[] = [], b: string[] = []) => a.length === b.length && a.every((val, idx) => val === b[idx]);
+const sanitizeGroupTitle = (value?: string) => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, MAX_GROUP_DM_NAME);
+};
+const sanitizeAvatarUrl = (value?: string) => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, MAX_GROUP_DM_AVATAR_URL);
+};
+const normalizeGroupMetadata = (dm: DM, fallbackOwner?: string): { owner?: string; moderators: string[] } => {
+  if (!dm.group) return { owner: dm.owner, moderators: dm.moderators || [] };
+  const ownerCandidate = dm.owner && dm.users.includes(dm.owner) ? dm.owner : undefined;
+  const owner = ownerCandidate || (fallbackOwner && dm.users.includes(fallbackOwner) ? fallbackOwner : dm.users[0]);
+  const moderators = Array.from(
+    new Set(
+      (dm.moderators || [])
+        .filter((user): user is string => typeof user === "string")
+        .filter((user) => user !== owner && dm.users.includes(user)),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+  return { owner, moderators };
+};
+const enforceGroupMetadata = (dm: DM, fallbackOwner?: string) => {
+  if (!dm.group) return false;
+  const normalized = normalizeGroupMetadata(dm, fallbackOwner);
+  const changed = dm.owner !== normalized.owner || !arraysEqual(sortStrings(dm.moderators || []), normalized.moderators);
+  if (changed) {
+    dm.owner = normalized.owner;
+    dm.moderators = normalized.moderators;
+  }
+  return changed;
+};
+const presentDM = (dm: DM, fallbackOwner?: string): DM => {
+  if (!dm.group) return { ...dm };
+  const normalized = normalizeGroupMetadata(dm, fallbackOwner);
+  return {
+    ...dm,
+    owner: normalized.owner,
+    moderators: normalized.moderators,
+  };
+};
+const isGroupModerator = (dm: DM, username: string) => {
+  if (!dm.group) return false;
+  if (dm.owner && dm.owner === username) return true;
+  return Array.isArray(dm.moderators) && dm.moderators.includes(username);
+};
 
 function readDMs(): DMData {
   if (!fs.existsSync(DMS_PATH)) return { dms: [] };
@@ -31,8 +94,8 @@ function writeDMs(data: DMData) {
 
 export function ensureDMForUsers(a: string, b: string): DM {
   const data = readDMs();
-  const pair = [a, b].sort();
-  const found = data.dms.find(dm => dm.users.length === 2 && dm.users.slice().sort().every((u, i) => u === pair[i]));
+  const pair = sortStrings([a, b]);
+  const found = data.dms.find((dm) => dm.users.length === 2 && sortStrings(dm.users).every((u, i) => u === pair[i]));
   if (found) return found;
   const dm: DM = { id: crypto.randomUUID(), users: pair };
   data.dms.push(dm);
@@ -40,24 +103,35 @@ export function ensureDMForUsers(a: string, b: string): DM {
   return dm;
 }
 
-function ensureGroupDM(me: string, others: string[], title?: string): DM {
+function ensureGroupDM(me: string, others: string[], title?: string, avatarUrl?: string): { dm: DM; existed: boolean } {
   const data = readDMs();
-  const unique = Array.from(new Set([me, ...others])).sort();
+  const unique = sortStrings(Array.from(new Set([me, ...others])));
+  if (unique.length > MAX_GROUP_DM_MEMBERS) {
+    throw new Error(`Group DMs can include up to ${MAX_GROUP_DM_MEMBERS} members.`);
+  }
   const found = data.dms.find(dm => {
-    const u = (dm.users || []).slice().sort();
+    const u = sortStrings(dm.users || []);
     if (u.length !== unique.length) return false;
     return u.every((val, idx) => val === unique[idx]);
   });
-  if (found) return found;
+  if (found) {
+    if (enforceGroupMetadata(found, me)) {
+      writeDMs(data);
+    }
+    return { dm: found, existed: true };
+  }
   const dm: DM = {
     id: crypto.randomUUID(),
     users: unique,
-    title: title && title.trim() ? title.trim().slice(0, 64) : undefined,
+    title: sanitizeGroupTitle(title),
     group: true,
+    owner: me,
+    moderators: [],
+    avatarUrl: sanitizeAvatarUrl(avatarUrl),
   };
   data.dms.push(dm);
   writeDMs(data);
-  return dm;
+  return { dm, existed: false };
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -69,7 +143,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   if (req.method === "GET") {
     const data = readDMs();
-    const mine = data.dms.filter(dm => dm.users.includes(me));
+    const mine = data.dms
+      .filter(dm => dm.users.includes(me))
+      .map((dm) => presentDM(dm, me));
     return res.status(200).json({ dms: mine });
   }
 
@@ -86,9 +162,92 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       if (clean.length < 2) {
         return res.status(400).json({ error: "Select at least two other users for a group DM" });
       }
+      if (clean.length > MAX_GROUP_DM_MEMBERS - 1) {
+        return res.status(400).json({ error: `Group DMs can include up to ${MAX_GROUP_DM_MEMBERS - 1} other users (${MAX_GROUP_DM_MEMBERS} total).` });
+      }
       const title = typeof (req.body as any).title === "string" ? (req.body as any).title : "";
-      const dm = ensureGroupDM(me, clean, title);
-      return res.status(200).json({ success: true, dm });
+      const avatarUrl = typeof (req.body as any).avatarUrl === "string" ? (req.body as any).avatarUrl : "";
+      try {
+        const { dm, existed } = ensureGroupDM(me, clean, title, avatarUrl);
+        return res.status(200).json({ success: true, dm: presentDM(dm, me), existed: !!existed });
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message || "Could not create group DM" });
+      }
+    }
+    if (action === "group-meta") {
+      const dmId = typeof (req.body as any).dmId === "string" ? (req.body as any).dmId : "";
+      if (!dmId) return res.status(400).json({ error: "Missing group DM id" });
+      const data = readDMs();
+      const dm = data.dms.find((entry) => entry.id === dmId);
+      if (!dm || !dm.group || !dm.users.includes(me)) return res.status(404).json({ error: "Group DM not found" });
+      const normalized = presentDM(dm, me);
+      const owner = normalized.owner;
+      const isOwner = owner === me;
+      const isModerator = isOwner || (normalized.moderators || []).includes(me);
+      if (!isModerator) return res.status(403).json({ error: "Insufficient permissions" });
+      let changed = false;
+      if (Object.prototype.hasOwnProperty.call(req.body, "title")) {
+        const nextTitle = sanitizeGroupTitle((req.body as any).title);
+        if (nextTitle !== dm.title) {
+          dm.title = nextTitle;
+          changed = true;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "avatarUrl")) {
+        const nextAvatar = sanitizeAvatarUrl((req.body as any).avatarUrl);
+        if (nextAvatar !== dm.avatarUrl) {
+          dm.avatarUrl = nextAvatar;
+          changed = true;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body, "moderators")) {
+          if (!isOwner) {
+            return res.status(403).json({ error: "Only the owner can manage moderators." });
+          }
+          const rawMods = Array.isArray((req.body as any).moderators) ? (req.body as any).moderators : [];
+          const cleanMods = Array.from(
+            new Set(
+              rawMods
+                .filter((user): user is string => typeof user === "string")
+                .filter((user) => user !== owner && dm.users.includes(user)),
+            ),
+          ).sort((a, b) => a.localeCompare(b));
+          if (!arraysEqual(cleanMods, sortStrings(dm.moderators || []))) {
+            dm.moderators = cleanMods;
+            changed = true;
+          }
+      }
+      if (changed) {
+        enforceGroupMetadata(dm, owner || me);
+        writeDMs(data);
+      }
+      return res.status(200).json({ success: true, dm: presentDM(dm, me) });
+    }
+    if (action === "group-remove") {
+      const dmId = typeof (req.body as any).dmId === "string" ? (req.body as any).dmId : "";
+      const targetUser = typeof (req.body as any).target === "string" ? (req.body as any).target : "";
+      if (!dmId || !targetUser) return res.status(400).json({ error: "Missing parameters" });
+      const data = readDMs();
+      const dm = data.dms.find((entry) => entry.id === dmId);
+      if (!dm || !dm.group) return res.status(404).json({ error: "Group DM not found" });
+      if (!dm.users.includes(me)) return res.status(403).json({ error: "Unauthorized" });
+      if (!dm.users.includes(targetUser)) return res.status(400).json({ error: "User not in group DM" });
+      const normalized = presentDM(dm, me);
+      const owner = normalized.owner;
+      const isOwner = owner === me;
+      const isModerator = isGroupModerator(normalized, me);
+      const isSelf = targetUser === me;
+      if (!isSelf && !isModerator) return res.status(403).json({ error: "Insufficient permissions" });
+      if (!isSelf && targetUser === owner) return res.status(400).json({ error: "Cannot remove the owner" });
+      dm.users = dm.users.filter((user) => user !== targetUser);
+      dm.moderators = (dm.moderators || []).filter((user) => user !== targetUser);
+      if (targetUser === owner) {
+        dm.owner = dm.users[0];
+      }
+      enforceGroupMetadata(dm, dm.owner || me);
+      writeDMs(data);
+      const stillMember = dm.users.includes(me);
+      return res.status(200).json({ success: true, dm: presentDM(dm, me), removed: !stillMember });
     }
     return res.status(400).json({ error: "Unknown action" });
   }

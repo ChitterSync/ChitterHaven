@@ -9,7 +9,11 @@ const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/settings.json");
 
-type UserSettings = { status?: "online" | "idle" | "dnd" | "offline" };
+type UserSettings = {
+  status?: "online" | "idle" | "dnd" | "offline";
+  statusMessage?: string;
+  richPresence?: { type: "game" | "music" | "custom"; title: string; details?: string };
+};
 type SettingsData = { users: Record<string, UserSettings> };
 
 function readSettings(): SettingsData {
@@ -36,9 +40,19 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const ask = usersParam ? usersParam.split(",").map(s => s.trim()).filter(Boolean) : [];
   const data = readSettings();
   const map: Record<string, string> = {};
+  const statusMessages: Record<string, string> = {};
+  const richPresence: Record<string, UserSettings["richPresence"]> = {};
   if (ask.length > 0) {
-    for (const u of ask) map[u] = data.users[u]?.status || "offline";
+    for (const u of ask) {
+      const entry = data.users[u] || {};
+      map[u] = entry.status || "offline";
+      if (typeof entry.statusMessage === "string" && entry.statusMessage.trim()) {
+        statusMessages[u] = entry.statusMessage.trim();
+      }
+      if (entry.richPresence && entry.richPresence.title) {
+        richPresence[u] = entry.richPresence;
+      }
+    }
   }
-  return res.status(200).json({ statuses: map });
+  return res.status(200).json({ statuses: map, statusMessages, richPresence });
 }
-

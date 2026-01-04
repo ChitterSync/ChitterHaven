@@ -1,30 +1,46 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCirclePlay, faCirclePause } from "@fortawesome/free-solid-svg-icons";
 
+type ThemeStop = { color: string; position: number };
+type AppearanceSettings = {
+  messageGrouping?: "none" | "compact" | "aggressive";
+  messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
+  timeFormat?: "12h" | "24h";
+  timeDisplay?: "absolute" | "relative" | "hybrid";
+  timestampGranularity?: "perMessage" | "perGroup";
+  systemMessageEmphasis?: "prominent" | "normal" | "dimmed" | "collapsible";
+  maxContentWidth?: number | null;
+  accentIntensity?: "subtle" | "normal" | "bold";
+  readingMode?: boolean;
+};
+
 type Props = {
   isOpen: boolean;
-  onCloseAction: () => void;
+  onClose: () => void;
   username: string;
   onStatusChangeAction?: (status: string) => void;
   onSavedAction?: (settings: Settings) => void;
 };
 
 type Settings = {
-  theme?: "dark" | "light" | "system";
+  theme?: "dark" | "light" | "system" | "midnight" | "sunset" | "forest" | "neon" | "ocean" | "custom";
   compact?: boolean;
+  compactSidebar?: boolean;
   showTimestamps?: boolean;
-  chatStyle?: 'modern' | 'classic';
+  chatStyle?: 'sleek' | 'classic' | 'bubbles' | 'minimal_log' | 'focus' | 'thread_forward' | 'retro' | 'modern';
   messageFontSize?: 'small'|'medium'|'large';
+  appearance?: AppearanceSettings;
   accentHex?: string;
   boldColorHex?: string;
   italicColorHex?: string;
   pinColorHex?: string;
   mentionColorHex?: string;
+  codeColorHex?: string;
   callHavensServers?: boolean;
   showTips?: boolean;
   reduceMotion?: boolean;
@@ -34,15 +50,285 @@ type Settings = {
   callRingtone?: string;
    quickButtonsOwn?: string[];
    quickButtonsOthers?: string[];
+  monospaceMessages?: boolean;
   notifications?: { mentions?: boolean; pins?: boolean; soundEnabled?: boolean; volume?: number };
   status?: "online" | "idle" | "dnd" | "offline";
+  statusMessage?: string;
+  dndIsCosmetic?: boolean;
+  richPresence?: { type?: "game" | "music" | "custom"; title?: string; details?: string };
   autoIdleEnabled?: boolean;
+  blurOnUnfocused?: boolean;
+  streamerMode?: boolean;
+  streamerModeStyle?: 'blur' | 'shorten';
+  streamerModeHoverReveal?: boolean;
+  sidebarHavenIconOnly?: boolean;
+  havenColumns?: number;
+  customThemeGradient?: string;
+  customThemeImage?: string;
+  customThemeStops?: ThemeStop[];
+  customThemeAngle?: number;
+  enableOneko?: boolean;
+  friendNicknames?: Record<string, string>;
+  havenNicknames?: Record<string, Record<string, string>>;
 };
 
+type ThemePreviewFields = Pick<Settings, "theme" | "accentHex" | "customThemeGradient" | "customThemeImage" | "customThemeStops" | "customThemeAngle">;
+type AppearanceProfile = { id: string; name: string; settings: Partial<Settings> };
+
 const RINGTONE_OPTIONS = ["Drive", "Bandwidth", "Drift", "Progress", "Spooky"];
+const DEFAULT_CUSTOM_THEME_GRADIENT = "linear-gradient(135deg, rgba(59,130,246,0.85), rgba(30,27,75,0.95))";
+const DEFAULT_CUSTOM_THEME_STOPS: ThemeStop[] = [
+  { color: "#60a5fa", position: 0 },
+  { color: "#4338ca", position: 55 },
+  { color: "#7c3aed", position: 100 },
+];
+const DEFAULT_CUSTOM_THEME_ANGLE = 135;
+const SECRET_THRESHOLD = 30;
+const MAX_STATUS_MESSAGE = 140;
+const MAX_RICH_TITLE = 80;
+const MAX_RICH_DETAILS = 160;
+const APPEARANCE_WIDTHS = [720, 840, 960, 1080];
+const APPEARANCE_PROFILE_STORAGE_KEY = "appearance.profiles";
+const APPEARANCE_PROFILE_ACTIVE_KEY = "appearance.activeProfileId";
+const MESSAGE_STYLE_OPTIONS: Array<{ value: AppearanceSettings["messageStyle"]; label: string; description: string }> = [
+  { value: "sleek", label: "Sleek", description: "Glass-like cards with balanced spacing." },
+  { value: "classic", label: "Classic", description: "Discord-like rows with solid panels." },
+  { value: "bubbles", label: "Bubbles", description: "Chat bubbles with accent fills." },
+  { value: "minimal_log", label: "Minimal Log", description: "Transcript-style rows with subtle dividers." },
+  { value: "focus", label: "Focus", description: "Recent clusters stay crisp, older ones soften." },
+  { value: "thread_forward", label: "Thread Forward", description: "Conversation branches get subtle guides." },
+  { value: "retro", label: "Retro", description: "Terminal-inspired cards with scanlines." },
+];
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const sanitizeStatusMessage = (value?: string) => {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, MAX_STATUS_MESSAGE) : "";
+};
+
+const sanitizeRichPresence = (raw?: Settings["richPresence"] | null) => {
+  if (!raw || typeof raw !== "object") return undefined;
+  const type = raw.type === "game" || raw.type === "music" || raw.type === "custom" ? raw.type : undefined;
+  const title = typeof raw.title === "string" ? raw.title.trim().slice(0, MAX_RICH_TITLE) : "";
+  const details = typeof raw.details === "string" ? raw.details.trim().slice(0, MAX_RICH_DETAILS) : "";
+  if (!type || !title) return undefined;
+  return details ? { type, title, details } : { type, title };
+};
+
+const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
+  try {
+    const resolved = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
+    const cycle = resolved.hourCycle;
+    if (cycle === "h23" || cycle === "h24") return "24h";
+  } catch {}
+  return "12h";
+};
+
+const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistingSettings = false): AppearanceSettings => {
+  const base = raw && typeof raw === "object" ? { ...raw } : {};
+  const messageStyle =
+    base.messageStyle === "bubbles" ||
+    base.messageStyle === "classic" ||
+    base.messageStyle === "sleek" ||
+    base.messageStyle === "minimal_log" ||
+    base.messageStyle === "focus" ||
+    base.messageStyle === "thread_forward" ||
+    base.messageStyle === "retro"
+      ? base.messageStyle
+      : undefined;
+  const messageGrouping =
+    base.messageGrouping === "none" || base.messageGrouping === "compact" || base.messageGrouping === "aggressive"
+      ? base.messageGrouping
+      : (hasExistingSettings ? "none" : "compact");
+  const timeFormat = base.timeFormat === "12h" || base.timeFormat === "24h" ? base.timeFormat : resolveDefaultTimeFormat();
+  const timeDisplay = base.timeDisplay === "relative" || base.timeDisplay === "hybrid" || base.timeDisplay === "absolute"
+    ? base.timeDisplay
+    : "absolute";
+  const timestampGranularity = base.timestampGranularity === "perGroup" ? "perGroup" : "perMessage";
+  const systemMessageEmphasis =
+    base.systemMessageEmphasis === "normal" ||
+    base.systemMessageEmphasis === "dimmed" ||
+    base.systemMessageEmphasis === "collapsible"
+      ? base.systemMessageEmphasis
+      : "prominent";
+  const accentIntensity =
+    base.accentIntensity === "subtle" || base.accentIntensity === "bold"
+      ? base.accentIntensity
+      : "normal";
+  const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
+  const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
+  return {
+    messageGrouping,
+    messageStyle,
+    timeFormat,
+    timeDisplay,
+    timestampGranularity,
+    systemMessageEmphasis,
+    maxContentWidth,
+    accentIntensity,
+    readingMode: base.readingMode === true,
+  };
+};
+
+const profileId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `appearance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const appearanceKeys: (keyof Settings)[] = [
+  "theme",
+  "compact",
+  "compactSidebar",
+  "showTimestamps",
+  "chatStyle",
+  "messageFontSize",
+  "accentHex",
+  "boldColorHex",
+  "italicColorHex",
+  "pinColorHex",
+  "mentionColorHex",
+  "codeColorHex",
+  "callHavensServers",
+  "showTips",
+  "reduceMotion",
+  "showOnlineCount",
+  "blurOnUnfocused",
+  "streamerMode",
+  "streamerModeStyle",
+  "streamerModeHoverReveal",
+  "sidebarHavenIconOnly",
+  "havenColumns",
+  "customThemeGradient",
+  "customThemeImage",
+  "customThemeStops",
+  "customThemeAngle",
+  "monospaceMessages",
+  "appearance",
+];
+
+const extractAppearanceSettings = (s: Settings): Partial<Settings> => {
+  const snapshot: Partial<Settings> = {};
+  appearanceKeys.forEach((key) => {
+    const value = (s as any)[key];
+    if (typeof value !== "undefined") {
+      (snapshot as any)[key] = value;
+    }
+  });
+  if (s.appearance) {
+    snapshot.appearance = normalizeAppearanceSettings(s.appearance, true);
+  }
+  return snapshot;
+};
+
+const sanitizeProfiles = (raw: any): AppearanceProfile[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const id = typeof entry.id === "string" && entry.id.trim().length ? entry.id.trim() : "";
+      const name = typeof entry.name === "string" && entry.name.trim().length ? entry.name.trim() : "Profile";
+      if (!id) return null;
+      const settings = entry.settings && typeof entry.settings === "object" ? entry.settings : {};
+      return { id, name, settings };
+    })
+    .filter((entry): entry is AppearanceProfile => !!entry);
+};
+
+const cloneStops = (stops: ThemeStop[]): ThemeStop[] => stops.map((stop) => ({ ...stop }));
+
+const gradientStopRegex = /(rgba?\([^\)]+\)|#[0-9a-f]{3,8})(?:\s+(-?\d+(?:\.\d+)?))?/gi;
+
+const sanitizeStops = (incoming?: ThemeStop[] | null): ThemeStop[] => {
+  if (!Array.isArray(incoming)) return cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
+  const normalized = incoming
+    .filter((stop): stop is ThemeStop => !!stop && typeof stop.color === "string")
+    .map((stop) => ({
+      color: stop.color.trim() || "#ffffff",
+      position: clamp(Number.isFinite(Number(stop.position)) ? Number(stop.position) : 0, 0, 100),
+    }))
+    .filter((stop) => stop.color.length > 0);
+  const trimmed = normalized.slice(0, 5);
+  if (trimmed.length < 2) return cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
+  return trimmed.sort((a, b) => a.position - b.position);
+};
+
+const parseStopsFromGradient = (gradient?: string): ThemeStop[] | null => {
+  if (!gradient) return null;
+  const matches = Array.from(gradient.matchAll(gradientStopRegex));
+  if (!matches.length) return null;
+  const stops = matches
+    .map((match, index, arr) => {
+      const color = match[1]?.trim();
+      if (!color) return null;
+      const posRaw = match[2];
+      if (posRaw !== undefined) {
+        return { color, position: clamp(Number(posRaw), 0, 100) };
+      }
+      if (arr.length === 1) {
+        return { color, position: index === 0 ? 0 : 100 };
+      }
+      const inferred = (index / (arr.length - 1)) * 100;
+      return { color, position: clamp(inferred, 0, 100) };
+    })
+    .filter((stop): stop is ThemeStop => !!stop);
+  if (stops.length < 2) return null;
+  return cloneStops(stops.slice(0, 5));
+};
+
+const normalizeAngle = (value?: number) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_CUSTOM_THEME_ANGLE;
+  const normalized = parsed % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+};
+
+const parseAngleFromGradient = (gradient?: string): number | null => {
+  if (!gradient) return null;
+  const match = gradient.match(/linear-gradient\(([^,]+),/i);
+  if (!match) return null;
+  const token = match[1]?.trim();
+  if (!token) return null;
+  const angleMatch = token.match(/(-?\d+(?:\.\d+)?)deg/i);
+  if (!angleMatch) return null;
+  return normalizeAngle(Number(angleMatch[1]));
+};
+
+const buildGradientFromStops = (stops: ThemeStop[], angle: number) => {
+  if (!Array.isArray(stops) || stops.length < 2) return null;
+  const sorted = cloneStops(stops).sort((a, b) => a.position - b.position);
+  return `linear-gradient(${angle}deg, ${sorted.map((stop) => `${stop.color} ${stop.position}%`).join(", ")})`;
+};
+
+const pickThemeFields = (s: Settings): ThemePreviewFields => ({
+  theme: s.theme,
+  accentHex: s.accentHex,
+  customThemeGradient: s.customThemeGradient,
+  customThemeImage: s.customThemeImage,
+  customThemeStops: s.customThemeStops ? cloneStops(s.customThemeStops) : undefined,
+  customThemeAngle: s.customThemeAngle,
+});
+
+const readLastAppliedTheme = (): ThemePreviewFields | null => {
+  if (typeof window === "undefined") return null;
+  const payload = (window as any).__chLastTheme;
+  if (!payload || typeof payload !== "object") return null;
+  return {
+    theme: payload.theme,
+    accentHex: payload.accentHex,
+    customThemeGradient: typeof payload.customThemeGradient === "string" ? payload.customThemeGradient : undefined,
+    customThemeImage: typeof payload.customThemeImage === "string" ? payload.customThemeImage : undefined,
+    customThemeStops: sanitizeStops(payload.customThemeStops),
+    customThemeAngle: normalizeAngle(payload.customThemeAngle),
+  };
+};
 
 const normalizeSettings = (raw?: Settings | null): Settings => {
   const base: Settings = { ...(raw || {}) };
+  const hasExistingSettings = !!(raw && Object.keys(raw).length);
   const notif = base.notifications || {};
   base.notifications = {
     mentions: notif.mentions !== false,
@@ -52,33 +338,190 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
   };
   if (base.callRingSound === undefined) base.callRingSound = true;
   if (!base.callRingtone || !RINGTONE_OPTIONS.includes(base.callRingtone)) base.callRingtone = "Drive";
+  if (base.streamerModeStyle !== 'shorten') base.streamerModeStyle = 'blur';
+  base.streamerModeHoverReveal = base.streamerModeHoverReveal !== false;
+  base.statusMessage = sanitizeStatusMessage(base.statusMessage);
+  base.dndIsCosmetic = base.dndIsCosmetic === true;
+  base.richPresence = sanitizeRichPresence(base.richPresence);
+  const columns = Number(base.havenColumns);
+  base.havenColumns = Number.isFinite(columns) ? Math.min(5, Math.max(1, Math.round(columns))) : 1;
+  base.sidebarHavenIconOnly = base.sidebarHavenIconOnly === true;
+  base.customThemeGradient =
+    typeof base.customThemeGradient === 'string' && base.customThemeGradient.trim().length
+      ? base.customThemeGradient.trim()
+      : DEFAULT_CUSTOM_THEME_GRADIENT;
+  const parsedStops = parseStopsFromGradient(base.customThemeGradient);
+  base.customThemeStops = sanitizeStops(base.customThemeStops || parsedStops || null);
+  base.customThemeAngle = normalizeAngle(base.customThemeAngle ?? parseAngleFromGradient(base.customThemeGradient) ?? DEFAULT_CUSTOM_THEME_ANGLE);
+  if (!base.customThemeGradient) {
+    const built = buildGradientFromStops(base.customThemeStops || DEFAULT_CUSTOM_THEME_STOPS, base.customThemeAngle || DEFAULT_CUSTOM_THEME_ANGLE);
+    if (built) base.customThemeGradient = built;
+  }
+  base.customThemeImage = typeof base.customThemeImage === 'string' ? base.customThemeImage : '';
+  if (base.chatStyle === 'classic' || base.chatStyle === 'bubbles' || base.chatStyle === 'minimal_log' || base.chatStyle === 'focus' || base.chatStyle === 'thread_forward' || base.chatStyle === 'retro') {
+    base.chatStyle = base.chatStyle;
+  } else {
+    base.chatStyle = 'sleek';
+  }
+  base.enableOneko = base.enableOneko === true;
+  base.appearance = normalizeAppearanceSettings(base.appearance, hasExistingSettings);
+  if (!base.appearance?.messageStyle) {
+    base.appearance = { ...base.appearance, messageStyle: base.chatStyle };
+  }
+  base.friendNicknames =
+    base.friendNicknames && typeof base.friendNicknames === 'object'
+      ? Object.fromEntries(
+          Object.entries(base.friendNicknames)
+            .map(([user, nick]) => [user, typeof nick === 'string' ? nick.trim() : ''])
+            .filter(([user, nick]) => typeof user === 'string' && nick.length),
+        )
+      : {};
+  base.havenNicknames =
+    base.havenNicknames && typeof base.havenNicknames === 'object'
+      ? Object.fromEntries(
+          Object.entries(base.havenNicknames)
+            .filter(([haven, map]) => typeof haven === 'string' && map && typeof map === 'object')
+            .map(([haven, map]) => [
+              haven,
+              Object.fromEntries(
+                Object.entries(map as Record<string, string>)
+                  .map(([user, nick]) => [user, typeof nick === 'string' ? nick.trim() : ''])
+                  .filter(([user, nick]) => typeof user === 'string' && nick.length),
+              ),
+            ]),
+        )
+      : {};
   return base;
 };
 
-export default function UserSettingsModal({ isOpen, onCloseAction, username, onStatusChangeAction, onSavedAction }: Props) {
+export default function UserSettingsModal({ isOpen, onClose, username, onStatusChangeAction, onSavedAction }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => normalizeSettings({}));
+  const [appearanceProfiles, setAppearanceProfiles] = useState<AppearanceProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [syncProfilesEnabled, setSyncProfilesEnabled] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
+  const lastSavedThemeRef = useRef<ThemePreviewFields | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const [tab, setTab] = useState<'appearance'|'notifications'|'status'|'guides'|'dev'|'about'>('appearance');
+  const [tab, setTab] = useState<'appearance'|'notifications'|'status'|'account'|'guides'|'dev'|'about'|'secrets'>('appearance');
   const [guideChecked, setGuideChecked] = useState(true);
   const [guideLevel, setGuideLevel] = useState(60);
+  const [demoToggleArmed, setDemoToggleArmed] = useState(false);
+  const [secretClicks, setSecretClicks] = useState(0);
+  const secretsUnlocked = secretClicks >= SECRET_THRESHOLD || settings.enableOneko === true;
+  const lastSecretCountRef = useRef(0);
   const [aboutLoading, setAboutLoading] = useState(false);
   const [aboutUser, setAboutUser] = useState<any>(null);
   const [aboutStats, setAboutStats] = useState<{ havens: number; dms: number }>({ havens: 0, dms: 0 });
+  const [converting, setConverting] = useState(false);
+  const [convertMessage, setConvertMessage] = useState<string | null>(null);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [isLegacyAccount, setIsLegacyAccount] = useState(true);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateLayout = () => setIsMobileLayout(window.innerWidth < 860);
+    updateLayout();
+    window.addEventListener("resize", updateLayout);
+    return () => window.removeEventListener("resize", updateLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined") return;
+    let profiles: AppearanceProfile[] = [];
+    try {
+      const raw = window.localStorage.getItem(APPEARANCE_PROFILE_STORAGE_KEY);
+      profiles = sanitizeProfiles(raw ? JSON.parse(raw) : []);
+    } catch {
+      profiles = [];
+    }
+    let storedActive: string | null = null;
+    try {
+      storedActive = window.localStorage.getItem(APPEARANCE_PROFILE_ACTIVE_KEY);
+    } catch {}
+    setAppearanceProfiles(profiles);
+    if (storedActive && profiles.some((p) => p.id === storedActive)) {
+      setActiveProfileId(storedActive);
+    } else {
+      setActiveProfileId(profiles[0]?.id ?? null);
+    }
+    setProfilesLoaded(true);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!profilesLoaded || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(APPEARANCE_PROFILE_STORAGE_KEY, JSON.stringify(appearanceProfiles));
+      if (activeProfileId) {
+        window.localStorage.setItem(APPEARANCE_PROFILE_ACTIVE_KEY, activeProfileId);
+      } else {
+        window.localStorage.removeItem(APPEARANCE_PROFILE_ACTIVE_KEY);
+      }
+    } catch {}
+  }, [appearanceProfiles, activeProfileId, profilesLoaded]);
+
+  useEffect(() => {
+    if (!isOpen || !profilesLoaded || loading) return;
+    if (appearanceProfiles.length === 0) {
+      const baseProfile: AppearanceProfile = {
+        id: profileId(),
+        name: "Default",
+        settings: extractAppearanceSettings(settings),
+      };
+      setAppearanceProfiles([baseProfile]);
+      setActiveProfileId(baseProfile.id);
+    }
+  }, [appearanceProfiles.length, isOpen, profilesLoaded, settings, loading]);
+
+  const fetchSettings = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch('/api/settings');
+      const d = await r.json().catch(() => ({}));
+      const incoming = (d && typeof d === 'object' && 'settings' in d) ? (d.settings as Settings) : d;
+      const normalized = normalizeSettings(incoming as Settings);
+        setSettings(normalized);
+        lastSavedThemeRef.current = pickThemeFields(normalized);
+      lastSavedThemeRef.current = pickThemeFields(normalized);
+      if (typeof (d as any)?.legacy === 'boolean') {
+        setIsLegacyAccount(Boolean((d as any).legacy));
+      } else {
+        setIsLegacyAccount(true);
+      }
+      setLastSyncedAt(((d as any)?.syncedAt ?? null) as string | null);
+      setSyncWarning(((d as any)?.syncError ?? null) as string | null);
+    } catch {
+      setSyncWarning('Failed to load settings.');
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (settings.enableOneko) {
+      setSecretClicks((prev) => (prev >= SECRET_THRESHOLD ? prev : SECRET_THRESHOLD));
+      lastSecretCountRef.current = SECRET_THRESHOLD;
+    }
+  }, [settings.enableOneko]);
+
+  useEffect(() => {
+    const justUnlocked = secretClicks >= SECRET_THRESHOLD && lastSecretCountRef.current < SECRET_THRESHOLD;
+    if (justUnlocked && !settings.enableOneko) {
+      setSettings((s) => (s.enableOneko ? s : { ...s, enableOneko: true }));
+    }
+    if (justUnlocked) {
+      setTab('secrets');
+    }
+    lastSecretCountRef.current = secretClicks;
+  }, [secretClicks, settings.enableOneko]);
 
   useEffect(() => {
     if (!isOpen) return;
-    (async () => {
-      setLoading(true);
-      try {
-        const r = await fetch('/api/settings');
-        const d = await r.json();
-        setSettings(normalizeSettings(d || {}));
-      } catch {}
-      setLoading(false);
-    })();
+    fetchSettings();
     // Basic local telemetry
     if (typeof window !== 'undefined') {
       try {
@@ -92,7 +535,7 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
         setAboutStats(s => ({ ...s, dms: Array.isArray(dms) ? dms.length : s.dms }));
       } catch {}
     }
-  }, [isOpen]);
+  }, [isOpen, fetchSettings]);
 
   useEffect(() => {
     if (!isOpen || tab !== 'about' || aboutUser || aboutLoading) return;
@@ -107,15 +550,109 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
     })();
   }, [isOpen, tab, aboutUser, aboutLoading]);
 
+  const broadcastSettingsUpdate = (payload: Settings) => {
+    try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: payload })); } catch {}
+    try { window.dispatchEvent(new CustomEvent('ch_theme_preview', { detail: pickThemeFields(payload) })); } catch {}
+  };
+
+  const activeProfile = appearanceProfiles.find((profile) => profile.id === activeProfileId) || null;
+
+  const applyProfile = useCallback((profile: AppearanceProfile) => {
+    const next = normalizeSettings({
+      ...settings,
+      ...profile.settings,
+      appearance: {
+        ...(settings.appearance || {}),
+        ...((profile.settings as any)?.appearance || {}),
+      },
+    });
+    setSettings(next);
+    broadcastSettingsUpdate(next);
+  }, [settings]);
+
+  const handleSelectProfile = (id: string) => {
+    setActiveProfileId(id);
+    const profile = appearanceProfiles.find((p) => p.id === id);
+    if (profile) applyProfile(profile);
+  };
+
+  const handleCreateProfile = () => {
+    const name = window.prompt("Profile name");
+    if (!name) return;
+    const profile: AppearanceProfile = {
+      id: profileId(),
+      name: name.trim() || "Profile",
+      settings: extractAppearanceSettings(settings),
+    };
+    setAppearanceProfiles((prev) => [...prev, profile]);
+    setActiveProfileId(profile.id);
+  };
+
+  const handleDuplicateProfile = () => {
+    if (!activeProfile) return;
+    const profile: AppearanceProfile = {
+      id: profileId(),
+      name: `${activeProfile.name} Copy`,
+      settings: { ...activeProfile.settings },
+    };
+    setAppearanceProfiles((prev) => [...prev, profile]);
+    setActiveProfileId(profile.id);
+  };
+
+  const handleRenameProfile = () => {
+    if (!activeProfile) return;
+    const name = window.prompt("Rename profile", activeProfile.name);
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setAppearanceProfiles((prev) =>
+      prev.map((profile) => (profile.id === activeProfile.id ? { ...profile, name: trimmed } : profile)),
+    );
+  };
+
+  const handleDeleteProfile = () => {
+    if (!activeProfile) return;
+    if (appearanceProfiles.length <= 1) return;
+    const confirmed = window.confirm(`Delete "${activeProfile.name}"?`);
+    if (!confirmed) return;
+    setAppearanceProfiles((prev) => prev.filter((profile) => profile.id !== activeProfile.id));
+    const next = appearanceProfiles.find((profile) => profile.id !== activeProfile.id) || null;
+    setActiveProfileId(next?.id ?? null);
+    if (next) applyProfile(next);
+  };
+
+  const handleUpdateProfile = () => {
+    if (!activeProfile) return;
+    setAppearanceProfiles((prev) =>
+      prev.map((profile) =>
+        profile.id === activeProfile.id ? { ...profile, settings: extractAppearanceSettings(settings) } : profile,
+      ),
+    );
+  };
+
   const save = async () => {
     try {
       const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
-      const d = await r.json();
-      if (d?.settings?.status && onStatusChangeAction) onStatusChangeAction(d.settings.status);
-      if (d?.settings && onSavedAction) onSavedAction(d.settings);
-      try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: (d?.settings || {}) })); } catch {}
-    } catch {}
-    onCloseAction();
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        setSyncWarning((err?.error as string) || 'Failed to save settings.');
+        return;
+      }
+      const d = await r.json().catch(() => ({}));
+      const payload = (d && typeof d === 'object' && 'settings' in d) ? (d.settings as Settings) : d;
+      const normalized = normalizeSettings(payload as Settings);
+      setSettings(normalized);
+      if (typeof (d as any)?.legacy === 'boolean') setIsLegacyAccount(Boolean((d as any).legacy));
+      setLastSyncedAt(((d as any)?.syncedAt ?? null) as string | null);
+      setSyncWarning(((d as any)?.syncError ?? null) as string | null);
+      if (normalized?.status && onStatusChangeAction) onStatusChangeAction(normalized.status);
+      if (onSavedAction) onSavedAction(normalized);
+      broadcastSettingsUpdate(normalized);
+    } catch {
+      setSyncWarning('Failed to save settings.');
+      return;
+    }
+    onClose();
   };
 
   const stopPreview = () => {
@@ -168,8 +705,98 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
     }
   }, [isOpen]);
 
+  const dispatchThemePreview = useCallback((payload: ThemePreviewFields | null) => {
+    if (!payload) return;
+    try {
+      window.dispatchEvent(new CustomEvent('ch_theme_preview', { detail: payload }));
+    } catch {}
+  }, []);
+
+  const revertThemePreview = useCallback(() => {
+    if (!lastSavedThemeRef.current) return;
+    dispatchThemePreview(lastSavedThemeRef.current);
+  }, [dispatchThemePreview]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!lastSavedThemeRef.current) {
+      const fallback = readLastAppliedTheme();
+      if (fallback) {
+        lastSavedThemeRef.current = fallback;
+        setSettings((prev) => ({ ...prev, ...fallback }));
+      }
+    }
+  }, [isOpen, setSettings]);
+
+  const themeStopsSignature = useMemo(() => JSON.stringify(settings.customThemeStops || []), [settings.customThemeStops]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    dispatchThemePreview(pickThemeFields(settings));
+  }, [
+    isOpen,
+    settings.theme,
+    settings.accentHex,
+    settings.customThemeGradient,
+    settings.customThemeImage,
+    settings.customThemeAngle,
+    themeStopsSignature,
+    dispatchThemePreview,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    return () => {
+      revertThemePreview();
+    };
+  }, [isOpen, revertThemePreview]);
+
+  const handleCancel = useCallback(() => {
+    revertThemePreview();
+    onClose();
+  }, [revertThemePreview, onClose]);
+
   if (!isOpen) return null;
   const accent = settings.accentHex || '#60a5fa';
+  const appearance = settings.appearance || normalizeAppearanceSettings(undefined, true);
+  const messageStyle = appearance.messageStyle || settings.chatStyle || "sleek";
+  const themeStops = settings.customThemeStops && settings.customThemeStops.length >= 2 ? settings.customThemeStops : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
+  const themeAngle = normalizeAngle(settings.customThemeAngle ?? DEFAULT_CUSTOM_THEME_ANGLE);
+  const gradientPreview =
+    (settings.customThemeGradient && settings.customThemeGradient.trim().length ? settings.customThemeGradient : null) ||
+    buildGradientFromStops(themeStops, themeAngle) ||
+    DEFAULT_CUSTOM_THEME_GRADIENT;
+
+  const updateThemeStops = (updater: (stops: ThemeStop[]) => ThemeStop[]) => {
+    setSettings((prev) => {
+      const current = prev.customThemeStops && prev.customThemeStops.length >= 2 ? cloneStops(prev.customThemeStops) : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
+      const nextStops = sanitizeStops(updater(current));
+      const nextAngle = normalizeAngle(prev.customThemeAngle ?? themeAngle);
+      const gradient = buildGradientFromStops(nextStops, nextAngle) || prev.customThemeGradient || DEFAULT_CUSTOM_THEME_GRADIENT;
+      return { ...prev, customThemeStops: nextStops, customThemeAngle: nextAngle, customThemeGradient: gradient };
+    });
+  };
+
+  const updateThemeAngle = (nextAngle: number) => {
+    setSettings((prev) => {
+      const current = prev.customThemeStops && prev.customThemeStops.length >= 2 ? cloneStops(prev.customThemeStops) : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
+      const safeAngle = normalizeAngle(nextAngle);
+      const gradient = buildGradientFromStops(current, safeAngle) || prev.customThemeGradient || DEFAULT_CUSTOM_THEME_GRADIENT;
+      return { ...prev, customThemeStops: sanitizeStops(current), customThemeAngle: safeAngle, customThemeGradient: gradient };
+    });
+  };
+
+  const handleThemeImageUpload = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') {
+        setSettings((prev) => ({ ...prev, customThemeImage: result }));
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const Switch = ({ checked }: { checked: boolean }) => {
     const knobOffset = checked ? 14 : 0;
@@ -229,9 +856,42 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
     </div>
   );
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80 }}>
-      <div className="glass" style={{ width: 'min(760px, 94vw)', borderRadius: 12, overflow: 'hidden', display: 'flex', minHeight: 420, maxHeight: '80vh' }}>
-        <div style={{ width: 220, borderRight: '1px solid #2a3344', background: '#0b1222', color: '#e5e7eb', display: 'flex', flexDirection: 'column' }}>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        display: 'flex',
+        alignItems: isMobileLayout ? 'stretch' : 'center',
+        justifyContent: isMobileLayout ? 'flex-start' : 'center',
+        zIndex: 80,
+        padding: isMobileLayout ? 0 : 16,
+      }}
+    >
+      <div
+        className="glass"
+        style={{
+          width: isMobileLayout ? '100%' : 'min(760px, 94vw)',
+          height: isMobileLayout ? '100%' : undefined,
+          borderRadius: isMobileLayout ? 0 : 12,
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: isMobileLayout ? 'column' : 'row',
+          minHeight: isMobileLayout ? '100%' : 420,
+          maxHeight: isMobileLayout ? '100vh' : '80vh',
+        }}
+      >
+        <div
+          style={{
+            width: isMobileLayout ? '100%' : 220,
+            borderRight: isMobileLayout ? 'none' : '1px solid #2a3344',
+            borderBottom: isMobileLayout ? '1px solid #2a3344' : 'none',
+            background: '#0b1222',
+            color: '#e5e7eb',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           <div style={{ padding: 12, borderBottom: '1px solid #2a3344', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span>Settings</span>
             <button
@@ -252,18 +912,35 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
               Log out
             </button>
           </div>
-          <button className="btn-ghost" onClick={()=> setTab('appearance')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='appearance' ? '#93c5fd' : undefined }}>Appearance</button>
-          <button className="btn-ghost" onClick={()=> setTab('notifications')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='notifications' ? '#93c5fd' : undefined }}>Notifications</button>
-          <button className="btn-ghost" onClick={()=> setTab('status')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='status' ? '#93c5fd' : undefined }}>Status</button>
-          <button className="btn-ghost" onClick={()=> setTab('guides')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='guides' ? '#93c5fd' : undefined }}>Guides & Feedback</button>
-          <button className="btn-ghost" onClick={()=> setTab('dev')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='dev' ? '#93c5fd' : undefined }}>Dev</button>
-          <button className="btn-ghost" onClick={()=> setTab('about')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='about' ? '#93c5fd' : undefined }}>About</button>
-          <div style={{ marginTop: 'auto', padding: 12, borderTop: '1px solid #111827', fontSize: 12, color: '#9ca3af' }}>@{username}</div>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: isMobileLayout ? 'row' : 'column',
+              flexWrap: isMobileLayout ? 'nowrap' : 'wrap',
+              gap: 6,
+              padding: isMobileLayout ? '8px 12px' : 0,
+              overflowX: isMobileLayout ? 'auto' : 'visible',
+            }}
+          >
+            <button className="btn-ghost" onClick={()=> setTab('appearance')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='appearance' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Appearance</button>
+            <button className="btn-ghost" onClick={()=> setTab('notifications')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='notifications' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Notifications</button>
+            <button className="btn-ghost" onClick={()=> setTab('status')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='status' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Status</button>
+            <button className="btn-ghost" onClick={()=> setTab('account')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='account' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Account</button>
+            <button className="btn-ghost" onClick={()=> setTab('guides')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='guides' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Guides & Feedback</button>
+            <button className="btn-ghost" onClick={()=> setTab('dev')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='dev' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Dev</button>
+            {secretsUnlocked && (
+              <button className="btn-ghost" onClick={()=> setTab('secrets')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='secrets' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>
+                Secrets
+              </button>
+            )}
+            <button className="btn-ghost" onClick={()=> setTab('about')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='about' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>About</button>
+          </div>
+          <div style={{ marginTop: isMobileLayout ? 0 : 'auto', padding: 12, borderTop: '1px solid #111827', fontSize: 12, color: '#9ca3af' }}>@{username}</div>
         </div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
             <div style={{ fontWeight: 600 }}>User Settings — {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
-            <button onClick={onCloseAction} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
+            <button onClick={handleCancel} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
           </div>
           <div style={{ padding: 12, color: '#e5e7eb', overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {loading ? (
@@ -275,25 +952,220 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Theme</span>
-                        <select value={settings.theme || 'dark'} onChange={(e)=> setSettings(s => ({ ...s, theme: e.target.value as any }))} className="input-dark" style={{ padding: 8 }}>
+                        <select value={settings.theme || 'dark'} onChange={(e)=> setSettings(s => ({ ...s, theme: e.target.value as Settings['theme'] }))} className="input-dark" style={{ padding: 8 }}>
+                          <option value="system">System</option>
                           <option value="dark">Dark</option>
                           <option value="light">Light</option>
-                          <option value="system">System</option>
+                          <option value="midnight">Midnight</option>
+                          <option value="sunset">Sunset</option>
+                          <option value="forest">Forest</option>
+                          <option value="ocean">Ocean</option>
+                          <option value="neon">Neon</option>
+                          <option value="custom">Custom</option>
                         </select>
                       </label>
-                      <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
-                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Style</span>
-                        <select value={settings.chatStyle || 'modern'} onChange={(e)=> setSettings(s => ({ ...s, chatStyle: e.target.value as any }))} className="input-dark" style={{ padding: 8 }}>
-                          <option value="modern">Modern</option>
-                          <option value="classic">Classic</option>
-                        </select>
-                      </label>
+                      {settings.theme === 'custom' && (
+                        <div style={{ display: 'grid', gap: 10, minWidth: 260 }}>
+                          <div
+                            style={{
+                              borderRadius: 12,
+                              border: '1px solid #1f2937',
+                              background: gradientPreview,
+                              padding: 12,
+                              minHeight: 120,
+                              color: '#f8fafc',
+                              display: 'grid',
+                              gap: 4,
+                              boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.05)',
+                            }}
+                          >
+                            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, color: 'rgba(255,255,255,0.75)' }}>
+                              Custom palette preview
+                            </div>
+                            <div style={{ fontWeight: 600 }}>Frosted shells & chat surfaces</div>
+                            <div style={{ fontSize: 12, maxWidth: 360 }}>
+                              Every surface, card, and bubble inherits these tones instantly after you save.
+                            </div>
+                          </div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <span style={{ color: '#9ca3af', fontSize: 12 }}>Gradient stops</span>
+                            {themeStops.map((stop, idx) => (
+                              <div
+                                key={`gradient-stop-${idx}`}
+                                style={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  padding: '8px 10px',
+                                  borderRadius: 10,
+                                  border: '1px solid #1f2937',
+                                  background: '#020617',
+                                }}
+                              >
+                                <div style={{ fontSize: 12, color: '#9ca3af', minWidth: 60 }}>Stop {idx + 1}</div>
+                                <input
+                                  type="color"
+                                  aria-label={`Stop ${idx + 1} color`}
+                                  value={stop.color}
+                                  onChange={(e)=> updateThemeStops((stops) => {
+                                    const next = cloneStops(stops);
+                                    next[idx] = { ...next[idx], color: e.target.value };
+                                    return next;
+                                  })}
+                                />
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={100}
+                                  value={Math.round(stop.position)}
+                                  onChange={(e)=> updateThemeStops((stops) => {
+                                    const next = cloneStops(stops);
+                                    next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
+                                    return next;
+                                  })}
+                                  style={{ flex: 1, minWidth: 120 }}
+                                />
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  value={Math.round(stop.position)}
+                                  onChange={(e)=> updateThemeStops((stops) => {
+                                    const next = cloneStops(stops);
+                                    next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
+                                    return next;
+                                  })}
+                                  style={{ width: 70, background: '#0b1222', color: '#e5e7eb', border: '1px solid #1f2937', borderRadius: 8, padding: '4px 6px' }}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  disabled={themeStops.length <= 2}
+                                  onClick={()=> updateThemeStops((stops) => {
+                                    if (stops.length <= 2) return stops;
+                                    return stops.filter((_, stopIdx) => stopIdx !== idx);
+                                  })}
+                                  style={{ padding: '4px 8px', opacity: themeStops.length <= 2 ? 0.4 : 1 }}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))}
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className="btn-ghost"
+                                disabled={themeStops.length >= 5}
+                                onClick={()=> updateThemeStops((stops) => {
+                                  if (stops.length >= 5) return stops;
+                                  const nextPosition = clamp(Math.round((100 / (stops.length + 1)) * stops.length), 0, 100);
+                                  return [...stops, { color: '#ffffff', position: nextPosition }];
+                                })}
+                                style={{ padding: '6px 10px', opacity: themeStops.length >= 5 ? 0.5 : 1 }}
+                              >
+                                Add stop
+                              </button>
+                              <span style={{ fontSize: 11, color: '#9ca3af', alignSelf: 'center' }}>2-5 stops supported.</span>
+                            </div>
+                          </div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <span style={{ color: '#9ca3af', fontSize: 12 }}>Angle ({themeAngle}°)</span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={360}
+                              value={themeAngle}
+                              onChange={(e)=> updateThemeAngle(Number(e.target.value))}
+                            />
+                          </div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <span style={{ color: '#9ca3af', fontSize: 12 }}>Background image (optional)</span>
+                            <input
+                              type="url"
+                              value={settings.customThemeImage || ''}
+                              onChange={(e)=> setSettings(s => ({ ...s, customThemeImage: e.target.value }))}
+                              placeholder="https://example.com/wallpaper.jpg"
+                              className="input-dark"
+                              style={{ padding: 8 }}
+                            />
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <label className="btn-ghost" style={{ padding: '6px 10px', cursor: 'pointer' }}>
+                                Upload image
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  style={{ display: 'none' }}
+                                  onChange={(e)=> {
+                                    handleThemeImageUpload(e.target.files?.[0] || null);
+                                    if (e.target) e.target.value = '';
+                                  }}
+                                />
+                              </label>
+                              {settings.customThemeImage && (
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  onClick={()=> setSettings(s => ({ ...s, customThemeImage: '' }))}
+                                  style={{ padding: '6px 10px' }}
+                                >
+                                  Clear image
+                                </button>
+                              )}
+                            </div>
+                            <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                              Uploaded images are stored locally as data URLs and rendered beneath your gradient.
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ display: 'grid', gap: 8, minWidth: 260, flex: '1 1 100%' }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Message Style</span>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                          {MESSAGE_STYLE_OPTIONS.map((opt) => {
+                            const selected = messageStyle === opt.value;
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                className="btn-ghost"
+                                onClick={() => setSettings(s => ({ ...s, chatStyle: opt.value as Settings['chatStyle'], appearance: { ...s.appearance, messageStyle: opt.value } }))}
+                                style={{
+                                  textAlign: 'left',
+                                  padding: 10,
+                                  borderRadius: 10,
+                                  border: selected ? `1px solid ${settings.accentHex || '#60a5fa'}` : '1px solid #1f2937',
+                                  background: selected ? '#0b1222' : '#020617',
+                                  color: '#e2e8f0',
+                                  display: 'grid',
+                                  gap: 6,
+                                }}
+                              >
+                                <div style={{ fontWeight: 600 }}>{opt.label}</div>
+                                <div style={{ fontSize: 11, color: '#9ca3af' }}>{opt.description}</div>
+                                <div style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #1f2937', background: '#0b1222', display: 'grid', gap: 4 }}>
+                                  <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                                    {opt.value === 'minimal_log' && '12:21 user: hello there'}
+                                    {opt.value === 'focus' && 'Recent messages stay vivid'}
+                                    {opt.value === 'thread_forward' && '1 reply in thread'}
+                                    {opt.value === 'retro' && '[SYS] call started'}
+                                    {opt.value === 'bubbles' && 'Bubble preview'}
+                                    {opt.value === 'classic' && 'Classic row preview'}
+                                    {opt.value === 'sleek' && 'Sleek card preview'}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                       <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Font Size</span>
                         <select value={settings.messageFontSize || 'medium'} onChange={(e)=> setSettings(s => ({ ...s, messageFontSize: e.target.value as any }))} className="input-dark" style={{ padding: 8 }}>
-                          <option value="small">Small</option>
-                          <option value="medium">Medium</option>
-                          <option value="large">Large</option>
+                          <option value="small">Small (13px)</option>
+                          <option value="medium">Medium (15px)</option>
+                          <option value="large">Large (17px)</option>
+                          <option value="extraLarge">Extra Large (19px)</option>
                         </select>
                       </label>
                       <label style={{ display: 'grid', gap: 6, minWidth: 140 }}>
@@ -313,6 +1185,40 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                         <input type="color" value={settings.pinColorHex || '#facc15'} onChange={(e)=> setSettings(s => ({ ...s, pinColorHex: e.target.value }))} />
                       </label>
                     </div>
+                    <div style={{ padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617', display: 'grid', gap: 10 }}>
+                      <div style={{ fontWeight: 600 }}>Profiles</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                        Switch between saved appearance layouts. Profiles are stored locally and sync support is coming soon.
+                      </div>
+                      <label style={{ display: 'grid', gap: 6, maxWidth: 280 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Active profile</span>
+                        <select
+                          value={activeProfileId || ''}
+                          onChange={(e)=> handleSelectProfile(e.target.value)}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          {appearanceProfiles.map((profile) => (
+                            <option key={profile.id} value={profile.id}>{profile.name}</option>
+                          ))}
+                          {!appearanceProfiles.length && <option value="">Default</option>}
+                        </select>
+                      </label>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <button type="button" className="btn-ghost" onClick={handleCreateProfile} style={{ padding: '6px 10px' }}>New</button>
+                        <button type="button" className="btn-ghost" onClick={handleDuplicateProfile} style={{ padding: '6px 10px' }}>Duplicate</button>
+                        <button type="button" className="btn-ghost" onClick={handleRenameProfile} style={{ padding: '6px 10px' }}>Rename</button>
+                        <button type="button" className="btn-ghost" onClick={handleUpdateProfile} style={{ padding: '6px 10px' }}>Update from current</button>
+                        <button type="button" className="btn-ghost" onClick={handleDeleteProfile} style={{ padding: '6px 10px', color: appearanceProfiles.length > 1 ? '#f87171' : '#6b7280' }} disabled={appearanceProfiles.length <= 1}>Delete</button>
+                      </div>
+                      <button type="button" disabled style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#0b1222', border: '1px solid #1f2937', cursor: 'not-allowed', opacity: 0.7 }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Sync profiles across devices (coming soon)</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Requires the auth revamp before this can go live.</div>
+                        </div>
+                        <Switch checked={syncProfilesEnabled} />
+                      </button>
+                    </div>
                     <div style={{ display: 'grid', gap: 8 }}>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, compact: !s.compact }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
@@ -328,12 +1234,138 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                         </div>
                         <Switch checked={!!(settings as any).compactSidebar} />
                       </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, sidebarHavenIconOnly: !(s as any).sidebarHavenIconOnly } as any))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Icon-only havens</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Show only haven avatars in the left sidebar.</div>
+                        </div>
+                        <Switch checked={!!(settings as any).sidebarHavenIconOnly} />
+                      </button>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Haven columns (1-5)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={Math.max(1, Math.min(5, Number(settings.havenColumns) || 1))}
+                          onChange={(e)=> {
+                            const value = Math.max(1, Math.min(5, parseInt(e.target.value || "1", 10) || 1));
+                            setSettings(s => ({ ...s, havenColumns: value }));
+                          }}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        />
+                      </label>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, showTimestamps: !(s.showTimestamps !== false) }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
                           <div>Show timestamps</div>
                           <div style={{ fontSize: 11, color: '#9ca3af' }}>Display time next to each message.</div>
                         </div>
                         <Switch checked={settings.showTimestamps !== false} />
+                      </button>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Message grouping</span>
+                        <select
+                          value={appearance.messageGrouping || 'compact'}
+                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, messageGrouping: e.target.value as AppearanceSettings['messageGrouping'] } }))}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          <option value="none">None (show header every message)</option>
+                          <option value="compact">Compact (5 min window)</option>
+                          <option value="aggressive">Aggressive (30 min window)</option>
+                        </select>
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Timestamp granularity</span>
+                        <select
+                          value={appearance.timestampGranularity || 'perMessage'}
+                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timestampGranularity: e.target.value as AppearanceSettings['timestampGranularity'] } }))}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          <option value="perMessage">Per message</option>
+                          <option value="perGroup">Only on group headers</option>
+                        </select>
+                      </label>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <label style={{ display: 'grid', gap: 6, minWidth: 180 }}>
+                          <span style={{ color: '#9ca3af', fontSize: 12 }}>Time format</span>
+                          <select
+                            value={appearance.timeFormat || resolveDefaultTimeFormat()}
+                            onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeFormat: e.target.value as AppearanceSettings['timeFormat'] } }))}
+                            className="input-dark"
+                            style={{ padding: 8 }}
+                          >
+                            <option value="12h">12-hour</option>
+                            <option value="24h">24-hour</option>
+                          </select>
+                        </label>
+                        <label style={{ display: 'grid', gap: 6, minWidth: 180 }}>
+                          <span style={{ color: '#9ca3af', fontSize: 12 }}>Time display</span>
+                          <select
+                            value={appearance.timeDisplay || 'absolute'}
+                            onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeDisplay: e.target.value as AppearanceSettings['timeDisplay'] } }))}
+                            className="input-dark"
+                            style={{ padding: 8 }}
+                          >
+                            <option value="absolute">Absolute (5:27 AM)</option>
+                            <option value="relative">Relative (6m ago)</option>
+                            <option value="hybrid">Hybrid (hover for relative)</option>
+                          </select>
+                        </label>
+                      </div>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>System message emphasis</span>
+                        <select
+                          value={appearance.systemMessageEmphasis || 'prominent'}
+                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, systemMessageEmphasis: e.target.value as AppearanceSettings['systemMessageEmphasis'] } }))}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          <option value="prominent">Prominent</option>
+                          <option value="normal">Normal</option>
+                          <option value="dimmed">Dimmed</option>
+                          <option value="collapsible">Collapsible</option>
+                        </select>
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Reading width</span>
+                        <select
+                          value={appearance.maxContentWidth ? String(appearance.maxContentWidth) : 'auto'}
+                          onChange={(e)=> {
+                            const value = e.target.value === 'auto' ? null : Number(e.target.value);
+                            setSettings(s => ({ ...s, appearance: { ...s.appearance, maxContentWidth: Number.isFinite(value) ? value : null } }));
+                          }}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          <option value="auto">Auto</option>
+                          <option value="720">720px</option>
+                          <option value="840">840px</option>
+                          <option value="960">960px</option>
+                          <option value="1080">1080px</option>
+                        </select>
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Accent intensity</span>
+                        <select
+                          value={appearance.accentIntensity || 'normal'}
+                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, accentIntensity: e.target.value as AppearanceSettings['accentIntensity'] } }))}
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        >
+                          <option value="subtle">Subtle</option>
+                          <option value="normal">Normal</option>
+                          <option value="bold">Bold</option>
+                        </select>
+                      </label>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, appearance: { ...s.appearance, readingMode: !s.appearance?.readingMode } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Reading mode</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Hide avatars and reactions for distraction-free scrollback.</div>
+                        </div>
+                        <Switch checked={appearance.readingMode === true} />
                       </button>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, reduceMotion: !s.reduceMotion }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
@@ -342,6 +1374,49 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                         </div>
                         <Switch checked={!!settings.reduceMotion} />
                       </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, blurOnUnfocused: !s.blurOnUnfocused }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Blur when unfocused</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Hide message text, usernames, and media whenever this tab loses focus.</div>
+                        </div>
+                        <Switch checked={!!settings.blurOnUnfocused} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, streamerMode: !s.streamerMode }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Streamer mode</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Mask usernames while sharing your screen.</div>
+                        </div>
+                        <Switch checked={!!settings.streamerMode} />
+                      </button>
+                      {settings.streamerMode && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 10px', borderRadius: 8, background: '#010914', border: '1px solid #1f2937' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ color: '#9ca3af', fontSize: 12 }}>Mask style</div>
+                            <select
+                              value={settings.streamerModeStyle || 'blur'}
+                              onChange={(e)=> setSettings(s => ({ ...s, streamerModeStyle: e.target.value as 'blur'|'shorten' }))}
+                              className="input-dark"
+                              style={{ padding: 6 }}
+                            >
+                              <option value="blur">Blur names</option>
+                              <option value="shorten">Shorten names</option>
+                            </select>
+                          </div>
+                          {settings.streamerModeStyle === 'blur' && (
+                            <button
+                              type="button"
+                              onClick={() => setSettings((s) => ({ ...s, streamerModeHoverReveal: s.streamerModeHoverReveal === false ? true : false }))}
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                            >
+                              <div style={{ textAlign: 'left' }}>
+                                <div>Hover to reveal</div>
+                                <div style={{ fontSize: 11, color: '#9ca3af' }}>Hover the privacy markers to briefly show full names.</div>
+                              </div>
+                              <Switch checked={settings.streamerModeHoverReveal !== false} />
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, showOnlineCount: !(s.showOnlineCount !== false) }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
                           <div>Show online count</div>
@@ -562,6 +1637,69 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                         <option value="offline">Offline</option>
                       </select>
                     </label>
+                    <label style={{ display: 'grid', gap: 6 }}>
+                      <span style={{ color: '#9ca3af', fontSize: 12 }}>Status message</span>
+                      <input
+                        value={settings.statusMessage || ''}
+                        onChange={(e)=> setSettings(s => ({ ...s, statusMessage: e.target.value.slice(0, MAX_STATUS_MESSAGE) }))}
+                        placeholder="What are you up to?"
+                        className="input-dark"
+                        style={{ padding: 8 }}
+                      />
+                      <span style={{ color: '#6b7280', fontSize: 11 }}>
+                        {Math.max(0, MAX_STATUS_MESSAGE - (settings.statusMessage || '').length)} characters left.
+                      </span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.dndIsCosmetic === true}
+                        onChange={(e) => setSettings(s => ({ ...s, dndIsCosmetic: e.target.checked }))}
+                      />
+                      <div style={{ display: 'grid', gap: 2 }}>
+                        <span style={{ fontWeight: 600 }}>DND is cosmetic only</span>
+                        <span style={{ fontSize: 12, color: '#9ca3af' }}>Keep notifications and sounds even when DND is enabled.</span>
+                      </div>
+                    </label>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <div style={{ color: '#9ca3af', fontSize: 12 }}>Rich presence (manual)</div>
+                      <select
+                        value={settings.richPresence?.type || 'none'}
+                        onChange={(e)=> setSettings(s => {
+                          const next = e.target.value;
+                          if (next === 'none') return { ...s, richPresence: undefined };
+                          return { ...s, richPresence: { ...(s.richPresence || {}), type: next as any } };
+                        })}
+                        className="input-dark"
+                        style={{ padding: 8, maxWidth: 240 }}
+                      >
+                        <option value="none">None</option>
+                        <option value="game">Playing a game</option>
+                        <option value="music">Listening to music</option>
+                        <option value="custom">Custom activity</option>
+                      </select>
+                      {settings.richPresence?.type && (
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <input
+                            value={settings.richPresence?.title || ''}
+                            onChange={(e)=> setSettings(s => ({ ...s, richPresence: { ...(s.richPresence || {}), title: e.target.value.slice(0, MAX_RICH_TITLE) } }))}
+                            placeholder={settings.richPresence?.type === 'music' ? 'Track or playlist' : 'Activity title'}
+                            className="input-dark"
+                            style={{ padding: 8 }}
+                          />
+                          <input
+                            value={settings.richPresence?.details || ''}
+                            onChange={(e)=> setSettings(s => ({ ...s, richPresence: { ...(s.richPresence || {}), details: e.target.value.slice(0, MAX_RICH_DETAILS) } }))}
+                            placeholder="Details (optional)"
+                            className="input-dark"
+                            style={{ padding: 8 }}
+                          />
+                          <div style={{ color: '#6b7280', fontSize: 11 }}>
+                            Automatic game/music presence will be added after the new auth integration ships.
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <input
                         type="checkbox"
@@ -575,12 +1713,129 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                     </label>
                   </div>
                 )}
+                {tab === 'account' && (
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    {syncWarning && (
+                      <div style={{ padding: 10, borderRadius: 8, background: '#3f0c0c', border: '1px solid #ef4444', color: '#fecaca', fontSize: 13 }}>
+                        {syncWarning}
+                      </div>
+                    )}
+                    {isLegacyAccount ? (
+                      <>
+                        <div>
+                          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>Account conversion</div>
+                          <p style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.4 }}>
+                            We detected that @{username} is still using the legacy ChitterHaven auth. Convert once to link this profile with the ChitterSync cloud so
+                            your havens, DMs, and devices stay in sync everywhere.
+                          </p>
+                          <ul style={{ marginLeft: 18, color: '#9ca3af', fontSize: 12 }}>
+                            <li>Your password will be re-encrypted using new AES-GCM keys.</li>
+                            <li>You'll be signed out after the migration is complete.</li>
+                            <li>All apps, including mobile apps, will share the same preferences.</li>
+                            <li>You will gain the ability to use the full ChitterSync ecosystem.</li>
+                            <li>This migration is irreversible and cannot be undone.</li>
+                            <li>The old auth system will be deprecated February 10th, 2026.</li>
+                            <li>Converting your account is not required but is recommended.</li>
+                          </ul>
+                        </div>
+                        {convertMessage && (
+                          <div style={{ padding: 10, borderRadius: 8, background: '#052e16', border: '1px solid #166534', color: '#bbf7d0', fontSize: 13 }}>
+                            {convertMessage}
+                          </div>
+                        )}
+                        {convertError && (
+                          <div style={{ padding: 10, borderRadius: 8, background: '#3f0c0c', border: '1px solid #ef4444', color: '#fecaca', fontSize: 13 }}>
+                            {convertError}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setConvertError(null);
+                            setConvertMessage(null);
+                            setConverting(true);
+                            try {
+                              const res = await fetch('/api/account/convert', { method: 'POST' });
+                              const data = await res.json().catch(() => ({}));
+                              if (!res.ok) {
+                                throw new Error(data?.error || 'Conversion failed.');
+                              } 
+                              setConvertMessage('Account successfully converted. Please sign back in using the new auth service.');
+                              try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+                              await fetchSettings();
+                            } catch (err: any) {
+                              setConvertError(err?.message || 'Conversion failed.');
+                            } finally {
+                              setConverting(false);
+                            }
+                          }}
+                          disabled={converting}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: 8,
+                            border: '1px solid #1f2937',
+                            background: converting ? '#1f2937' : '#0b1120',
+                            color: '#fcd34d',
+                            fontWeight: 600,
+                            cursor: converting ? 'default' : 'pointer',
+                            transition: 'opacity 120ms ease',
+                            opacity: converting ? 0.7 : 1,
+                          }}
+                        >
+                          {converting ? 'Converting...' : 'Convert account'}
+                        </button>
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>
+                          Having trouble? Contact support@chittersync.com with your username for manual migration assistance.
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>ChitterSync cloud settings</div>
+                          <p style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.4 }}>
+                            @{username} is linked to the new auth platform. Any changes you save here sync instantly to every ChitterSync app you sign in to.
+                          </p>
+                        </div>
+                        <div style={{ display: 'grid', gap: 4, fontSize: 13, color: '#e5e7eb' }}>
+                          <div>Linked account: <span style={{ color: '#93c5fd' }}>@{username}</span></div>
+                          <div>
+                            Last synced:{' '}
+                            <span style={{ color: '#93c5fd' }}>
+                              {lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'Awaiting first sync'}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { void fetchSettings(); }}
+                          disabled={loading}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: 8,
+                            border: '1px solid #1f2937',
+                            background: loading ? '#1f2937' : '#0b1120',
+                            color: '#93c5fd',
+                            fontWeight: 600,
+                            cursor: loading ? 'default' : 'pointer',
+                            transition: 'opacity 120ms ease',
+                            opacity: loading ? 0.7 : 1,
+                          }}
+                        >
+                          {loading ? 'Refreshing...' : 'Refresh from cloud'}
+                        </button>
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>
+                          Preferences saved from mobile, desktop, or the auth portal share the same source of truth. Reload if you change them elsewhere.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
                 {tab === 'about' && (
                   <div style={{ display: 'grid', gap: 12 }}>
                     <div>
                       <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>About ChitterHaven</div>
                       <div style={{ fontSize: 13 }}>
-                        <div>Version: <span style={{ color: '#93c5fd' }}>0.1.0</span></div>
+                        <div>Version: <span style={{ color: '#93c5fd' }}>0.2.0</span></div>
                         <div>License: <span style={{ color: '#93c5fd' }}>Personal / non-commercial use</span></div>
                       </div>
                     </div>
@@ -623,12 +1878,148 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                         Basic usage metrics like havens and DMs on this device are kept locally in your browser.
                       </div>
                     </div>
+                    <div>
+                    <div className="patch-notes-container">
+                        <header className="patch-notes-header">
+                          <h1>
+                            <i className="fa-solid fa-network-wired" /> ChitterHaven Beta Update
+                          </h1>
+                          <p className="version">
+                            Version <strong>v0.2.0 Beta</strong>
+                          </p>
+                          <p className="subtitle">
+                            Ecosystem Integration & Communication Overhaul
+                          </p>
+                        </header>
+
+                        <section>
+                          <h2>
+                            <i className="fa-solid fa-code-branch" /> Core Changes
+                          </h2>
+                          <ul>
+                            <li>
+                              Fully refactored the internal API to integrate with the wider
+                              ChitterSync ecosystem, enabling cross-service compatibility and
+                              future expansion.
+                            </li>
+                            <li>
+                              Multiple features that were previously local-only are now linked to
+                              user accounts, allowing settings and preferences to persist across
+                              devices.
+                            </li>
+                          </ul>
+                        </section>
+
+                        <section>
+                          <h2>
+                            <i className="fa-solid fa-palette" /> User Settings & Customization
+                          </h2>
+                          <ul>
+                            <li>
+                              Added new UI styles: <strong>Sleek</strong> and{" "}
+                              <strong>Bubble</strong>.
+                            </li>
+                            <li>
+                              Added new themes: Midnight, Sunset, Forest, Ocean, and Neon.
+                            </li>
+                            <li>
+                              Introduced a <strong>Custom Theme Creator</strong> for fully
+                              personalized color schemes.
+                            </li>
+                            <li>
+                              Added <strong>Streamer Mode</strong> and{" "}
+                              <strong>Unfocused Blur</strong> to improve privacy and prevent
+                              accidental information exposure.
+                            </li>
+                          </ul>
+                        </section>
+
+                        <section>
+                          <h2>
+                            <i className="fa-solid fa-server" /> Haven (Server) Improvements
+                          </h2>
+                          <ul>
+                            <li>
+                              Refactored server settings to align with the new layout and design
+                              system.
+                            </li>
+                            <li>
+                              Added <strong>Group DMs / Group Chats</strong> with built-in
+                              moderation tiers for better control and safety.
+                            </li>
+                          </ul>
+                        </section>
+
+                        <section>
+                          <h2>
+                            <i className="fa-solid fa-mobile-screen" /> Platform Support
+                          </h2>
+                          <ul>
+                            <li>
+                              Added mobile support with responsive layouts and interaction
+                              handling.
+                            </li>
+                          </ul>
+                        </section>
+
+                        <section>
+                          <h2>
+                            <i className="fa-solid fa-phone" /> Calls & Communication
+                          </h2>
+                          <ul>
+                            <li>Fixed multiple call syncing issues.</li>
+                            <li>
+                              Added audible feedback for mute and unmute actions during calls.
+                            </li>
+                          </ul>
+                        </section>
+
+                        <section className="in-progress">
+                          <h2>
+                            <i className="fa-solid fa-hourglass-half" /> In Progress
+                          </h2>
+                          <ul>
+                            <li>Camera support during calls</li>
+                            <li>Screen sharing during calls</li>
+                            <li>Group DM (GDM) voice and video calls</li>
+                          </ul>
+                        </section>
+                      </div> 
+                    </div>
+                  </div>
+                )}
+                {tab === 'secrets' && secretsUnlocked && (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <div style={{ border: '1px solid #1f2937', borderRadius: 12, padding: 12, background: '#050c1a', display: 'grid', gap: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.6 }}>Desktop companion</div>
+                        <div style={{ fontSize: 18, fontWeight: 600 }}>Oneko</div>
+                        <p style={{ margin: 0, color: '#94a3b1', fontSize: 13 }}>
+                          Summon the retro cursor-chasing cat. Once enabled it will follow your mouse throughout the app.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSettings((s) => ({ ...s, enableOneko: !s.enableOneko }))}
+                        className="btn-ghost"
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderRadius: 10 }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 600 }}>Enable Oneko</div>
+                          <div style={{ fontSize: 12, color: '#9ca3af' }}>{settings.enableOneko ? 'cat follow mouse (real).' : 'Tap to let the kitty roam again.'}</div>
+                        </div>
+                        <Switch checked={!!settings.enableOneko} />
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                      Saving your settings keeps Oneko enabled between sessions. Use the demo toggle again if you ever want to rediscover other secrets.
+                    </div>
                   </div>
                 )}
                 {tab === 'guides' && (
                   <div style={{ display: 'grid', gap: 14, fontSize: 13 }}>
                     <div style={{ color: '#9ca3af' }}>
-                      Quick tips for using ChitterHaven features. These are read-only; changing them here won’t affect your real messages.
+                      Quick tips for using ChitterHaven features. These are read-only; changing them here won't affect your real messages.
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, marginBottom: 4 }}>Mentions & replies</div>
@@ -697,6 +2088,30 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
                 )}
                 {tab === 'dev' && (
                   <div style={{ display: 'grid', gap: 12, fontSize: 13 }}>
+                    <div style={{ border: '1px solid #1f2937', borderRadius: 10, padding: 10, background: '#020617', display: 'grid', gap: 6 }}>
+                      <div style={{ fontWeight: 600 }}>Demo toggle</div>
+                      <p style={{ margin: 0, color: '#9ca3af', fontSize: 12 }}>
+                        Tap this switch thirty times to unlock the secret settings vault.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDemoToggleArmed((prev) => !prev);
+                          setSecretClicks((prev) => Math.min(SECRET_THRESHOLD, prev + 1));
+                        }}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 10, border: '1px solid #1f2937', background: '#050c1a' }}
+                      >
+                        <div style={{ textAlign: 'left' }}>
+                          <div style={{ fontWeight: 600 }}>Demo mode</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                            {secretsUnlocked
+                              ? 'Secrets unlocked!'
+                              : `${Math.max(0, SECRET_THRESHOLD - secretClicks)} taps to go.`}
+                          </div>
+                        </div>
+                        <Switch checked={demoToggleArmed} />
+                      </button>
+                    </div>
                     <div style={{ color: '#9ca3af' }}>
                       Developer tools and diagnostics. These options are for debugging; they don&apos;t change how messages are stored on the server.
                     </div>
@@ -722,7 +2137,7 @@ export default function UserSettingsModal({ isOpen, onCloseAction, username, onS
           <div style={{ padding: 12, borderTop: '1px solid #2a3344', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: '#07101a' }}>
             <p style={{ margin: 0, color: '#9ca3af', fontSize: 13 }}>Some settings will not properly sync without reloading after.</p>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn-ghost" onClick={onCloseAction} style={{ padding: '6px 10px' }}>Cancel</button>
+              <button className="btn-ghost" onClick={handleCancel} style={{ padding: '6px 10px' }}>Cancel</button>
               <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
             </div>
           </div>

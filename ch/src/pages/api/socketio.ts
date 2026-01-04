@@ -106,17 +106,43 @@ export default function handler(req: NextApiRequest, res: any) {
         socket.to(room).emit("ice-candidate", { room, candidate, from });
       });
       // Broadcast generic call state so all clients (and other user sockets) stay in sync.
-      socket.on("call-state", ({ room, state, from, startedAt, participants }: { room: string; state: string; from: string; startedAt?: number; participants?: any }) => {
+      socket.on("call-state", ({ room, state, from, startedAt, participants }: { room: string; state: string; from: string; startedAt?: number; participants?: any[] }) => {
         if (!room || !state) return;
-        socket.to(room).emit("call-state", { room, state, from, startedAt, participants });
+        const payload = { room, state, from, startedAt, participants };
+        socket.to(room).emit("call-state", payload);
+        const participantUsers = Array.isArray(participants)
+          ? Array.from(new Set(participants.map((entry) => (entry && typeof entry.user === "string" ? entry.user : null)).filter(Boolean) as string[]))
+          : [];
+        participantUsers.forEach((user) => {
+          io?.to(`user:${user}`).emit("call-state", payload);
+        });
       });
       socket.on("call-decline", ({ room, from }: { room: string; from: string }) => {
         if (!room || !from) return;
         socket.to(room).emit("call-decline", { room, from });
       });
-      socket.on("call-ended", ({ room, from, startedAt, endedAt }: { room: string; from: string; startedAt?: number; endedAt?: number }) => {
+      socket.on("call-ended", ({ room, from, startedAt, endedAt, participants }: { room: string; from: string; startedAt?: number; endedAt?: number; participants?: any[] }) => {
         if (!room) return;
-        socket.to(room).emit("call-ended", { room, from, startedAt, endedAt });
+        const payload = { room, from, startedAt, endedAt };
+        socket.to(room).emit("call-ended", payload);
+        const participantUsers = Array.isArray(participants)
+          ? Array.from(new Set(participants.map((entry) => (entry && typeof entry.user === "string" ? entry.user : null)).filter(Boolean) as string[]))
+          : [];
+        participantUsers.forEach((user) => {
+          io?.to(`user:${user}`).emit("call-ended", payload);
+        });
+      });
+      socket.on("dm-added", ({ dm }: { dm: { id: string; users: string[]; title?: string; group?: boolean; owner?: string; moderators?: string[]; avatarUrl?: string } }) => {
+        if (!username || !dm || !Array.isArray(dm?.users) || !dm.users.includes(username)) return;
+        dm.users.forEach((user) => {
+          io?.to(`user:${user}`).emit("dm-added", { dm });
+        });
+      });
+      socket.on("dm-updated", ({ dm }: { dm: { id: string; users: string[]; title?: string; group?: boolean; owner?: string; moderators?: string[]; avatarUrl?: string } }) => {
+        if (!dm || !Array.isArray(dm.users)) return;
+        dm.users.forEach((user) => {
+          io?.to(`user:${user}`).emit("dm-updated", { dm });
+        });
       });
     });
   }
