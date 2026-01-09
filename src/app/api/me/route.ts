@@ -71,6 +71,8 @@ export async function GET(req: NextRequest) {
     }
     const user = JSON.parse(await userObj.text());
     delete user.password;
+    delete user.passwordHash;
+    delete user.passwordSalt;
 
     return NextResponse.json({ user }, { status: 200 });
   } catch {

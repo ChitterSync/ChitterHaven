@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import cookie from "cookie";
 import { verifyJWT } from "./jwt";
+import { getAuthCookie } from "./_lib/authCookie";
 
 type CallSyncBody = {
   room?: string;
@@ -12,14 +12,14 @@ type CallSyncBody = {
 
 const getUsernameFromRequest = (req: NextApiRequest): string | null => {
   try {
-    const cookies = cookie.parse(req.headers.cookie || "");
-    const token = cookies.chitter_token;
+    const token = getAuthCookie(req);
     const payload: any = token ? verifyJWT(token) : null;
     if (payload?.username) return String(payload.username);
   } catch {}
   return null;
 };
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");

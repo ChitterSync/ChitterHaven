@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test:a11y": "node ./scripts/check_dropdown_a11y.js"
     ,
-    "test:call-summary": "node ./scripts/test_history_call_summary.js"
+    "test:call-summary": "node ./scripts/test_history_call_summary.js",
+    "hash-users": "node ./scripts/hash_existing_users.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.744.0",
@@ -24,6 +25,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
+    "scrypt-js": "^3.0.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },

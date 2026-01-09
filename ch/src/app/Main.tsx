@@ -1,14 +1,63 @@
 "use client";
 
+// --- imports (yes, it's a lot).
 import type React from "react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import io, { Socket } from "socket.io-client";
 import ReactMarkdown from "react-markdown";
 import dynamic from "next/dynamic";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faReply, faEdit, faTrash, faGear, faThumbtack, faFaceSmile, faXmark, faAt, faPaperclip, faClockRotateLeft, faUsers, faHashtag, faEnvelope, faPlus, faServer, faBars, faMagnifyingGlass, faPaperPlane, faLock, faPhone, faMicrophone, faMicrophoneSlash, faCopy, faLink, faVolumeXmark, faHouse, faUser, faHeadphonesSimple, faSlash, faVideo, faVideoSlash, faDisplay, faUpRightAndDownLeftFromCenter, faDownLeftAndUpRightToCenter, faUserPlus, faChevronRight, faChevronDown, faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
+import {
+  faReply,
+  faEdit,
+  faTrash,
+  faGear,
+  faThumbtack,
+  faFaceSmile,
+  faXmark,
+  faAt,
+  faPaperclip,
+  faClockRotateLeft,
+  faUsers,
+  faHashtag,
+  faEnvelope,
+  faPlus,
+  faServer,
+  faBars,
+  faMagnifyingGlass,
+  faPaperPlane,
+  faLock,
+  faPhone,
+  faMicrophone,
+  faMicrophoneSlash,
+  faCopy,
+  faLink,
+  faVolumeXmark,
+  faHouse,
+  faUser,
+  faHeadphonesSimple,
+  faSlash,
+  faVideo,
+  faVideoSlash,
+  faDisplay,
+  faUpRightAndDownLeftFromCenter,
+  faDownLeftAndUpRightToCenter,
+  faUserPlus,
+  faChevronRight,
+  faChevronDown,
+  faEye,
+  faEyeSlash,
+} from "@fortawesome/free-solid-svg-icons";
 import { EMOJI_LIST, filterEmojis, CATEGORIES } from "./emojiData";
 import { parseCHInline, resolveCH } from "./chTokens";
+import UpdateNewsModal from "./UpdateNewsModal";
+import {
+  APP_VERSION,
+  UPDATE_LAST_SEEN_KEY,
+  filterHighlightsForAudience,
+  getUpdateEntry,
+  type UpdateHighlight,
+} from "./updateNews";
 
 const ServerSettingsModal = dynamic(() => import("./ServerSettingsModal"));
 const UserSettingsModal = dynamic(() => import("./UserSettingsModal"));
@@ -19,7 +68,9 @@ import ProfilePanel from "./components/ProfilePanel";
 import MobileApp from "./components/MobileApp";
 import Oneko from "./components/Oneko";
 import EmojiPicker from "./components/EmojiPicker";
+import InviteCard, { type InvitePreview } from "./components/InviteCard";
 
+// --- UI constants (aka the stuff you tweak at 2am).
 const SOUND_DIALING = "/sounds/Dialing.wav";
 const SOUND_PING = "/sounds/Ping.wav";
 const SOUND_MUTE = "/sounds/UI/droplet/mute.wav";
@@ -43,6 +94,11 @@ const COLOR_TEXT = "var(--ch-text)";
 const COLOR_TEXT_MUTED = "var(--ch-text-muted)";
 const BORDER = `1px solid ${COLOR_BORDER}`;
 const BORDER_THICK = `2px solid ${COLOR_BORDER}`;
+const INVITE_CODE_RE = /(CHINV-[A-Z0-9]{4,})/i;
+const LOCAL_DESKTOP_NOTIF_KEY = "desktop_notifications_enabled";
+const CALL_REJOIN_KEY = "ch_last_call";
+
+// --- theme + appearance helpers (boring, but necessary).
 type ThemeStop = { color: string; position: number };
 type AppearanceSettings = {
   messageGrouping?: "none" | "compact" | "aggressive";
@@ -54,6 +110,7 @@ type AppearanceSettings = {
   maxContentWidth?: number | null;
   accentIntensity?: "subtle" | "normal" | "bold";
   readingMode?: boolean;
+  fillScreen?: boolean;
 };
 const DEFAULT_CUSTOM_THEME_STOPS: ThemeStop[] = [
   { color: "#60a5fa", position: 0 },
@@ -181,6 +238,7 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
   const accentIntensity = base.accentIntensity === "subtle" || base.accentIntensity === "bold" ? base.accentIntensity : "normal";
   const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
   const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
+  const fillScreen = typeof base.fillScreen === "boolean" ? base.fillScreen : true;
   return {
     messageGrouping,
     messageStyle,
@@ -191,6 +249,7 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
     maxContentWidth,
     accentIntensity,
     readingMode: base.readingMode === true,
+    fillScreen,
   };
 };
 
@@ -210,30 +269,48 @@ const RINGTONES: Record<string, string> = {
 const DEFAULT_RINGTONE_KEY: keyof typeof RINGTONES = "Drive";
 const DEFAULT_RINGTONE_SRC = RINGTONES[DEFAULT_RINGTONE_KEY];
 
-const BASE_HAVENS: Record<string, string[]> = {
-  ChitterHaven: ["general", "random"],
+const BASE_HAVENS: HavenMap = {
+  ChitterHaven: { id: "ChitterHaven", name: "ChitterHaven", channels: ["general", "random"] },
 };
 
-const cloneHavens = (source: Record<string, string[]>) =>
-  Object.fromEntries(Object.entries(source).map(([name, channels]) => [name, [...channels]]));
+const cloneHavens = (source: HavenMap): HavenMap =>
+  Object.fromEntries(
+    Object.entries(source).map(([id, record]) => [id, { ...record, channels: [...record.channels] }]),
+  );
 
-const sanitizeHavens = (raw: any): Record<string, string[]> => {
+const sanitizeHavens = (raw: any): HavenMap => {
   if (!raw || typeof raw !== "object") {
     return cloneHavens(BASE_HAVENS);
   }
-  const cleaned: Record<string, string[]> = {};
-  Object.entries(raw).forEach(([havenName, channels]) => {
-    if (typeof havenName !== "string" || !Array.isArray(channels)) return;
-    const normalized = Array.from(
-      new Set(
-        channels
-          .filter((ch): ch is string => typeof ch === "string")
-          .map((ch) => ch.trim())
-          .filter(Boolean),
-      ),
-    );
-    if (normalized.length > 0) {
-      cleaned[havenName] = normalized;
+  const cleaned: HavenMap = {};
+  Object.entries(raw).forEach(([id, value]) => {
+    if (typeof id !== "string") return;
+    if (Array.isArray(value)) {
+      const normalized = Array.from(
+        new Set(
+          value
+            .filter((ch): ch is string => typeof ch === "string")
+            .map((ch) => ch.trim())
+            .filter(Boolean),
+        ),
+      );
+      if (normalized.length > 0) cleaned[id] = { id, name: id, channels: normalized };
+      return;
+    }
+    if (value && typeof value === "object") {
+      const name = typeof (value as any).name === "string" && (value as any).name.trim().length
+        ? String((value as any).name).trim()
+        : id;
+      const channelsRaw = Array.isArray((value as any).channels) ? (value as any).channels : [];
+      const normalized: string[] = Array.from(
+        new Set(
+          channelsRaw
+            .filter((ch: any): ch is string => typeof ch === "string")
+            .map((ch: string) => ch.trim())
+            .filter(Boolean),
+        ),
+      );
+      if (normalized.length > 0) cleaned[id] = { id, name, channels: normalized };
     }
   });
   return Object.keys(cleaned).length > 0 ? cleaned : cloneHavens(BASE_HAVENS);
@@ -271,6 +348,7 @@ const contrastColorFor = (background?: string, light = "#f8fafc", dark = "#02061
   return luminance > 0.6 ? dark : light;
 };
 
+// --- settings cleanup (because user data is messy).
 const normalizeUserSettings = (raw: any) => {
   const base = { ...(raw || {}) };
   const hasExistingSettings = !!(raw && Object.keys(raw).length);
@@ -312,6 +390,7 @@ const normalizeUserSettings = (raw: any) => {
     : DEFAULT_RINGTONE_KEY;
   base.callRingtone = key;
   base.enableOneko = base.enableOneko === true;
+  base.callrfMobileSizing = base.callrfMobileSizing === true;
   base.appearance = normalizeAppearanceSettings((base as any).appearance, hasExistingSettings);
   if (!base.appearance?.messageStyle) {
     base.appearance = { ...base.appearance, messageStyle: base.chatStyle };
@@ -319,6 +398,13 @@ const normalizeUserSettings = (raw: any) => {
   base.statusMessage = sanitizeStatusMessage((base as any).statusMessage);
   base.dndIsCosmetic = (base as any).dndIsCosmetic === true;
   base.richPresence = sanitizeRichPresence((base as any).richPresence);
+  base.disableMinorUpdatePopups = (base as any).disableMinorUpdatePopups === true;
+  base.disableMajorUpdatePopups = (base as any).disableMajorUpdatePopups === true;
+  base.showReadingModeButton = (base as any).showReadingModeButton !== false;
+  base.showBlockActions = (base as any).showBlockActions !== false;
+  base.blockedUsers = Array.isArray((base as any).blockedUsers)
+    ? Array.from(new Set((base as any).blockedUsers.filter((u: any) => typeof u === "string").map((u: string) => u.trim()).filter(Boolean)))
+    : [];
   base.friendNicknames =
     base.friendNicknames && typeof base.friendNicknames === 'object'
       ? Object.fromEntries(
@@ -348,13 +434,16 @@ const normalizeUserSettings = (raw: any) => {
 // Simple attachment renderers
 type Attachment = { url: string; name: string; type?: string; size?: number };
 const getExt = (name?: string) => (name || "").split(".").pop()?.toLowerCase() || "";
-const isImage = (t?: string, n?: string) => (t || "").startsWith("image/") || ["png","jpg","jpeg","gif","webp","bmp"].includes(getExt(n));
-const isVideo = (t?: string, n?: string) => (t || "").startsWith("video/") || ["mp4","mov","webm","ogg"].includes(getExt(n));
-const isAudio = (t?: string, n?: string) => (t || "").startsWith("audio/") || ["mp3","wav","ogg","m4a"].includes(getExt(n));
+const isImage = (mimeType?: string, filename?: string) =>
+  (mimeType || "").startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(getExt(filename));
+const isVideo = (mimeType?: string, filename?: string) =>
+  (mimeType || "").startsWith("video/") || ["mp4", "mov", "webm", "ogg"].includes(getExt(filename));
+const isAudio = (mimeType?: string, filename?: string) =>
+  (mimeType || "").startsWith("audio/") || ["mp3", "wav", "ogg", "m4a"].includes(getExt(filename));
 
 // Simple, deterministic invite code for a haven (local-only)
-const havenCode = (name: string) => {
-  const base = name.trim() || "haven";
+const havenCode = (havenId: string) => {
+  const base = havenId.trim() || "haven";
   let hash = 0;
   for (let i = 0; i < base.length; i++) {
     hash = ((hash << 5) - hash + base.charCodeAt(i)) | 0;
@@ -363,27 +452,34 @@ const havenCode = (name: string) => {
   return `CH-${code.slice(0, 6)}`;
 };
 
-function AttachmentViewer({ a }: { a: Attachment }) {
-  if (isImage(a.type, a.name)) return (
+const extractInviteCode = (text?: string) => {
+  if (!text || typeof text !== "string") return null;
+  const match = text.match(INVITE_CODE_RE);
+  if (!match || !match[1]) return null;
+  return match[1].toUpperCase();
+};
+
+function AttachmentViewer({ attachment }: { attachment: Attachment }) {
+  if (isImage(attachment.type, attachment.name)) return (
     <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
-      <a href={a.url} target="_blank" rel="noreferrer">
-        <img src={a.url} alt={a.name} style={{ maxWidth: 360, borderRadius: 6 }} />
+      <a href={attachment.url} target="_blank" rel="noreferrer">
+        <img src={attachment.url} alt={attachment.name} style={{ maxWidth: 360, borderRadius: 6 }} />
       </a>
     </div>
   );
-  if (isVideo(a.type, a.name)) return (
+  if (isVideo(attachment.type, attachment.name)) return (
     <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
-      <video src={a.url} controls style={{ maxWidth: 420, borderRadius: 6 }} />
+      <video src={attachment.url} controls style={{ maxWidth: 420, borderRadius: 6 }} />
     </div>
   );
-  if (isAudio(a.type, a.name)) return (
+  if (isAudio(attachment.type, attachment.name)) return (
     <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
-      <audio src={a.url} controls />
+      <audio src={attachment.url} controls />
     </div>
   );
   return (
     <div style={{ border: BORDER, borderRadius: 8, padding: 6, background: COLOR_PANEL }}>
-      <a href={a.url} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{a.name}</a>
+      <a href={attachment.url} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{attachment.name}</a>
     </div>
   );
 }
@@ -403,6 +499,9 @@ type Message = {
 };
 
 type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
+
+type HavenRecord = { id: string; name: string; channels: string[] };
+type HavenMap = Record<string, HavenRecord>;
 
 type CallParticipant = {
   user: string;
@@ -455,7 +554,7 @@ const normalizeParticipantPayload = (incoming: any): CallParticipant | null => {
 
 export default function Main({ username }: { username: string }) {
   const [showServerSettings, setShowServerSettings] = useState(false);
-  // Havens: { [havenName]: string[] (channels) }
+  // Havens: { [havenId]: { id, name, channels } }
   const loadLastLocation = () => {
     if (typeof window === "undefined") return { haven: "__dms__", channel: "", dm: null as string | null };
     try {
@@ -470,7 +569,7 @@ export default function Main({ username }: { username: string }) {
       return { haven: "__dms__", channel: "", dm: null as string | null };
     }
   };
-  const [havens, setHavens] = useState<Record<string, string[]>>(() => cloneHavens(BASE_HAVENS));
+  const [havens, setHavens] = useState<HavenMap>(() => cloneHavens(BASE_HAVENS));
   const [havensLoaded, setHavensLoaded] = useState(false);
   const last = loadLastLocation();
   const [selectedHaven, setSelectedHaven] = useState<string>(last.haven || "__dms__");
@@ -532,6 +631,23 @@ export default function Main({ username }: { username: string }) {
   // Active navigation controller: determines which content is focused.
   const [activeNav, setActiveNav] = useState<string>(() => { try { return localStorage.getItem('activeNav') || 'havens'; } catch { return 'havens'; } });
   useEffect(() => { try { localStorage.setItem('activeNav', activeNav); } catch {} }, [activeNav]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = localStorage.getItem(LOCAL_DESKTOP_NOTIF_KEY);
+      setDesktopNotificationsEnabled(stored === "true");
+    } catch {}
+  }, []);
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const custom = event as CustomEvent<{ enabled: boolean }>;
+      if (custom?.detail && typeof custom.detail.enabled === "boolean") {
+        setDesktopNotificationsEnabled(custom.detail.enabled);
+      }
+    };
+    window.addEventListener("ch_desktop_notifications", handler as EventListener);
+    return () => window.removeEventListener("ch_desktop_notifications", handler as EventListener);
+  }, []);
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickQuery, setQuickQuery] = useState("");
@@ -541,8 +657,14 @@ export default function Main({ username }: { username: string }) {
   const [membersQuery, setMembersQuery] = useState("");
   const [havenMembersLoading, setHavenMembersLoading] = useState(false);
   const havenMembersCacheRef = useRef<Record<string, string[]>>({});
+  const [havenMemberRoles, setHavenMemberRoles] = useState<Record<string, string[]>>({});
   const [showUserSettings, setShowUserSettings] = useState(false);
   const [windowFocused, setWindowFocused] = useState(true);
+  const [invitePreviews, setInvitePreviews] = useState<Record<string, InvitePreview>>({});
+  const [invitePreviewStatus, setInvitePreviewStatus] = useState<Record<string, "loading" | "error" | "ready">>({});
+  const [inviteJoinStatus, setInviteJoinStatus] = useState<Record<string, "idle" | "joining" | "success" | "error">>({});
+  const [inviteErrors, setInviteErrors] = useState<Record<string, string>>({});
+  const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(false);
   type Toast = { id: string; title: string; body?: string; type?: 'info'|'success'|'warn'|'error' };
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [onlineCount, setOnlineCount] = useState<number>(1);
@@ -563,6 +685,37 @@ export default function Main({ username }: { username: string }) {
       }
     } catch {}
   };
+
+  const resolveRoomLabel = useCallback((room: string) => {
+    if (!room) return "ChitterHaven";
+    if (room.includes("__")) {
+      const parts = room.split("__");
+      const haven = parts[0] || "";
+      const channel = parts[1] || "";
+      const havenLabel = getHavenName(haven);
+      return channel ? `${havenLabel} #${channel}` : havenLabel;
+    }
+    const dm = dms.find((entry) => entry.id === room);
+    return dm ? getDMTitle(dm) : "Direct Message";
+  }, [dms]);
+
+  const navigateToRoom = useCallback((room: string) => {
+    if (!room) return;
+    if (room.includes("__")) {
+      const parts = room.split("__");
+      const haven = parts[0] || "";
+      const channel = parts[1] || "";
+      if (haven) {
+        setSelectedHaven(haven);
+        setSelectedChannel(channel || (orderedChannelsFor(haven)[0] || "general"));
+        setSelectedDM(null);
+      }
+      return;
+    }
+    setSelectedHaven("__dms__");
+    setSelectedChannel("");
+    setSelectedDM(room);
+  }, [havens]);
 
   const formatElapsedClock = (seconds: number) => {
     const clamped = Math.max(0, Math.floor(seconds));
@@ -919,9 +1072,15 @@ export default function Main({ username }: { username: string }) {
     socketRef.current?.emit('call-offer', { room: selectedDM, offer: desc, from: username, targets });
   };
 
+  const clearCallRejoin = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.removeItem(CALL_REJOIN_KEY); } catch {}
+  }, []);
+
   const declineCall = (room?: string | null) => {
     const target = room || incomingCall?.room || activeCallDM;
     if (!target) return;
+    clearCallRejoin();
     try {
       if (ringAudioRef.current) {
         ringAudioRef.current.pause();
@@ -946,6 +1105,7 @@ export default function Main({ username }: { username: string }) {
   const endCall = () => {
     const endedRoom = activeCallDM;
     const startedAt = callStartedAt;
+    clearCallRejoin();
     if (endedRoom) {
       socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now(), participants: callParticipantsRef.current });
       try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-end', message: `Call ended in ${endedRoom}`, meta: { room: endedRoom } }) }); } catch {}
@@ -992,7 +1152,7 @@ export default function Main({ username }: { username: string }) {
       (async () => {
         try {
           await postCallSystemMessage(endedRoom, {
-            text: `Voice call ended • Total time ${formatDurationHuman(durationSec)}`,
+            text: `Voice call ended  -  Total time ${formatDurationHuman(durationSec)}`,
             systemType: 'call-summary',
             meta: { durationSec, startedAt, endedAt: Date.now(), initiator: callInitiator },
           });
@@ -1057,7 +1217,7 @@ export default function Main({ username }: { username: string }) {
       socketRef.current?.emit('call-offer', { room: selectedDM, offer, from: username, targets });
       socketRef.current?.emit('call-state', { room: selectedDM, state: 'calling', from: username, participants: syncedRoster });
       await postCallSystemMessage(selectedDM, {
-        text: `Voice call started by ${displayNameFor(username)} • ${formatElapsedClock(0)} elapsed`,
+        text: `Voice call started by ${displayNameFor(username)}  -  ${formatElapsedClock(0)} elapsed`,
         systemType: 'call-start',
         meta: { initiator: username, startedAt: Date.now() },
       });
@@ -1103,8 +1263,14 @@ export default function Main({ username }: { username: string }) {
   const [groupSettingsError, setGroupSettingsError] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<any>(() => normalizeUserSettings({}));
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [localUpdateSeenVersion, setLocalUpdateSeenVersion] = useState<string | null>(null);
+  const [showUpdateNews, setShowUpdateNews] = useState(false);
+  const [updateNewsHighlights, setUpdateNewsHighlights] = useState<UpdateHighlight[]>([]);
+  const [pendingUpdateCheck, setPendingUpdateCheck] = useState(false);
+  const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [dmsLoaded, setDmsLoaded] = useState(false);
   const [friendsLoaded, setFriendsLoaded] = useState(false);
+  const updateEntry = useMemo(() => getUpdateEntry(APP_VERSION), []);
   const accent = userSettings.accentHex || '#60a5fa';
   const boldColor = userSettings.boldColorHex || '#ffffff';
   const italicColor = userSettings.italicColorHex || '#ffffff';
@@ -1119,13 +1285,56 @@ export default function Main({ username }: { username: string }) {
   const maxContentWidth = typeof appearance.maxContentWidth === 'number' ? appearance.maxContentWidth : null;
   const accentIntensity = appearance.accentIntensity || 'normal';
   const readingMode = appearance.readingMode === true;
+  const fillScreen = appearance.fillScreen === true;
+  const overflowDefaultsRef = useRef<{ html: string; body: string; height: string } | null>(null);
   const currentStatus: string = (userSettings.status as string) || 'online';
   const autoIdleEnabled = (userSettings as any).autoIdleEnabled !== false; // default on
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const html = document.documentElement;
+    const body = document.body;
+    if (!overflowDefaultsRef.current) {
+      overflowDefaultsRef.current = {
+        html: html.style.overflow,
+        body: body.style.overflow,
+        height: body.style.height,
+      };
+    }
+    const defaults = overflowDefaultsRef.current;
+    if (fillScreen) {
+      html.style.overflow = "hidden";
+      body.style.overflow = "hidden";
+      body.style.height = "100%";
+      body.dataset.chFillScreen = "true";
+    } else {
+      html.style.overflow = defaults.html;
+      body.style.overflow = defaults.body;
+      body.style.height = defaults.height;
+      delete body.dataset.chFillScreen;
+    }
+    try {
+      window.dispatchEvent(new CustomEvent("ch_fill_screen", { detail: { enabled: fillScreen } }));
+    } catch {}
+    return () => {
+      html.style.overflow = defaults.html;
+      body.style.overflow = defaults.body;
+      body.style.height = defaults.height;
+      delete body.dataset.chFillScreen;
+    };
+  }, [fillScreen]);
   const [autoIdle, setAutoIdle] = useState(false);
   const lastActivityRef = useRef<number>(Date.now());
   const idleTimeoutMs = 5 * 60 * 1000; // 5 minutes
   const labelHavens = userSettings.callHavensServers ? 'Servers' : 'Havens';
   const labelHaven = userSettings.callHavensServers ? 'Server' : 'Haven';
+  const getHavenName = useCallback((id: string) => havens[id]?.name || id, [havens]);
+  const getHavenChannels = useCallback((id: string) => havens[id]?.channels || [], [havens]);
+  const findHavenIdByName = useCallback((name: string) => {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) return null;
+    const match = Object.values(havens).find((entry) => entry.name.toLowerCase() === normalized);
+    return match ? match.id : null;
+  }, [havens]);
   const showTipsBanner = userSettings.showTips !== false;
   const callsEnabled = (userSettings as any).callsEnabled !== false;
   const callRingSound = (userSettings as any).callRingSound !== false;
@@ -1140,6 +1349,10 @@ export default function Main({ username }: { username: string }) {
   const streamerMode = !!(userSettings as any).streamerMode;
   const streamerModeStyle: 'blur' | 'shorten' = (userSettings as any).streamerModeStyle === 'shorten' ? 'shorten' : 'blur';
   const streamerModeHoverReveal = (userSettings as any).streamerModeHoverReveal !== false;
+  const showReadingModeButton = (userSettings as any).showReadingModeButton !== false;
+  const showBlockActions = (userSettings as any).showBlockActions !== false;
+  const allowMobileSizing = (userSettings as any).callrfMobileSizing === true;
+  const blockedUsers = useMemo(() => new Set(Array.isArray((userSettings as any).blockedUsers) ? (userSettings as any).blockedUsers : []), [userSettings]);
   const messageStyle: AppearanceSettings["messageStyle"] =
     appearance.messageStyle ||
     (userSettings.chatStyle === 'classic' || userSettings.chatStyle === 'bubbles' || userSettings.chatStyle === 'minimal_log' || userSettings.chatStyle === 'focus' || userSettings.chatStyle === 'thread_forward' || userSettings.chatStyle === 'retro'
@@ -1152,6 +1365,24 @@ export default function Main({ username }: { username: string }) {
   const isThreadForward = messageStyle === 'thread_forward';
   const isRetro = messageStyle === 'retro';
   const isSleek = messageStyle === 'sleek';
+  const maybeNotifyDesktop = useCallback((opts: { room: string; sender: string; text?: string }) => {
+    if (!desktopNotificationsEnabled) return;
+    if (typeof window === "undefined" || typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    if (windowFocused && typeof document !== "undefined" && !document.hidden) return;
+    const privacyMode = streamerMode || blurOnUnfocused;
+    const label = resolveRoomLabel(opts.room);
+    const title = privacyMode ? "New message" : `${label} - @${opts.sender}`;
+    const body = privacyMode ? "Open ChitterHaven to view messages." : (opts.text || "").slice(0, 140);
+    try {
+      const notification = new Notification(title, { body });
+      notification.onclick = () => {
+        try { window.focus(); } catch {}
+        navigateToRoom(opts.room);
+        try { notification.close(); } catch {}
+      };
+    } catch {}
+  }, [blurOnUnfocused, desktopNotificationsEnabled, navigateToRoom, resolveRoomLabel, streamerMode, windowFocused]);
   const replyCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     messages.forEach((m) => {
@@ -1211,6 +1442,22 @@ export default function Main({ username }: { username: string }) {
     return presenceMap[user] || 'offline';
   };
   const isUserOnline = (user: string) => statusForUser(user) !== 'offline';
+  const ROLE_PRIORITY: Record<string, number> = { Owner: 0, Admin: 1, Moderator: 2, Member: 3, Guest: 4 };
+  const rolePriorityFor = (user: string) => {
+    const roles = havenMemberRoles[user] || [];
+    let rank = 99;
+    roles.forEach((role) => {
+      const score = ROLE_PRIORITY[role] ?? 50;
+      if (score < rank) rank = score;
+    });
+    return rank;
+  };
+  const sortChannels = useCallback((channels: string[]) => {
+    return channels.slice().sort((a, b) => a.localeCompare(b));
+  }, []);
+  const orderedChannelsFor = useCallback((havenId: string) => {
+    return sortChannels(getHavenChannels(havenId));
+  }, [getHavenChannels, sortChannels]);
   const isBooting = !(settingsLoaded && dmsLoaded && friendsLoaded);
   const [havenFilter, setHavenFilter] = useState("");
   const [havenSearchOpen, setHavenSearchOpen] = useState(false);
@@ -1236,6 +1483,51 @@ export default function Main({ username }: { username: string }) {
     hasJoinedCallRef.current = joined;
     setHasJoinedCall(joined);
   };
+  const [callState, setCallState] = useState<'idle' | 'calling' | 'in-call'>('idle');
+  const callStateRef = useRef(callState);
+  useEffect(() => { callStateRef.current = callState; }, [callState]);
+  const callEndTimerRef = useRef<number | null>(null);
+  const ringFallbackTimerRef = useRef<number | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const localAudioRef = useRef<HTMLAudioElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipLocalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const screenShareStreamRef = useRef<MediaStream | null>(null);
+  const cameraSendersRef = useRef<RTCRtpSender[]>([]);
+  const screenShareSendersRef = useRef<RTCRtpSender[]>([]);
+  const [pipSize, setPipSize] = useState<{ width: number; height: number }>({
+    width: DEFAULT_PIP_WIDTH,
+    height: DEFAULT_PIP_HEIGHT,
+  });
+  const [pipPosition, setPipPosition] = useState<{ x: number; y: number }>({
+    x: PIP_MARGIN,
+    y: PIP_TOP_MARGIN,
+  });
+  const pipInteractionRef = useRef<{
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    originWidth: number;
+    originHeight: number;
+  } | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const isScreenSharingRef = useRef(isScreenSharing);
+  const [showFullscreenCall, setShowFullscreenCall] = useState(false);
+  const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false);
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const renegotiationLockRef = useRef(false);
   const [userProfileCache, setUserProfileCache] = useState<Record<string, { displayName: string; avatarUrl: string }>>({});
   const [streamerRevealKey, setStreamerRevealKey] = useState<string | null>(null);
   const beginStreamerReveal = useCallback((key: string) => {
@@ -1244,6 +1536,15 @@ export default function Main({ username }: { username: string }) {
   const endStreamerReveal = useCallback((key: string) => {
     setStreamerRevealKey((prev) => (prev === key ? null : prev));
   }, []);
+  const markAvatarLoaded = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    event.currentTarget.dataset.loaded = "true";
+  }, []);
+  const avatarLoadProps = {
+    "data-avatar": "true",
+    "data-loaded": "false",
+    onLoad: markAvatarLoaded,
+    onError: markAvatarLoaded,
+  } as const;
   type DisplayNameOptions = { haven?: string | null; allowFriend?: boolean; fallback?: string };
   const displayNameFor = (user: string, opts?: DisplayNameOptions) => {
     const havenKey =
@@ -1281,14 +1582,16 @@ export default function Main({ username }: { username: string }) {
     const lightness = offset ? 58 : 45;
     return `hsl(${hue}, 70%, ${lightness}%)`;
   };
-  const havenBadgeFor = (name: string) => {
+  const havenBadgeFor = (havenId: string) => {
+    const name = getHavenName(havenId);
     return {
       background: `linear-gradient(135deg, ${colorForString(name)}, ${colorForString(name, 1)})`,
       initials: initialsFor(name).slice(0, 2),
     };
   };
-  const renderHavenLabel = (name: string, revealKey: string) => {
-    return renderDisplayName(`haven:${name}`, { labelOverride: name, revealKey });
+  const renderHavenLabel = (havenId: string, revealKey: string) => {
+    const name = getHavenName(havenId);
+    return renderDisplayName(`haven:${havenId}`, { labelOverride: name, revealKey });
   };
   const renderFriendRow = (
     user: string,
@@ -1322,6 +1625,7 @@ export default function Main({ username }: { username: string }) {
           <img
             src={avatar}
             alt={user}
+            {...avatarLoadProps}
             style={{ width: 36, height: 36, borderRadius: '50%', border: BORDER, objectFit: 'cover' }}
           />
           <span
@@ -1412,14 +1716,14 @@ export default function Main({ username }: { username: string }) {
     const members = dmMembersWithoutSelf(dm);
     if (!members.length) return renderDisplayName('dm:unknown', { labelOverride: 'Direct Message', revealKey });
     return (
-      <>
+      <Fragment>
         {members.map((user, idx) => (
           <Fragment key={`${dm.id || 'dm'}-${user}`}>
             {idx > 0 && ', '}
             {renderDisplayName(user, { revealKey })}
           </Fragment>
         ))}
-      </>
+      </Fragment>
     );
   };
   const renderDMHandles = (dm?: DMThread | null) => {
@@ -1485,10 +1789,10 @@ export default function Main({ username }: { username: string }) {
   }, []);
   const shortenName = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed) return "…";
-    if (trimmed.length <= 2) return `${trimmed.slice(0, 1)}…`;
-    if (trimmed.length <= 4) return `${trimmed.slice(0, 2)}…`;
-    return `${trimmed.slice(0, 1)}…${trimmed.slice(-1)}`;
+    if (!trimmed) return "...";
+    if (trimmed.length <= 2) return `${trimmed.slice(0, 1)}...`;
+    if (trimmed.length <= 4) return `${trimmed.slice(0, 2)}...`;
+    return `${trimmed.slice(0, 1)}...${trimmed.slice(-1)}`;
   };
   const renderDisplayName = (
     user: string,
@@ -1588,6 +1892,62 @@ export default function Main({ username }: { username: string }) {
   useEffect(() => {
     callParticipantsRef.current = callParticipants;
   }, [callParticipants]);
+  const rejoinCall = useCallback(async (room: string) => {
+    if (!room || callStateRef.current !== 'idle') return;
+    if (!callsEnabled) return;
+    const dm = dms.find(d => d.id === room);
+    if (!dm) {
+      clearCallRejoin();
+      return;
+    }
+    try {
+      setCallError(null);
+      setCallState('calling');
+      setActiveCallDM(room);
+      setIncomingCall(null);
+      setCallInitiator(null);
+      setCallSummarySent(false);
+      setCallStartedAt(null);
+      const initialRoster = Array.from(new Set([username, ...dm.users]))
+        .filter(Boolean)
+        .map(user => ({
+          user,
+          status: user === username ? 'connected' as const : 'ringing' as const,
+          muted: user === username ? isMuted : undefined,
+          deafened: user === username ? isDeafened : undefined,
+          videoEnabled: user === username ? isCameraOn : undefined,
+          screenSharing: user === username ? isScreenSharing : undefined,
+        }));
+      const syncedRoster = applyParticipantUpdate(initialRoster, { reset: true });
+      if (dialingAudioRef.current) {
+        try {
+          dialingAudioRef.current.pause();
+          dialingAudioRef.current.currentTime = 0;
+        } catch {}
+        dialingAudioRef.current = null;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      markJoined(true);
+      if (localAudioRef.current) {
+        localAudioRef.current.srcObject = stream;
+      }
+      const pc = setupPeer();
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const targets = dm.users.filter(u => u !== username);
+      pendingOfferRef.current = null;
+      socketRef.current?.emit('call-offer', { room, offer, from: username, targets });
+      socketRef.current?.emit('call-state', { room, state: 'calling', from: username, participants: syncedRoster });
+      updateSelfParticipant({ muted: isMuted, deafened: isDeafened, status: 'connected', videoEnabled: isCameraOn, screenSharing: isScreenSharing });
+    } catch (e: any) {
+      setCallState('idle');
+      markJoined(false);
+      setCallError(e?.message || 'Could not rejoin call');
+      clearCallRejoin();
+    }
+  }, [applyParticipantUpdate, callsEnabled, clearCallRejoin, dms, isCameraOn, isDeafened, isMuted, isScreenSharing, updateSelfParticipant, username]);
   useEffect(() => {
     if (!callRosterDirtyRef.current) return;
     const timer = window.setTimeout(() => {
@@ -1600,6 +1960,7 @@ export default function Main({ username }: { username: string }) {
       if (callStateRef.current === 'idle') return;
       const room = activeCallDM || selectedDM;
       if (!room) return;
+      try { localStorage.setItem(CALL_REJOIN_KEY, JSON.stringify({ room, at: Date.now() })); } catch {}
       const remaining = callParticipantsRef.current.filter((p) => p.user !== username);
       const nextState: 'idle' | 'calling' | 'in-call' = remaining.length ? callStateRef.current : 'idle';
       emitCallStateUpdate({ room, participants: remaining, state: nextState, useBeacon: true });
@@ -1609,6 +1970,14 @@ export default function Main({ username }: { username: string }) {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [activeCallDM, selectedDM, username, emitCallStateUpdate]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (callState !== 'idle' && activeCallDM) {
+      try { localStorage.setItem(CALL_REJOIN_KEY, JSON.stringify({ room: activeCallDM, at: Date.now() })); } catch {}
+    } else {
+      clearCallRejoin();
+    }
+  }, [callState, activeCallDM, clearCallRejoin]);
   const [havenIcons, setHavenIcons] = useState<Record<string, string>>({});
   const [havenOrder, setHavenOrder] = useState<string[]>(() => {
     if (typeof window !== "undefined") {
@@ -1624,6 +1993,7 @@ export default function Main({ username }: { username: string }) {
   // Context menu
   type CtxTarget = { type: 'message'|'channel'|'dm'|'blank'|'attachment'|'call'; id?: string; data?: any; debug?: boolean };
   const [ctxMenu, setCtxMenu] = useState<{ open: boolean; x: number; y: number; target: CtxTarget } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<null | { title: string; body: string; confirmLabel: string; onConfirm: () => void }>(null);
   const [collapsedSystemMessages, setCollapsedSystemMessages] = useState<Record<string, boolean>>({});
   const [focusHoverGroupId, setFocusHoverGroupId] = useState<string | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -1647,60 +2017,16 @@ export default function Main({ username }: { username: string }) {
     canUpload: boolean;
   }>({ canPin: true, canManageMessages: true, canManageServer: true, canManageChannels: true, canSend: true, canReact: true, canUpload: true });
   const [adminQuickButtons, setAdminQuickButtons] = useState<{ own: string[]; others: string[] } | null>(null);
-  const [callState, setCallState] = useState<'idle' | 'calling' | 'in-call'>('idle');
-  const callStateRef = useRef(callState);
-  useEffect(() => { callStateRef.current = callState; }, [callState]);
-  const callEndTimerRef = useRef<number | null>(null);
-  const ringFallbackTimerRef = useRef<number | null>(null);
-  const [callError, setCallError] = useState<string | null>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null);
-  const localAudioRef = useRef<HTMLAudioElement | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
-  const pipLocalVideoRef = useRef<HTMLVideoElement | null>(null);
-  const pipRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-  const screenShareStreamRef = useRef<MediaStream | null>(null);
-  const cameraSendersRef = useRef<RTCRtpSender[]>([]);
-  const screenShareSendersRef = useRef<RTCRtpSender[]>([]);
-  const [pipSize, setPipSize] = useState<{ width: number; height: number }>({
-    width: DEFAULT_PIP_WIDTH,
-    height: DEFAULT_PIP_HEIGHT,
-  });
-  const [pipPosition, setPipPosition] = useState<{ x: number; y: number }>({
-    x: PIP_MARGIN,
-    y: PIP_TOP_MARGIN,
-  });
-  const pipInteractionRef = useRef<{
-    mode: "move" | "resize";
-    startX: number;
-    startY: number;
-    originX: number;
-    originY: number;
-    originWidth: number;
-    originHeight: number;
-  } | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isDeafened, setIsDeafened] = useState(false);
-  const [isCameraOn, setIsCameraOn] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const isScreenSharingRef = useRef(isScreenSharing);
-  const [showFullscreenCall, setShowFullscreenCall] = useState(false);
-  const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false);
-  const [screenShareError, setScreenShareError] = useState<string | null>(null);
-  const renegotiationLockRef = useRef(false);
+
   const requestRenegotiation = useCallback(async () => {
     const pc = pcRef.current;
     const room = activeCallDM || selectedDM;
     if (!pc || !room || callStateRef.current !== 'in-call' || renegotiationLockRef.current) return;
-    if (pc.signalingState === 'closed') return;
+    if ((pc as any).signalingState === 'closed' || (pc as any).connectionState === 'closed') return;
     renegotiationLockRef.current = true;
     try {
       const offer = await pc.createOffer();
-      if (pc.signalingState === 'closed') return;
+      if ((pc as any).signalingState === 'closed' || (pc as any).connectionState === 'closed') return;
       await pc.setLocalDescription(offer);
       socketRef.current?.emit('call-renegotiate', { room, offer, from: username });
     } catch (err) {
@@ -1720,11 +2046,11 @@ export default function Main({ username }: { username: string }) {
     if (callState === 'idle') return null;
     if (activeCallDM) {
       const dm = dms.find((d) => d.id === activeCallDM);
-      const label = isGroupDMThread(dm) ? `Group DM • ${getDMTitle(dm)}` : `DM • ${getDMTitle(dm)}`;
+      const label = isGroupDMThread(dm) ? `Group DM  -  ${getDMTitle(dm)}` : `DM  -  ${getDMTitle(dm)}`;
       return { type: 'dm', label, channel: null as string | null };
     }
     if (selectedHaven !== '__dms__' && selectedChannel) {
-      return { type: 'channel', label: `${selectedHaven} • #${selectedChannel}`, channel: selectedChannel };
+      return { type: 'channel', label: `${getHavenName(selectedHaven)}  -  #${selectedChannel}`, channel: selectedChannel };
     }
     return { type: 'unknown', label: 'Active Call', channel: null as string | null };
   };
@@ -1926,7 +2252,7 @@ export default function Main({ username }: { username: string }) {
         setSelectedChannel('');
       }
     } else {
-      const channels = havens[selectedHaven] || [];
+      const channels = orderedChannelsFor(selectedHaven);
       if (!channels.includes(selectedChannel)) {
         setSelectedChannel(channels[0] || '');
       }
@@ -1976,9 +2302,12 @@ export default function Main({ username }: { username: string }) {
       const r = await fetch('/api/settings');
       const d = await r.json();
       const payload = d && typeof d === 'object' && 'settings' in d ? (d.settings as any) : d;
+      const isEmpty = !payload || (typeof payload === 'object' && Object.keys(payload).length === 0);
+      setIsFirstLogin(isEmpty);
       setUserSettings(normalizeUserSettings(payload));
       applyRemoteHavens(payload?.havens);
     } catch {
+      setIsFirstLogin(false);
       setUserSettings(normalizeUserSettings({}));
       applyRemoteHavens(null);
     } finally {
@@ -1999,7 +2328,137 @@ export default function Main({ username }: { username: string }) {
       });
     } catch {}
   }, [userSettings]);
+  const updateUserSettings = useCallback(async (patch: Record<string, any>) => {
+    const next = normalizeUserSettings({ ...userSettings, ...patch });
+    setUserSettings(next);
+    try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: next })); } catch {}
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+    } catch {}
+  }, [userSettings]);
+  const toggleBlockUser = useCallback(async (target: string, nextBlocked: boolean) => {
+    if (!target) return;
+    const current = Array.isArray((userSettings as any).blockedUsers) ? (userSettings as any).blockedUsers : [];
+    const updated = nextBlocked
+      ? Array.from(new Set([...current, target]))
+      : current.filter((u: string) => u !== target);
+    await updateUserSettings({ blockedUsers: updated });
+  }, [updateUserSettings, userSettings]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = localStorage.getItem(UPDATE_LAST_SEEN_KEY);
+      if (saved) setLocalUpdateSeenVersion(saved);
+    } catch {}
+  }, []);
   useEffect(() => { loadUserSettings(); }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!dmsLoaded || !settingsLoaded) return;
+    if (callStateRef.current !== 'idle') return;
+    try {
+      const raw = window.localStorage.getItem(CALL_REJOIN_KEY);
+      if (!raw) return;
+      const payload = JSON.parse(raw);
+      const room = typeof payload?.room === 'string' ? payload.room : '';
+      const age = typeof payload?.at === 'number' ? Date.now() - payload.at : Number.POSITIVE_INFINITY;
+      if (!room || age > 5 * 60 * 1000) {
+        clearCallRejoin();
+        return;
+      }
+      setSelectedHaven('__dms__');
+      setSelectedDM(room);
+      rejoinCall(room);
+    } catch {
+      clearCallRejoin();
+    }
+  }, [dmsLoaded, settingsLoaded, rejoinCall, clearCallRejoin]);
+
+  const updateAudienceContext = useMemo(
+    () => ({
+      isMobile,
+      isAdmin: permState.canManageServer,
+      isMod: permState.canManageMessages || permState.canManageChannels,
+    }),
+    [isMobile, permState.canManageChannels, permState.canManageMessages, permState.canManageServer],
+  );
+
+  const markUpdateNewsSeen = useCallback(async () => {
+    setShowUpdateNews(false);
+    setPendingUpdateCheck(false);
+    setLocalUpdateSeenVersion(APP_VERSION);
+    setUserSettings((prev: any) => ({ ...(prev || {}), lastSeenUpdateVersion: APP_VERSION }));
+    try { localStorage.setItem(UPDATE_LAST_SEEN_KEY, APP_VERSION); } catch {}
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastSeenUpdateVersion: APP_VERSION }),
+      });
+    } catch {}
+  }, []);
+
+  const handleViewReleaseNotes = useCallback(() => {
+    void markUpdateNewsSeen();
+    if (typeof window !== "undefined") {
+      window.location.assign("/release-notes");
+    }
+  }, [markUpdateNewsSeen]);
+
+  const evaluateUpdateNews = useCallback(() => {
+    if (!settingsLoaded || !updateEntry) return;
+    if (showUpdateNews) return;
+    if (isFirstLogin) return;
+    if (localUpdateSeenVersion === APP_VERSION || userSettings?.lastSeenUpdateVersion === APP_VERSION) return;
+    if (userSettings?.streamerMode) return;
+    if (userSettings?.blurOnUnfocused && typeof document !== "undefined" && !document.hasFocus()) {
+      setPendingUpdateCheck(true);
+      return;
+    }
+    const filteredHighlights = filterHighlightsForAudience(updateEntry, updateAudienceContext);
+    const allowMajor = userSettings?.disableMajorUpdatePopups !== true;
+    const autoHighlights = filteredHighlights.filter(
+      (item) => item.severity === "security" || (item.severity === "major" && allowMajor),
+    );
+    if (autoHighlights.length === 0) return;
+    setUpdateNewsHighlights(autoHighlights);
+    setShowUpdateNews(true);
+    setPendingUpdateCheck(false);
+  }, [
+    settingsLoaded,
+    updateEntry,
+    showUpdateNews,
+    isFirstLogin,
+    localUpdateSeenVersion,
+    userSettings?.lastSeenUpdateVersion,
+    userSettings?.streamerMode,
+    userSettings?.blurOnUnfocused,
+    userSettings?.disableMajorUpdatePopups,
+    updateAudienceContext,
+  ]);
+
+  useEffect(() => {
+    evaluateUpdateNews();
+  }, [evaluateUpdateNews]);
+
+  useEffect(() => {
+    if (!pendingUpdateCheck) return;
+    const handleFocus = () => {
+      if (typeof document !== "undefined" && document.hasFocus()) {
+        evaluateUpdateNews();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+    };
+  }, [pendingUpdateCheck, evaluateUpdateNews]);
 
   // Load friends lists for DMs home
   const reloadFriends = async () => {
@@ -2282,12 +2741,17 @@ export default function Main({ username }: { username: string }) {
   useEffect(() => {
     const onResize = () => {
       if (typeof window === 'undefined') return;
+      if (!allowMobileSizing) {
+        setIsMobile(false);
+        setShowMobileNav(false);
+        return;
+      }
       setIsMobile(window.innerWidth < 768);
     };
     onResize();
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [allowMobileSizing]);
 
   // Load messages for selected channel or DM
   useEffect(() => {
@@ -2318,6 +2782,7 @@ export default function Main({ username }: { username: string }) {
       if (msg.user !== username) {
         const isMention = (msg.text || '').includes(`@${username}`);
         notify({ title: isMention ? 'Mention' : 'New message', body: `${msg.user}: ${(msg.text || '').slice(0, 80)}`, type: isMention ? 'success' : 'info' });
+        maybeNotifyDesktop({ room, sender: msg.user, text: msg.text || '' });
       }
     };
     const handleReact = (payload: { message: Message }) => setMessages(prev => prev.map(m => m.id === payload.message.id ? payload.message : m));
@@ -2417,6 +2882,50 @@ export default function Main({ username }: { username: string }) {
     });
   }, [messages, chResolved]);
 
+  useEffect(() => {
+    const codes = new Set<string>();
+    messages.forEach((msg) => {
+      const code = extractInviteCode(msg.text);
+      if (code) codes.add(code);
+    });
+    codes.forEach((code) => {
+      if (invitePreviews[code] || invitePreviewStatus[code]) return;
+      setInvitePreviewStatus((prev) => ({ ...prev, [code]: "loading" }));
+      fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "preview", code }),
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data?.error || "Invite unavailable");
+          }
+          const preview: InvitePreview = {
+            code: data?.invite?.code || code,
+            haven: data?.invite?.haven || data?.haven?.name || code,
+            name: data?.haven?.name || data?.invite?.haven || code,
+            icon: data?.haven?.icon || null,
+            memberCount: typeof data?.haven?.memberCount === "number" ? data.haven.memberCount : null,
+            maxUses: data?.invite?.maxUses ?? null,
+            uses: data?.invite?.uses ?? null,
+            expiresAt: data?.invite?.expiresAt ?? null,
+          };
+          setInvitePreviews((prev) => ({ ...prev, [code]: preview }));
+          setInvitePreviewStatus((prev) => ({ ...prev, [code]: "ready" }));
+          setInviteErrors((prev) => {
+            const next = { ...prev };
+            delete next[code];
+            return next;
+          });
+        })
+        .catch((err: any) => {
+          setInvitePreviewStatus((prev) => ({ ...prev, [code]: "error" }));
+          setInviteErrors((prev) => ({ ...prev, [code]: err?.message || "Invite unavailable" }));
+        });
+    });
+  }, [messages, invitePreviews, invitePreviewStatus]);
+
   const loadHavenMembers = useCallback(
     async (target: string, opts?: { force?: boolean }) => {
       if (!target || target === '__dms__') return;
@@ -2485,6 +2994,7 @@ export default function Main({ username }: { username: string }) {
       .then(data => {
         if (ignore) return;
         const perms = data?.permissions || {};
+        setHavenMemberRoles((perms.members || {}) as Record<string, string[]>);
         const rolesMap: Record<string, string[]> = perms.roles || {};
         const memberRoles: string[] = (perms.members?.[username] || []) as string[];
         const everyone: string[] = (perms.defaults?.everyone || []) as string[];
@@ -2515,6 +3025,7 @@ export default function Main({ username }: { username: string }) {
       })
       .catch(() => {
         if (ignore) return;
+        setHavenMemberRoles({});
         setPermState({ canPin: true, canManageMessages: true, canManageServer: true, canManageChannels: true, canSend: true, canReact: true, canUpload: true });
         setAdminQuickButtons(null);
       });
@@ -2968,22 +3479,24 @@ export default function Main({ username }: { username: string }) {
         const next = prompt('Rename channel', ch);
         if (next && next !== ch) {
           setHavens(prev => {
-            const arr = (prev[selectedHaven] || []).slice();
+            const current = prev[selectedHaven];
+            if (!current) return prev;
+            const arr = current.channels.slice();
             const idx = arr.indexOf(ch);
             if (idx >= 0) arr[idx] = next;
-            const out = { ...prev, [selectedHaven]: arr };
-            return out;
+            return { ...prev, [selectedHaven]: { ...current, channels: arr } };
           });
           if (selectedChannel === ch) setSelectedChannel(next);
         }
       }
       if (act === 'delete' && permState.canManageChannels) {
         setHavens(prev => {
-          const arr = (prev[selectedHaven] || []).filter(c => c !== ch);
-          const out = { ...prev, [selectedHaven]: arr };
-          return out;
+          const current = prev[selectedHaven];
+          if (!current) return prev;
+          const arr = current.channels.filter(c => c !== ch);
+          return { ...prev, [selectedHaven]: { ...current, channels: arr } };
         });
-        if (selectedChannel === ch) setSelectedChannel(havens[selectedHaven]?.[0] || '');
+        if (selectedChannel === ch) setSelectedChannel(orderedChannelsFor(selectedHaven)[0] || '');
       }
     }
     if (t.type === 'dm' && t.data) {
@@ -3066,14 +3579,15 @@ export default function Main({ username }: { username: string }) {
   type QuickItem = { id: string; label: string; type: 'haven'|'channel'|'dm'|'dmhome'; haven?: string; channel?: string; dmId?: string };
   const getQuickItems = (): QuickItem[] => {
     const items: QuickItem[] = [];
-    items.push({ id: 'd:home', label: 'Friends — Direct Messages', type: 'dmhome' });
+    items.push({ id: 'd:home', label: 'Friends  -  Direct Messages', type: 'dmhome' });
     Object.keys(havens).forEach(h => {
-      items.push({ id: `h:${h}`, label: `Haven · ${h}`, type: 'haven', haven: h });
-      (havens[h] || []).forEach(ch => items.push({ id: `c:${h}:${ch}`, label: `#${ch} — ${h}`, type: 'channel', haven: h, channel: ch }));
+      const havenName = getHavenName(h);
+      items.push({ id: `h:${h}`, label: `Haven  -  ${havenName}`, type: 'haven', haven: h });
+      orderedChannelsFor(h).forEach(ch => items.push({ id: `c:${h}:${ch}`, label: `#${ch}  -  ${havenName}`, type: 'channel', haven: h, channel: ch }));
     });
     dms.forEach(dm => {
       const prefix = isGroupDMThread(dm) ? 'Group DM' : 'DM';
-      items.push({ id: `d:${dm.id}`, label: `${prefix} · ${getDMTitle(dm)}`, type: 'dm', dmId: dm.id });
+      items.push({ id: `d:${dm.id}`, label: `${prefix}  -  ${getDMTitle(dm)}`, type: 'dm', dmId: dm.id });
     });
     return items;
   };
@@ -3091,7 +3605,7 @@ export default function Main({ username }: { username: string }) {
     } else if (it.type === 'haven' && it.haven) {
       setSelectedHaven(it.haven);
       setSelectedDM(null);
-      setSelectedChannel(havens[it.haven]?.[0] || '');
+      setSelectedChannel(getHavenChannels(it.haven)[0] || '');
     } else if (it.type === 'channel' && it.haven && it.channel) {
       setSelectedHaven(it.haven);
       setSelectedDM(null);
@@ -3276,7 +3790,8 @@ export default function Main({ username }: { username: string }) {
   const handleHavenChange = (haven: string) => {
     setSelectedHaven(haven);
     // Default to first channel in haven
-    setSelectedChannel(havens[haven][0] || "");
+    const channels = orderedChannelsFor(haven);
+    setSelectedChannel(channels[0] || "");
   };
 
   const navigateToLocation = (loc: { haven?: string; channel?: string; dm?: string | null }) => {
@@ -3288,7 +3803,7 @@ export default function Main({ username }: { username: string }) {
       if (loc.channel) {
         setSelectedChannel(loc.channel);
       } else {
-        setSelectedChannel(havens[loc.haven]?.[0] || "");
+        setSelectedChannel(orderedChannelsFor(loc.haven)[0] || "");
       }
       return;
     }
@@ -3332,13 +3847,95 @@ export default function Main({ username }: { username: string }) {
     }
   };
 
+  const joinInvite = async (code: string) => {
+    const normalized = code.trim().toUpperCase();
+    if (!normalized) return;
+    setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "joining" }));
+    try {
+      let preview = invitePreviews[normalized];
+      if (!preview) {
+        try {
+          const previewRes = await fetch("/api/invite", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "preview", code: normalized }),
+          });
+          const previewData = await previewRes.json().catch(() => ({}));
+          if (previewRes.ok) {
+            preview = {
+              code: previewData?.invite?.code || normalized,
+              haven: previewData?.invite?.haven || normalized,
+              name: previewData?.haven?.name || previewData?.invite?.haven || normalized,
+              icon: previewData?.haven?.icon || null,
+              memberCount: typeof previewData?.haven?.memberCount === "number" ? previewData.haven.memberCount : null,
+              maxUses: previewData?.invite?.maxUses ?? null,
+              uses: previewData?.invite?.uses ?? null,
+              expiresAt: previewData?.invite?.expiresAt ?? null,
+            } as InvitePreview;
+            setInvitePreviews((prev) => ({ ...prev, [normalized]: preview! }));
+            setInvitePreviewStatus((prev) => ({ ...prev, [normalized]: "ready" }));
+            setInviteErrors((prev) => {
+              const next = { ...prev };
+              delete next[normalized];
+              return next;
+            });
+          }
+        } catch {}
+      }
+      const previewHaven = preview?.haven;
+      if (previewHaven && havens[previewHaven]) {
+        setSelectedHaven(previewHaven);
+        setSelectedChannel(orderedChannelsFor(previewHaven)[0] || "general");
+        setSelectedDM(null);
+        setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "success" }));
+        notify({ title: "Opened server", body: preview?.name || getHavenName(previewHaven), type: "success" });
+        return;
+      }
+      const res = await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "consume", code: normalized }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.haven) {
+        throw new Error(data?.error || "Invite invalid");
+      }
+      const havenId = String(data.haven);
+      const havenDisplay = data?.info?.name || havenId;
+      const alreadyJoined = !!havens[havenId];
+      if (!alreadyJoined) {
+        setHavens((prev) => ({
+          ...prev,
+          [havenId]: prev[havenId]?.channels?.length
+            ? prev[havenId]
+            : { id: havenId, name: havenDisplay, channels: ["general"] },
+        }));
+      }
+      setSelectedHaven(havenId);
+      setSelectedChannel(orderedChannelsFor(havenId)[0] || "general");
+      setSelectedDM(null);
+      notify({
+        title: alreadyJoined ? "Opened server" : "Joined server",
+        body: havenDisplay,
+        type: "success",
+      });
+      setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "success" }));
+    } catch (err: any) {
+      notify({ title: "Invite error", body: err?.message || "Invite invalid", type: "error" });
+      setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "error" }));
+    }
+  };
+
   const handleCreateChannel = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const name = newChannel.trim().replace(/\s+/g, "-").toLowerCase();
-    if (name && !havens[selectedHaven].includes(name)) {
+    if (name && !getHavenChannels(selectedHaven).includes(name)) {
       setHavens(prev => ({
         ...prev,
-        [selectedHaven]: [...prev[selectedHaven], name]
+        [selectedHaven]: {
+          ...(prev[selectedHaven] || { id: selectedHaven, name: getHavenName(selectedHaven), channels: [] }),
+          channels: [...getHavenChannels(selectedHaven), name],
+        },
       }));
       setNewChannel("");
       setSelectedChannel(name);
@@ -3350,6 +3947,7 @@ export default function Main({ username }: { username: string }) {
     if (e) e.preventDefault();
     const raw = newHaven.trim();
     const name = raw.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 24);
+    const displayName = raw.replace(/\s+/g, " ").trim().slice(0, 48);
     if (!raw) return;
     if (havenAction === 'join') {
       const upper = raw.toUpperCase();
@@ -3363,12 +3961,13 @@ export default function Main({ username }: { username: string }) {
           });
           const data = await res.json();
           if (res.ok && data?.haven) {
-            const hName = String(data.haven);
-            if (!havens[hName]) {
-              setHavens(prev => ({ ...prev, [hName]: ["general"] }));
+            const hId = String(data.haven);
+            const hDisplay = data?.info?.name || hId;
+            if (!havens[hId]) {
+              setHavens(prev => ({ ...prev, [hId]: { id: hId, name: hDisplay, channels: ["general"] } }));
             }
-            setSelectedHaven(hName);
-            setSelectedChannel((havens[hName] && havens[hName][0]) || "general");
+            setSelectedHaven(hId);
+            setSelectedChannel(orderedChannelsFor(hId)[0] || "general");
             setNewHaven("");
             setShowNewHavenModal(false);
             return;
@@ -3383,7 +3982,15 @@ export default function Main({ username }: { username: string }) {
       // Try direct haven name first
       if (name && havens[name]) {
         setSelectedHaven(name);
-        setSelectedChannel(havens[name][0] || 'general');
+        setSelectedChannel(orderedChannelsFor(name)[0] || 'general');
+        setNewHaven("");
+        setShowNewHavenModal(false);
+        return;
+      }
+      const matchByName = findHavenIdByName(raw);
+      if (matchByName) {
+        setSelectedHaven(matchByName);
+        setSelectedChannel(orderedChannelsFor(matchByName)[0] || 'general');
         setNewHaven("");
         setShowNewHavenModal(false);
         return;
@@ -3398,7 +4005,7 @@ export default function Main({ username }: { username: string }) {
       }
       if (found) {
         setSelectedHaven(found);
-        setSelectedChannel(havens[found][0] || 'general');
+        setSelectedChannel(orderedChannelsFor(found)[0] || 'general');
         setNewHaven("");
         setShowNewHavenModal(false);
         return;
@@ -3406,18 +4013,28 @@ export default function Main({ username }: { username: string }) {
       notify({ title: 'Haven not found', body: `No haven, invite code, or link "${raw}" exists on this client.`, type: 'warn' });
       return;
     }
-    if (!havens[name]) {
-      setHavens(prev => ({ ...prev, [name]: ["general"] }));
+    const newId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? (crypto as any).randomUUID()
+      : `haven-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    if (!havens[newId]) {
+      setHavens(prev => ({ ...prev, [newId]: { id: newId, name: displayName || name || newId, channels: ["general"] } }));
       // Set creator as Owner role for this haven
       try {
         const res = await fetch("/api/permissions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ haven: name, action: "set-owner", user: username })
+          body: JSON.stringify({ haven: newId, action: "set-owner", user: username })
         });
         if (!res.ok) {
           throw new Error(await res.text().catch(() => 'Failed'));
         }
+        try {
+          await fetch("/api/server-settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ haven: newId, name: displayName || name || newId, channels: ["general"] })
+          });
+        } catch {}
       } catch (err: any) {
         notify({
           title: "Owner assignment failed",
@@ -3426,7 +4043,7 @@ export default function Main({ username }: { username: string }) {
         });
       }
     }
-    setSelectedHaven(name);
+    setSelectedHaven(newId);
     setSelectedChannel("general");
     setNewHaven("");
     setShowNewHavenModal(false);
@@ -3436,6 +4053,64 @@ export default function Main({ username }: { username: string }) {
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionList, setMentionList] = useState<{ username: string; displayName: string; avatarUrl: string }[]>([]);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const [mentionAnchor, setMentionAnchor] = useState<{ start: number; end: number } | null>(null);
+  const [mentionPopupStyle, setMentionPopupStyle] = useState<React.CSSProperties>({});
+  const mentionPopupRef = useRef<HTMLDivElement | null>(null);
+  const getMentionContext = (value: string, cursor: number) => {
+    const upto = value.slice(0, cursor);
+    const atIndex = upto.lastIndexOf("@");
+    if (atIndex < 0) return null;
+    const prevChar = atIndex > 0 ? upto[atIndex - 1] : " ";
+    if (prevChar && !/\s/.test(prevChar)) return null;
+    const query = upto.slice(atIndex + 1);
+    if (query.includes(" ") || query.includes("\n")) return null;
+    return { start: atIndex, end: cursor, query };
+  };
+  const updateMentionPopupPosition = useCallback(() => {
+    if (!mentionOpen || !inputRef.current) return;
+    const rect = inputRef.current.getBoundingClientRect();
+    const width = Math.min(360, window.innerWidth - 24);
+    const left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
+    const spaceAbove = rect.top - 16;
+    const spaceBelow = window.innerHeight - rect.bottom - 16;
+    const maxHeight = Math.min(320, Math.max(spaceAbove, spaceBelow));
+    const placeAbove = spaceAbove >= 160 || spaceAbove >= spaceBelow;
+    const top = placeAbove ? rect.top - maxHeight - 8 : rect.bottom + 8;
+    setMentionPopupStyle({
+      position: "fixed",
+      left,
+      top,
+      width,
+      maxHeight: Math.max(140, maxHeight),
+      overflowY: "auto",
+      zIndex: 120,
+    });
+  }, [mentionOpen]);
+  const applyMentionSelection = (username: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const value = el.value;
+    const cursor = el.selectionStart ?? value.length;
+    const anchor = mentionAnchor || getMentionContext(value, cursor);
+    const start = anchor?.start ?? cursor;
+    const before = value.slice(0, start);
+    const after = value.slice(cursor);
+    const insert = `@${username} `;
+    const next = `${before}${insert}${after}`;
+    setInput(next);
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionAnchor(null);
+    setMentionActiveIndex(0);
+    requestAnimationFrame(() => {
+      try {
+        el.focus();
+        const pos = before.length + insert.length;
+        el.setSelectionRange(pos, pos);
+      } catch {}
+    });
+  };
   useEffect(() => {
     let ignore = false;
     if (!mentionOpen) return;
@@ -3444,18 +4119,76 @@ export default function Main({ username }: { username: string }) {
       try {
         const res = await fetch(`/api/user-search?q=${encodeURIComponent(q)}`);
         const data = await res.json();
-        if (!ignore) setMentionList(Array.isArray(data.results) ? data.results : []);
+        if (!ignore) {
+          const results = Array.isArray(data.results) ? data.results : [];
+          const normalized = results.filter((entry: any): entry is { username: string; displayName: string; avatarUrl: string } =>
+            entry &&
+            typeof entry.username === "string" &&
+            typeof entry.displayName === "string" &&
+            typeof entry.avatarUrl === "string",
+          );
+          setMentionList(normalized.filter((entry) => !blockedUsers.has(entry.username)));
+        }
       } catch {
         if (!ignore) setMentionList([]);
       }
     })();
     return () => { ignore = true; };
-  }, [mentionOpen, mentionQuery]);
+  }, [mentionOpen, mentionQuery, blockedUsers]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    setMentionActiveIndex(0);
+  }, [mentionOpen, mentionList.length]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    updateMentionPopupPosition();
+    const handleResize = () => updateMentionPopupPosition();
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("scroll", handleResize, true);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("scroll", handleResize, true);
+    };
+  }, [mentionOpen, updateMentionPopupPosition]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    const handleClick = (event: Event) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (mentionPopupRef.current?.contains(target)) return;
+      if (inputRef.current?.contains(target)) return;
+      setMentionOpen(false);
+      setMentionQuery("");
+      setMentionAnchor(null);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("touchstart", handleClick);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("touchstart", handleClick);
+    };
+  }, [mentionOpen]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setInput(e.target.value);
+    const nextValue = e.target.value;
+    setInput(nextValue);
+    const cursor = e.target.selectionStart ?? nextValue.length;
+    const ctx = getMentionContext(nextValue, cursor);
+    if (ctx) {
+      setMentionOpen(true);
+      setMentionQuery(ctx.query);
+      setMentionAnchor({ start: ctx.start, end: cursor });
+      setMentionActiveIndex(0);
+    } else {
+      setMentionOpen(false);
+      setMentionQuery("");
+      setMentionAnchor(null);
+    }
     const room = roomKey();
-    try { localStorage.setItem(`draft:${room}` , e.target.value); } catch {}
+    try { localStorage.setItem(`draft:${room}` , nextValue); } catch {}
     socketRef.current?.emit("typing", { user: username, room });
   };
 
@@ -3478,6 +4211,20 @@ export default function Main({ username }: { username: string }) {
     setUploadItems(prev => [...prev, { id, name: file.name, type: file.type || 'application/octet-stream', size: file.size, progress: 0, status: 'uploading', localUrl }]);
     await doUpload(file.name, file.type, file, id);
   };
+  const handleUploadFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    setUploading(true);
+    for (const file of files) {
+      if (file.size > 25 * 1024 * 1024) {
+        notify({ title: "File too large", body: `${file.name} exceeds 25MB limit`, type: "warn" });
+        continue;
+      }
+      try {
+        await startUpload(file);
+      } catch {}
+    }
+    setUploading(false);
+  }, [startUpload]);
   const doUpload = async (name: string, type: string, blob: Blob, id: string) => {
     const reader = new FileReader();
     const dataUrl: string = await new Promise((resolve, reject) => { reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob); });
@@ -3614,6 +4361,7 @@ export default function Main({ username }: { username: string }) {
         <img
           src={viewerAvatar}
           alt="Your profile"
+          {...avatarLoadProps}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
       </button>
@@ -3703,6 +4451,12 @@ export default function Main({ username }: { username: string }) {
             cancelEdit={() => { setEditId(null); setEditText(''); }}
             toggleReaction={toggleReaction}
             username={username}
+            invitePreviews={invitePreviews}
+            invitePreviewStatus={invitePreviewStatus}
+            inviteErrors={inviteErrors}
+            inviteJoinStatus={inviteJoinStatus}
+            joinInvite={joinInvite}
+            onUploadFiles={handleUploadFiles}
           />
         </div>
         {!isMobile && profileLauncher}
@@ -3718,18 +4472,18 @@ export default function Main({ username }: { username: string }) {
         className="ch-shell"
         style={{
           display: "flex",
-          height: isMobile ? "calc(100vh - 1rem)" : "70vh",
+          height: fillScreen ? "100vh" : (isMobile ? "calc(100vh - 1rem)" : "70vh"),
           width: "100%",
-          maxWidth: isMobile ? "100%" : 1100,
+          maxWidth: fillScreen ? "100%" : (isMobile ? "100%" : 1100),
           minWidth: 320,
-          margin: isMobile ? "0.5rem auto" : "2rem auto",
-          border: BORDER,
-          borderRadius: isMobile ? 10 : 14,
+          margin: fillScreen ? "0" : (isMobile ? "0.5rem auto" : "2rem auto"),
+          border: fillScreen ? "none" : BORDER,
+          borderRadius: fillScreen ? 0 : (isMobile ? 10 : 14),
           background: "var(--ch-shell-bg)",
           backgroundSize: "var(--ch-shell-bg-size, cover)",
           backgroundPosition: "var(--ch-shell-bg-position, center)",
           backgroundRepeat: "var(--ch-shell-bg-repeat, no-repeat)",
-          boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
+          boxShadow: fillScreen ? "none" : (isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)"),
           filter: shellFilter,
           pointerEvents: shellPointerEvents,
           transition: 'filter 220ms ease'
@@ -3835,16 +4589,17 @@ export default function Main({ username }: { username: string }) {
             gap: showHavenIconsOnly ? 12 : 0,
           }}>
             {Object.keys(havens)
-              .filter(h => h.toLowerCase().includes(havenFilter.trim().toLowerCase()))
+              .filter(h => getHavenName(h).toLowerCase().includes(havenFilter.trim().toLowerCase()))
               .map(haven => {
                 const active = selectedHaven === haven;
                 const revealKey = `haven-${haven}`;
                 const badge = havenBadgeFor(haven);
+                const iconSrc = havenIcons[haven];
                 return (
                   <div
                     key={haven}
                     onClick={() => handleHavenChange(haven)}
-                    title={`${labelHaven} ${haven} · Code: ${havenCode(haven)}`}
+                    title={`${labelHaven} ${getHavenName(haven)}  -  Code: ${havenCode(haven)}`}
                     style={{
                       padding: showHavenIconsOnly ? 6 : '10px 10px',
                       marginBottom: showHavenIconsOnly ? 0 : 6,
@@ -3878,7 +4633,15 @@ export default function Main({ username }: { username: string }) {
                       onMouseEnter={() => beginStreamerReveal(revealKey)}
                       onMouseLeave={() => endStreamerReveal(revealKey)}
                     >
-                      {badge.initials}
+                      {iconSrc ? (
+                        <img
+                          src={iconSrc}
+                          alt={`${renderHavenLabel(haven, revealKey)} icon`}
+                          style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }}
+                        />
+                      ) : (
+                        badge.initials
+                      )}
                     </div>
                     {!showHavenIconsOnly && (
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -3955,6 +4718,12 @@ export default function Main({ username }: { username: string }) {
           isDeafened={isDeafened}
           toggleMute={toggleMute}
           toggleDeafen={toggleDeafen}
+          invitePreviews={invitePreviews}
+          invitePreviewStatus={invitePreviewStatus}
+          inviteErrors={inviteErrors}
+          inviteJoinStatus={inviteJoinStatus}
+          joinInvite={joinInvite}
+          onUploadFiles={handleUploadFiles}
         />
       )}
 
@@ -3965,7 +4734,7 @@ export default function Main({ username }: { username: string }) {
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: COLOR_TEXT }}><FontAwesomeIcon icon={faUser} /> Profile</div>
             <button className="btn-ghost" onClick={() => setShowUserSettings(true)} style={{ padding: '6px 8px' }}>Edit</button>
           </div>
-          <div style={{ color: '#9ca3af' }}>Mobile profile view — separate from desktop profile UI.</div>
+          <div style={{ color: '#9ca3af' }}>Mobile profile view  -  separate from desktop profile UI.</div>
         </div>
       )}
       {/* Channels / DMs sidebar */}
@@ -4003,7 +4772,7 @@ export default function Main({ username }: { username: string }) {
         <div style={{ padding: 10, borderBottom: BORDER }}>
           {showInvitePanel && selectedHaven !== '__dms__' && (
             <div style={{ marginBottom: 8, padding: 8, borderRadius: 8, border: BORDER, background: '#020617', color: COLOR_TEXT, fontSize: 12 }}>
-              <div style={{ marginBottom: 6 }}>Invite to <span style={{ color: accent }}>{selectedHaven}</span></div>
+              <div style={{ marginBottom: 6 }}>Invite to <span style={{ color: accent }}>{getHavenName(selectedHaven)}</span></div>
               <div style={{ marginBottom: 6 }}>
                 <span style={{ color: '#9ca3af' }}>Expires in:</span>
                 <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
@@ -4055,7 +4824,7 @@ export default function Main({ username }: { username: string }) {
                 disabled={creatingInvite}
                 style={{ padding: '4px 8px', fontSize: 12, color: accent, opacity: creatingInvite ? 0.7 : 1 }}
               >
-                {creatingInvite ? 'Creating…' : 'Generate Invite'}
+                {creatingInvite ? 'Creating...' : 'Generate Invite'}
               </button>
               {inviteCode && (
                 <div style={{ marginTop: 6, color: '#9ca3af' }}>Last invite: <span style={{ color: COLOR_TEXT }}>{inviteCode}</span></div>
@@ -4131,6 +4900,7 @@ export default function Main({ username }: { username: string }) {
                             <img
                               src={groupAvatar}
                               alt={titleText || 'Group avatar'}
+                              {...avatarLoadProps}
                               style={{ width: 40, height: 40, borderRadius: '35%', border: BORDER, objectFit: 'cover', background: COLOR_PANEL }}
                             />
                           ) : (
@@ -4143,6 +4913,7 @@ export default function Main({ username }: { username: string }) {
                                     key={`${dm.id}-avatar-${user}`}
                                     src={src}
                                     alt={user}
+                                    {...avatarLoadProps}
                                     style={{
                                       width: 28,
                                       height: 28,
@@ -4167,6 +4938,7 @@ export default function Main({ username }: { username: string }) {
                             <img
                               src={avatar}
                               alt={first || 'DM'}
+                              {...avatarLoadProps}
                               style={{ width: 36, height: 36, borderRadius: '50%', border: BORDER, objectFit: 'cover' }}
                             />
                             <span
@@ -4191,7 +4963,7 @@ export default function Main({ username }: { username: string }) {
                             <>
                               {previewNames}
                               {extraMembers > 0 && <> +{extraMembers}</>}
-                              <span style={{ opacity: 0.7 }}>• {dm.users.length} members</span>
+                              <span style={{ opacity: 0.7 }}> -  {dm.users.length} members</span>
                             </>
                           ) : (
                             previewNames
@@ -4210,7 +4982,7 @@ export default function Main({ username }: { username: string }) {
               )}
             </>
           ) : (
-            (havens[selectedHaven] || [])
+            orderedChannelsFor(selectedHaven)
               .filter(ch => ch.toLowerCase().includes(channelFilter.trim().toLowerCase()))
               .map((ch) => (
                 <div key={ch} onClick={() => { setSelectedDM(null); handleChannelChange(ch); }} onContextMenu={(e) => openCtx(e, { type: 'channel', data: ch })} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? accent : COLOR_TEXT, fontWeight: selectedChannel === ch ? 700 : 500, borderRadius: 10, border: selectedChannel === ch ? BORDER : '1px solid transparent', marginBottom: 6 }}>
@@ -4319,7 +5091,7 @@ export default function Main({ username }: { username: string }) {
               const renderGroupAvatar = () => {
                 if (!isGroup) return null;
                 if (groupAvatar) {
-                  return <img src={groupAvatar} alt={getDMTitle(dm)} style={{ width: 44, height: 44, borderRadius: '35%', border: BORDER, objectFit: 'cover' }} />;
+                  return <img src={groupAvatar} alt={getDMTitle(dm)} {...avatarLoadProps} style={{ width: 44, height: 44, borderRadius: '35%', border: BORDER, objectFit: 'cover' }} />;
                 }
                 const previewMembers = (dm?.users || []).slice(0, 3);
                 return (
@@ -4329,6 +5101,7 @@ export default function Main({ username }: { username: string }) {
                         key={`gdm-avatar-${user}`}
                         src={getUserAvatar(user)}
                         alt={user}
+                        {...avatarLoadProps}
                         style={{
                           width: 28,
                           height: 28,
@@ -4353,7 +5126,7 @@ export default function Main({ username }: { username: string }) {
                 const avatar = target ? getUserAvatar(target) : '/favicon.ico';
                 return (
                   <>
-                    <img src={avatar} alt={target || 'DM'} style={{ width: 44, height: 44, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
+                    <img src={avatar} alt={target || 'DM'} {...avatarLoadProps} style={{ width: 44, height: 44, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
                     <span
                       style={{
                         position: 'absolute',
@@ -4413,14 +5186,16 @@ export default function Main({ username }: { username: string }) {
                     )}
                   </div>
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <button
-                      className="btn-ghost"
-                      onClick={() => updateAppearance({ readingMode: !readingMode })}
-                      title={readingMode ? 'Exit reading mode' : 'Reading mode'}
-                      style={{ padding: '6px 8px' }}
-                    >
-                      <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
-                    </button>
+                    {showReadingModeButton && (
+                      <button
+                        className="btn-ghost"
+                        onClick={() => updateAppearance({ readingMode: !readingMode })}
+                        title={readingMode ? 'Exit reading mode' : 'Reading mode'}
+                        style={{ padding: '6px 8px' }}
+                      >
+                        <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
+                      </button>
+                    )}
                     {isGroup && showGroupSettingsButton && remainingSlots > 0 && dm && (
                       <button
                         className="btn-ghost"
@@ -4448,7 +5223,7 @@ export default function Main({ username }: { username: string }) {
                       const title = roster.length ? `Participants (${roster.length}): ${roster.join(', ')}` : 'Participants';
                       return (
                         <span className="btn-ghost" style={{ padding: '6px 8px', color: '#9ca3af' }} title={title}>
-                          <FontAwesomeIcon icon={faUsers} /> {onlineMembers.length}/{roster.length || '…'} online
+                          <FontAwesomeIcon icon={faUsers} /> {onlineMembers.length}/{roster.length || '...'} online
                         </span>
                       );
                     })()}
@@ -4464,7 +5239,7 @@ export default function Main({ username }: { username: string }) {
             })()
           ) : (
             <>
-              <FontAwesomeIcon icon={faServer} /> {selectedHaven} {selectedChannel && (<span style={{ color: accent }}>/ #{selectedChannel}</span>)}
+              <FontAwesomeIcon icon={faServer} /> {getHavenName(selectedHaven)} {selectedChannel && (<span style={{ color: accent }}>/ #{selectedChannel}</span>)}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
                 {userSettings.showOnlineCount !== false && selectedHaven !== '__dms__' && (() => {
                   const onlineMembers = havenMembers.filter((member) => isUserOnline(member));
@@ -4481,18 +5256,20 @@ export default function Main({ username }: { username: string }) {
                       style={{ padding: '6px 8px', color: '#9ca3af', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
                       <FontAwesomeIcon icon={faUsers} />
-                      <span>{onlineMembers.length}/{havenMembers.length || '…'} online</span>
+                      <span>{onlineMembers.length}/{havenMembers.length || '...'} online</span>
                     </button>
                   );
                 })()}
-                <button
-                  className="btn-ghost"
-                  onClick={() => updateAppearance({ readingMode: !readingMode })}
-                  title={readingMode ? 'Exit reading mode' : 'Reading mode'}
-                  style={{ padding: '6px 8px' }}
-                >
-                  <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
-                </button>
+                {showReadingModeButton && (
+                  <button
+                    className="btn-ghost"
+                    onClick={() => updateAppearance({ readingMode: !readingMode })}
+                    title={readingMode ? 'Exit reading mode' : 'Reading mode'}
+                    style={{ padding: '6px 8px' }}
+                  >
+                    <FontAwesomeIcon icon={readingMode ? faEyeSlash : faEye} />
+                  </button>
+                )}
                 <button className="btn-ghost" onClick={() => setShowPinned(true)} title="Pinned messages" style={{ padding: '6px 8px' }}>
                   <FontAwesomeIcon icon={faThumbtack} />
                 </button>
@@ -4515,7 +5292,7 @@ export default function Main({ username }: { username: string }) {
                 const meta: CallStatusMeta = getCallStatusMeta(p.user) || { type: 'talking', color: '#22c55e', label: 'In Call' };
                 return (
                   <div key={`call-preview-${p.user}`} style={{ position: 'relative', width: 32, height: 32 }}>
-                    <img src={userProfileCache[p.user]?.avatarUrl || '/favicon.ico'} alt={p.user} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover', filter: 'blur(0.6px)' }} />
+                    <img src={userProfileCache[p.user]?.avatarUrl || '/favicon.ico'} alt={p.user} {...avatarLoadProps} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover', filter: 'blur(0.6px)' }} />
                     <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(2,6,23,0.5)', borderRadius: '50%' }}>
                       {renderCallStatusIconGraphic(meta, 12)}
                     </span>
@@ -4588,7 +5365,7 @@ export default function Main({ username }: { username: string }) {
                           onMouseEnter={() => beginStreamerReveal(revealKey)}
                           onMouseLeave={() => endStreamerReveal(revealKey)}
                         >
-                          <img src={initiatorAvatar} alt={callInitiator} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <img src={initiatorAvatar} alt={callInitiator} {...avatarLoadProps} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                         </div>
                         <span>Started by {renderDisplayName(callInitiator, { prefix: '@', revealKey })}</span>
                       </div>
@@ -4617,6 +5394,7 @@ export default function Main({ username }: { username: string }) {
                           <img
                             src={avatar}
                             alt={display}
+                            {...avatarLoadProps}
                             style={{
                               width: 44,
                               height: 44,
@@ -4740,7 +5518,21 @@ export default function Main({ username }: { username: string }) {
                         u,
                         <>
                           <button className="btn-ghost" onClick={()=> ensureDM(u)} style={{ padding: '6px 10px' }}>Message</button>
-                          <button className="btn-ghost" onClick={()=> friendAction('remove', u)} style={{ padding: '6px 10px', color: '#f87171' }}>Remove</button>
+                          <button
+                            className="btn-ghost"
+                            onClick={() => setConfirmAction({
+                              title: 'Remove friend?',
+                              body: `Remove @${u} from your friends list.`,
+                              confirmLabel: 'Remove',
+                              onConfirm: async () => {
+                                await friendAction('remove', u);
+                                setConfirmAction(null);
+                              },
+                            })}
+                            style={{ padding: '6px 10px', color: '#f87171' }}
+                          >
+                            Remove
+                          </button>
                         </>,
                       )
                     );
@@ -4784,8 +5576,9 @@ export default function Main({ username }: { username: string }) {
               )}
             </div>
           ) : (
-          <>
+            <Fragment>
           {messages.map((msg, idx) => {
+            if (blockedUsers.has(msg.user)) return null;
             const messageKey = msg.id ? `${msg.id}-${idx}` : `${msg.user}-${msg.timestamp}-${idx}`;
             const revealKey = `msg-${messageKey}`;
             const avatarSrc = (userProfileCache[msg.user]?.avatarUrl) || '/favicon.ico';
@@ -5157,6 +5950,13 @@ export default function Main({ username }: { username: string }) {
               }
               return <div style={baseStyle}>{label}</div>;
             })() : null;
+            const inviteCode = extractInviteCode(msg.text || "");
+            const invitePreview = inviteCode ? invitePreviews[inviteCode] : null;
+            const inviteStatus = inviteCode ? invitePreviewStatus[inviteCode] : undefined;
+            const inviteError = inviteCode ? inviteErrors[inviteCode] : null;
+            const inviteJoin = inviteCode ? inviteJoinStatus[inviteCode] : "idle";
+            const inviteHaven = invitePreview?.haven || inviteCode || "";
+            const inviteAlreadyJoined = inviteHaven ? !!havens[inviteHaven] : false;
             return (
             <Fragment key={messageKey}>
               {showDateDivider && (
@@ -5216,6 +6016,7 @@ export default function Main({ username }: { username: string }) {
                       <img
                         src={avatarSrc}
                         alt={displayNameFor(msg.user)}
+                        {...avatarLoadProps}
                         style={{
                           width: avatarSize,
                           height: avatarSize,
@@ -5298,67 +6099,81 @@ export default function Main({ username }: { username: string }) {
                   {isSystemMessage ? (
                     systemContent
                   ) : (
-                    (() => {
-                      const base = chResolved[msg.id] ?? msg.text ?? "";
-                      const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
-                      return (
-                    <ReactMarkdown
-                      // `breaks` is supported at runtime but missing in the type defs
-                      // @ts-expect-error `breaks` is a valid react-markdown prop
-                      breaks
-                      components={{
-                        a: (props: any) => {
-                          const href = props.href || '';
-                          if (href === 'mention://self') {
-                            return <span style={{ color: mentionColor, fontWeight: 600 }}>{props.children}</span>;
-                          }
-                          return <a {...props} style={{ color: accent }} />;
-                        },
-                        code: (props: any) => {
-                          const { children, ...rest } = props;
-                          const text = String(children ?? '');
-                          return (
-                            <code
-                              {...rest}
-                              onDoubleClick={() => { try { navigator.clipboard.writeText(text); } catch {} }}
-                              style={{
-                                background: "#23232a",
-                                color: codeColor,
-                                padding: "2px 4px",
-                                borderRadius: 4,
-                              }}
-                            >
-                              {children}
-                            </code>
-                          );
-                        },
-                        strong: (props) => <strong {...props} style={{ color: boldColor }} />,
-                        em: (props) => <em {...props} style={{ color: italicColor }} />,
-                        blockquote: (props) => <blockquote {...props} style={{ borderLeft: `3px solid ${accent}`, margin: 0, paddingLeft: 12, color: "#a1a1aa" }} />,
-                        img: (props) => {
-                          const { alt, ...rest } = props as React.ImgHTMLAttributes<HTMLImageElement>;
-                          // Right-click images in markdown to set avatar/banner
-                          return (
-                            <img
-                              {...rest}
-                              alt={alt ?? ""}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                const src = (rest.src as string) || "";
-                                const name = alt || "";
-                                openCtx(e as any, { type: "attachment", data: { url: src, name, type: "image/*" } });
-                              }}
-                              style={{ maxWidth: "360px", borderRadius: 6, border: BORDER, background: COLOR_PANEL }}
-                            />
-                          );
-                        },
-                        li: (props) => <li {...props} style={{ marginLeft: 16 }} />,
-                      }}
-                    >
-                      {withMentions}
-                    </ReactMarkdown>
-                      );
-                    })()
+                    <>
+                      {inviteCode && (
+                        <div style={{ marginBottom: 8 }}>
+                          <InviteCard
+                            preview={invitePreview}
+                            status={inviteStatus}
+                            error={inviteError}
+                            isJoined={inviteAlreadyJoined}
+                            isBusy={inviteJoin === "joining"}
+                            onJoin={() => inviteCode && joinInvite(inviteCode)}
+                          />
+                        </div>
+                      )}
+                      {(() => {
+                        const base = chResolved[msg.id] ?? msg.text ?? "";
+                        const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
+                        return (
+                          <ReactMarkdown
+                            // `breaks` is supported at runtime but missing in the type defs
+                            // @ts-expect-error `breaks` is a valid react-markdown prop
+                            breaks
+                            components={{
+                              a: (props: any) => {
+                                const href = props.href || '';
+                                if (href === 'mention://self') {
+                                  return <span style={{ color: mentionColor, fontWeight: 600 }}>{props.children}</span>;
+                                }
+                                return <a {...props} style={{ color: accent }} />;
+                              },
+                              code: (props: any) => {
+                                const { children, ...rest } = props;
+                                const text = String(children ?? '');
+                                return (
+                                  <code
+                                    {...rest}
+                                    onDoubleClick={() => { try { navigator.clipboard.writeText(text); } catch {} }}
+                                    style={{
+                                      background: "#23232a",
+                                      color: codeColor,
+                                      padding: "2px 4px",
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    {children}
+                                  </code>
+                                );
+                              },
+                              strong: (props) => <strong {...props} style={{ color: boldColor }} />,
+                              em: (props) => <em {...props} style={{ color: italicColor }} />,
+                              blockquote: (props) => <blockquote {...props} style={{ borderLeft: `3px solid ${accent}`, margin: 0, paddingLeft: 12, color: "#a1a1aa" }} />,
+                              img: (props) => {
+                                const { alt, ...rest } = props as React.ImgHTMLAttributes<HTMLImageElement>;
+                                // Right-click images in markdown to set avatar/banner
+                                return (
+                                  <img
+                                    {...rest}
+                                    alt={alt ?? ""}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      const src = (rest.src as string) || "";
+                                      const name = alt || "";
+                                      openCtx(e as any, { type: "attachment", data: { url: src, name, type: "image/*" } });
+                                    }}
+                                    style={{ maxWidth: "360px", borderRadius: 6, border: BORDER, background: COLOR_PANEL }}
+                                  />
+                                );
+                              },
+                              li: (props) => <li {...props} style={{ marginLeft: 16 }} />,
+                            }}
+                          >
+                            {withMentions}
+                          </ReactMarkdown>
+                        );
+                      })()}
+                    </>
                   )}
                 </div>
               )}
@@ -5366,7 +6181,7 @@ export default function Main({ username }: { username: string }) {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
                   {msg.attachments.map((a, i) => (
                     <div key={`${msg.id}-att-${i}`} onContextMenu={(e)=> openCtx(e, { type: 'attachment', data: a })} title={isImage(a.type, a.name) ? 'Right click: set as avatar/banner' : undefined}>
-                      <AttachmentViewer a={a} />
+                      <AttachmentViewer attachment={a} />
                     </div>
                   ))}
                 </div>
@@ -5424,7 +6239,7 @@ export default function Main({ username }: { username: string }) {
         </div>
       )}
       <div ref={messagesEndRef} />
-      </>
+      </Fragment>
       )}
           {(!isAtBottom || newSinceScroll > 0) && (
             <div style={{ position: 'absolute', right: 16, bottom: 16 }}>
@@ -5450,21 +6265,27 @@ export default function Main({ username }: { username: string }) {
               <input value={membersQuery} onChange={(e)=> setMembersQuery(e.target.value)} placeholder="Search members" className="input-dark" style={{ width: '100%', padding: 8, borderRadius: 8 }} />
               <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, marginTop: 6 }}>
                 {havenMembersLoading
-                  ? 'Loading members…'
-                  : `${havenMembers.filter((name) => isUserOnline(name)).length} online · ${havenMembers.length} total`}
+                  ? 'Loading members...'
+                  : `${havenMembers.filter((name) => isUserOnline(name)).length} online / ${havenMembers.length} total`}
               </div>
             </div>
             <div style={{ overflowY: 'auto', maxHeight: 'calc(100% - 88px)', paddingTop: 8 }}>
               {havenMembersLoading && havenMembers.length === 0 ? (
-                <div style={{ color: COLOR_TEXT_MUTED }}>Fetching members…</div>
+                <div style={{ color: COLOR_TEXT_MUTED }}>Fetching members...</div>
               ) : havenMembers.length === 0 ? (
                 <div style={{ color: COLOR_TEXT_MUTED }}>No members found.</div>
               ) : (() => {
                 const query = membersQuery.trim().toLowerCase();
                 const filtered = havenMembers.filter(name => name.toLowerCase().includes(query));
-                const online = filtered.filter(name => isUserOnline(name));
-                const offline = filtered.filter(name => !isUserOnline(name));
-                const ordered = [...online, ...offline];
+                const ordered = filtered.slice().sort((a, b) => {
+                  const onlineA = isUserOnline(a) ? 0 : 1;
+                  const onlineB = isUserOnline(b) ? 0 : 1;
+                  if (onlineA !== onlineB) return onlineA - onlineB;
+                  const roleA = rolePriorityFor(a);
+                  const roleB = rolePriorityFor(b);
+                  if (roleA !== roleB) return roleA - roleB;
+                  return a.localeCompare(b);
+                });
                 return ordered.map((name) => (
                   <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderBottom: BORDER }}>
                     <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(statusForUser(name)) }} />
@@ -5492,7 +6313,7 @@ export default function Main({ username }: { username: string }) {
             <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, right: 12, background: COLOR_PANEL, border: BORDER, borderRadius: 10, zIndex: 11, padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
               <FontAwesomeIcon icon={faReply} />
               <div style={{ color: COLOR_TEXT, fontSize: 13 }}>
-                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: COLOR_TEXT_MUTED }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? '…' : ''}</span>
+                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: COLOR_TEXT_MUTED }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? '...' : ''}</span>
               </div>
               <button type="button" className="btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
@@ -5501,7 +6322,7 @@ export default function Main({ username }: { username: string }) {
           )}
           {/* Mention popup */}
           {mentionOpen && (
-            <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, background: COLOR_PANEL, border: BORDER, borderRadius: 10, zIndex: 10, width: 360, maxHeight: '40vh', overflowY: 'auto' }}>
+            <div ref={mentionPopupRef} style={{ background: COLOR_PANEL, border: BORDER, borderRadius: 10, ...mentionPopupStyle }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 8, borderBottom: BORDER }}>
                 <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>@ Mention</div>
                 <button type="button" className="btn-ghost" onClick={() => setMentionOpen(false)} style={{ padding: '2px 6px' }}><FontAwesomeIcon icon={faXmark} /></button>
@@ -5510,13 +6331,29 @@ export default function Main({ username }: { username: string }) {
                 <input value={mentionQuery} onChange={(e)=> setMentionQuery(e.target.value)} placeholder="Search users" className="input-dark" style={{ width: '100%', padding: 8 }} />
               </div>
               <div>
-                {mentionList.map(u => (
-                  <div key={u.username} onClick={() => { const at = `@${u.username} `; const el = inputRef.current; if (el) { const pos = el.selectionStart || el.value.length; const v = el.value; const b = v.slice(0, pos); const a = v.slice(pos); el.value = b + at + a; setInput(el.value); setMentionOpen(false); setMentionQuery(""); el.focus(); el.setSelectionRange((b+at).length, (b+at).length); } }} style={{ padding: '8px 12px', borderBottom: BORDER, cursor: 'pointer', color: COLOR_TEXT, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(presenceMap[u.username]) }} />
-                    <span>@{u.username}</span>
-                    <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 12 }}>{u.displayName}</span>
-                  </div>
-                ))}
+                {mentionList.map((u, idx) => {
+                  const isActive = idx === mentionActiveIndex;
+                  return (
+                    <div
+                      key={u.username}
+                      onClick={() => applyMentionSelection(u.username)}
+                      style={{
+                        padding: '8px 12px',
+                        borderBottom: BORDER,
+                        cursor: 'pointer',
+                        color: COLOR_TEXT,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        background: isActive ? 'rgba(59,130,246,0.15)' : 'transparent',
+                      }}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(presenceMap[u.username]) }} />
+                      <span>@{u.username}</span>
+                      <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 12 }}>{u.displayName}</span>
+                    </div>
+                  );
+                })}
                 {mentionList.length === 0 && (
                   <div style={{ padding: 12, color: COLOR_TEXT_MUTED }}>No users found</div>
                 )}
@@ -5560,7 +6397,37 @@ export default function Main({ username }: { username: string }) {
             onChange={handleInputChange}
             onKeyDown={(e) => {
               if (!permState.canSend) return;
-              if (e.key === "@") { setMentionOpen(true); setMentionQuery(""); }
+              if (mentionOpen) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  if (mentionList.length > 0) {
+                    setMentionActiveIndex((idx) => Math.min(mentionList.length - 1, idx + 1));
+                  }
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (mentionList.length > 0) {
+                    setMentionActiveIndex((idx) => Math.max(0, idx - 1));
+                  }
+                  return;
+                }
+                if (e.key === "Enter") {
+                  const target = mentionList[mentionActiveIndex];
+                  if (target) {
+                    e.preventDefault();
+                    applyMentionSelection(target.username);
+                    return;
+                  }
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionOpen(false);
+                  setMentionQuery("");
+                  setMentionAnchor(null);
+                  return;
+                }
+              }
               if (e.key === "Enter" && (e.ctrlKey || !e.shiftKey)) { e.preventDefault(); sendMessage(); }
               if (e.key === 'ArrowUp' && !input) {
                 const mine = [...messages].filter(m => m.user === username).pop();
@@ -5604,7 +6471,38 @@ export default function Main({ username }: { username: string }) {
             </button>
           </label>
           {permState.canSend && (
-            <button type="button" className="btn-ghost" onClick={() => setMentionOpen(true)} title="Mention someone (@)" style={{ marginRight: 8, padding: "8px 10px" }}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                const el = inputRef.current;
+                if (!el) {
+                  setMentionOpen(true);
+                  return;
+                }
+                const value = el.value;
+                const pos = el.selectionStart ?? value.length;
+                const before = value.slice(0, pos);
+                const after = value.slice(pos);
+                const next = `${before}@${after}`;
+                setInput(next);
+                requestAnimationFrame(() => {
+                  try {
+                    el.focus();
+                    const cursor = before.length + 1;
+                    el.setSelectionRange(cursor, cursor);
+                    const ctx = getMentionContext(next, cursor);
+                    if (ctx) {
+                      setMentionOpen(true);
+                      setMentionQuery(ctx.query);
+                      setMentionAnchor({ start: ctx.start, end: ctx.end });
+                    }
+                  } catch {}
+                });
+              }}
+              title="Mention someone (@)"
+              style={{ marginRight: 8, padding: "8px 10px" }}
+            >
               <FontAwesomeIcon icon={faAt} />
             </button>
           )}
@@ -5640,7 +6538,7 @@ export default function Main({ username }: { username: string }) {
           {(() => {
             const dm = dms.find(d => d.id === incomingCall.room);
             const label = dm
-              ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'} • ${getDMTitle(dm)}`
+              ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'}  -  ${getDMTitle(dm)}`
               : 'Direct Message';
             return (
               <>
@@ -5733,7 +6631,7 @@ export default function Main({ username }: { username: string }) {
         const extra = roster.length - preview.length;
         const label = callState === 'calling' ? 'Calling...' : 'In call';
         const title = dm
-          ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'} • ${getDMTitle(dm)}`
+          ? `${isGroupDMThread(dm) ? 'Group DM' : 'Direct Message'}  -  ${getDMTitle(dm)}`
           : 'Direct Message';
         return (
           <div
@@ -5768,7 +6666,8 @@ export default function Main({ username }: { username: string }) {
                       key={part.user}
                       src={avatar}
                       alt={part.user}
-                      title={`${part.user} • ${part.status === 'connected' ? 'Connected' : 'Ringing'}`}
+                      {...avatarLoadProps}
+                      title={`${part.user}  -  ${part.status === 'connected' ? 'Connected' : 'Ringing'}`}
                       style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${color}` }}
                     />
                   );
@@ -5946,7 +6845,7 @@ export default function Main({ username }: { username: string }) {
                       onMouseLeave={() => endStreamerReveal(revealKey)}
                     >
                       <div style={{ position: 'relative', width: 28, height: 28 }}>
-                        <img src={avatar} alt={p.user} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+                        <img src={avatar} alt={p.user} {...avatarLoadProps} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
                         <span style={{ position: 'absolute', bottom: -4, right: -4 }}>
                           {renderCallStatusIconGraphic(meta, 10)}
                         </span>
@@ -6078,7 +6977,7 @@ export default function Main({ username }: { username: string }) {
                             style={{ accentColor: accent }}
                           />
                           <div style={{ position: 'relative' }}>
-                            <img src={avatar} alt={user} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
+                            <img src={avatar} alt={user} {...avatarLoadProps} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
                             <span style={{ position: 'absolute', bottom: -1, right: -1, width: 10, height: 10, borderRadius: '50%', border: '2px solid #0f172a', background: statusColor(status) }} />
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -6110,7 +7009,7 @@ export default function Main({ username }: { username: string }) {
                     cursor: groupDMSelection.length >= 2 && !groupDMLoading ? 'pointer' : 'not-allowed',
                   }}
                 >
-                  {groupDMLoading ? 'Creating…' : 'Create Group DM'}
+                  {groupDMLoading ? 'Creating...' : 'Create Group DM'}
                 </button>
               </div>
             </form>
@@ -6185,7 +7084,7 @@ export default function Main({ username }: { username: string }) {
                   />
                   {groupSettingsDraft.avatarUrl && (
                     <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <img src={groupSettingsDraft.avatarUrl} alt="Preview" style={{ width: 48, height: 48, borderRadius: 12, objectFit: 'cover', border: BORDER }} />
+                      <img src={groupSettingsDraft.avatarUrl} alt="Preview" {...avatarLoadProps} style={{ width: 48, height: 48, borderRadius: 12, objectFit: 'cover', border: BORDER }} />
                       <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>Preview</span>
                     </div>
                   )}
@@ -6217,7 +7116,7 @@ export default function Main({ username }: { username: string }) {
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                          <img src={avatar} alt={member} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                          <img src={avatar} alt={member} {...avatarLoadProps} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                             <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                               {display}
@@ -6293,7 +7192,7 @@ export default function Main({ username }: { username: string }) {
                               }}
                             >
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <img src={getUserAvatar(friend)} alt={friend} style={{ width: 28, height: 28, borderRadius: '50%', border: BORDER }} />
+                                <img src={getUserAvatar(friend)} alt={friend} {...avatarLoadProps} style={{ width: 28, height: 28, borderRadius: '50%', border: BORDER }} />
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                                   <span style={{ fontWeight: 600 }}>{renderDisplayName(friend, { revealKey: `add-${friend}`, allowFriend: true })}</span>
                                   <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</span>
@@ -6319,13 +7218,19 @@ export default function Main({ username }: { username: string }) {
                         disabled={groupAddSelection.length === 0 || groupAddSaving}
                         style={{ padding: '6px 12px', color: groupAddSelection.length ? accent : '#6b7280' }}
                       >
-                        {groupAddSaving ? 'Adding...' : `Add ${groupAddSelection.length || ''} Member${groupAddSelection.length === 1 ? '' : 's'}`}
+                        {groupAddSaving ? 'Adding...' : 'Add Members'}
                       </button>
                     </div>
                   </div>
                 )}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                  <button type="button" className="btn-ghost" onClick={closeGroupSettingsModal} style={{ padding: '6px 10px' }} disabled={groupSettingsSaving}>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={closeGroupSettingsModal}
+                    style={{ padding: '6px 10px' }}
+                    disabled={groupSettingsSaving}
+                  >
                     Cancel
                   </button>
                   <button
@@ -6335,7 +7240,7 @@ export default function Main({ username }: { username: string }) {
                     disabled={groupSettingsSaving}
                     style={{ padding: '6px 14px', color: groupSettingsSaving ? '#6b7280' : accent }}
                   >
-                    {groupSettingsSaving ? 'Savingƒ?İ' : 'Save Changes'}
+                    {groupSettingsSaving ? 'Saving...' : 'Save Changes'}
                   </button>
                 </div>
               </div>
@@ -6348,6 +7253,7 @@ export default function Main({ username }: { username: string }) {
           isOpen={showServerSettings}
           onClose={() => setShowServerSettings(false)}
           havenName={selectedHaven}
+          havenLabel={getHavenName(selectedHaven)}
         />
       )}
       {showUserSettings && (
@@ -6355,15 +7261,25 @@ export default function Main({ username }: { username: string }) {
           isOpen={showUserSettings}
           onClose={() => setShowUserSettings(false)}
           username={username}
-          onStatusChange={(status) => {
+          onStatusChangeAction={(status: string) => {
             try { socketRef.current?.emit('presence', { user: username, status }); } catch {}
-            setPresenceMap(prev => ({ ...prev, [username]: status }));
+            setPresenceMap((prev) => ({ ...prev, [username]: status }));
           }}
-          onSaved={(s:any) => setUserSettings(normalizeUserSettings(s))}
+          onSavedAction={(s: any) => setUserSettings(normalizeUserSettings(s))}
+        />
+      )}
+      {updateEntry && (
+        <UpdateNewsModal
+          open={showUpdateNews}
+          entry={updateEntry}
+          highlights={updateNewsHighlights}
+          isMobile={isMobile}
+          onDismiss={() => { void markUpdateNewsSeen(); }}
+          onViewNotes={updateEntry.fullNotesMarkdown ? handleViewReleaseNotes : undefined}
         />
       )}
       {showPinned && (() => {
-        const pinned = messages.filter(m => m.pinned);
+        const pinned = messages.filter(m => m.pinned && !blockedUsers.has(m.user));
         return (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
             <div className="glass" style={{ width: 'min(640px, 90vw)', maxHeight: '70vh', overflowY: 'auto', padding: 16, borderRadius: 12 }}>
@@ -6383,7 +7299,7 @@ export default function Main({ username }: { username: string }) {
                     <div key={pm.id} onClick={() => { setShowPinned(false); const el = messageRefs.current[pm.id]; el?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} style={{ padding: 10, border: BORDER, borderRadius: 8, marginBottom: 8, cursor: 'pointer', background: COLOR_PANEL_ALT }}>
                       <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>
                         <strong style={{ color: '#93c5fd' }}>@{pm.user}</strong>{' '}
-                        <span title={meta.title || undefined}>{dateLabel} • {meta.label}</span>
+                        <span title={meta.title || undefined}>{dateLabel}  -  {meta.label}</span>
                       </div>
                       <div style={{ fontSize: 14, color: COLOR_TEXT }}>{pm.text}</div>
                     </div>
@@ -6411,7 +7327,7 @@ export default function Main({ username }: { username: string }) {
                   return (
                     <div key={i} style={{ borderBottom: BORDER, padding: '8px 0' }}>
                       <div style={{ fontSize: 12, color: '#9ca3af' }} title={meta.title || undefined}>
-                        {dateLabel} • {meta.label}
+                        {dateLabel}  -  {meta.label}
                       </div>
                       <div style={{ whiteSpace: 'pre-wrap', color: COLOR_TEXT }}>{h.text}</div>
                     </div>
@@ -6484,71 +7400,71 @@ export default function Main({ username }: { username: string }) {
                 />
               </label>
               {havenAction === 'create' && (
-                <>
+                <Fragment>
                   <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Haven type</div>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  onClick={() => setNewHavenType('standard')}
-                  style={{
-                    flex: 1,
-                    minWidth: 140,
-                    padding: 10,
-                    borderRadius: 10,
-                    border: '1px solid ' + (newHavenType === 'standard' ? accent : COLOR_PANEL_STRONG),
-                    background: '#020617',
-                    color: COLOR_TEXT,
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    cursor: 'pointer'
-                  }}
-                >
-                  <span style={{ width: 20, height: 20, borderRadius: 6, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <FontAwesomeIcon icon={faServer} />
-                  </span>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>Standard Haven</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af' }}>Chat with friends and communities.</div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => setNewHavenType('standard')}
+                      style={{
+                        flex: 1,
+                        minWidth: 140,
+                        padding: 10,
+                        borderRadius: 10,
+                        border: '1px solid ' + (newHavenType === 'standard' ? accent : COLOR_PANEL_STRONG),
+                        background: '#020617',
+                        color: COLOR_TEXT,
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <span style={{ width: 20, height: 20, borderRadius: 6, background: COLOR_PANEL_STRONG, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <FontAwesomeIcon icon={faServer} />
+                      </span>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>Standard Haven</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>Chat with friends and communities.</div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      title="Community havens coming soon"
+                      onClick={() => {
+                        setShakeHavenType(true);
+                        setTimeout(() => setShakeHavenType(false), 160);
+                      }}
+                      style={{
+                        flex: 1,
+                        minWidth: 140,
+                        padding: 10,
+                        borderRadius: 10,
+                        border: '1px dashed #4b5563',
+                        background: '#020617',
+                        color: '#6b7280',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        cursor: 'not-allowed',
+                        opacity: 0.5,
+                        position: 'relative',
+                        transform: shakeHavenType ? 'translateX(-3px)' : 'translateX(0)',
+                        transition: 'transform 80ms ease'
+                      }}
+                    >
+                      <span style={{ width: 20, height: 20, borderRadius: 6, background: '#020617', border: '1px solid #374151', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <FontAwesomeIcon icon={faLock} />
+                      </span>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>Community Haven</div>
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>Coming soon</div>
+                      </div>
+                    </button>
                   </div>
-                </button>
-                <button
-                  type="button"
-                  title="Community havens coming soon"
-                  onClick={() => {
-                    setShakeHavenType(true);
-                    setTimeout(() => setShakeHavenType(false), 160);
-                  }}
-                  style={{
-                    flex: 1,
-                    minWidth: 140,
-                    padding: 10,
-                    borderRadius: 10,
-                    border: '1px dashed #4b5563',
-                    background: '#020617',
-                    color: '#6b7280',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    cursor: 'not-allowed',
-                    opacity: 0.5,
-                    position: 'relative',
-                    transform: shakeHavenType ? 'translateX(-3px)' : 'translateX(0)',
-                    transition: 'transform 80ms ease'
-                  }}
-                >
-                  <span style={{ width: 20, height: 20, borderRadius: 6, background: '#020617', border: '1px solid #374151', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <FontAwesomeIcon icon={faLock} />
-                  </span>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>Community Haven</div>
-                    <div style={{ fontSize: 11, color: '#6b7280' }}>Coming soon</div>
-                  </div>
-                </button>
-              </div>
-                </>
+                </Fragment>
               )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
                 <button type="button" className="btn-ghost" onClick={closeNewHavenModal} style={{ padding: '6px 10px' }}>
@@ -6687,6 +7603,9 @@ export default function Main({ username }: { username: string }) {
           me={username}
           contextLabel={profileContext}
           callPresence={getCallPresenceForUser(profileUser) || undefined}
+          blockedUsers={Array.isArray(userSettings.blockedUsers) ? userSettings.blockedUsers : []}
+          showBlockActions={showBlockActions}
+          onToggleBlock={toggleBlockUser}
         />
       )}
       {toasts.length > 0 && (
@@ -6812,6 +7731,18 @@ export default function Main({ username }: { username: string }) {
           </div>
         </div>
       )}
+      {confirmAction && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 96 }}>
+          <div style={{ width: 'min(360px, 92vw)', background: '#0b1222', border: '1px solid #1f2937', borderRadius: 12, padding: 16, color: '#e5e7eb', boxShadow: '0 16px 40px rgba(0,0,0,0.4)' }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>{confirmAction.title}</div>
+            <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 12 }}>{confirmAction.body}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn-ghost" onClick={() => setConfirmAction(null)} style={{ padding: '6px 10px' }}>Cancel</button>
+              <button className="btn-ghost" onClick={confirmAction.onConfirm} style={{ padding: '6px 10px', color: '#f87171' }}>{confirmAction.confirmLabel}</button>
+            </div>
+          </div>
+        </div>
+      )}
       {isMobile && showMobileNav && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 70 }}>
           <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
@@ -6824,14 +7755,14 @@ export default function Main({ username }: { username: string }) {
             <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Havens</div>
               {Object.keys(havens).map((h) => (
-                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel(havens[h][0] || ''); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT }}>
-                  <FontAwesomeIcon icon={faUsers} style={{ marginRight: 8 }} /> {h}
+                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel(orderedChannelsFor(h)[0] || ''); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT }}>
+                  <FontAwesomeIcon icon={faUsers} style={{ marginRight: 8 }} /> {getHavenName(h)}
                 </div>
               ))}
             </div>
             <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
-              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
-              {(havens[selectedHaven] || []).map((ch) => (
+              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {getHavenName(selectedHaven)}</div>
+              {orderedChannelsFor(selectedHaven).map((ch) => (
                 <div key={ch} onClick={() => { setSelectedChannel(ch); setSelectedDM(null); setShowMobileNav(false); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT }}>
                   <FontAwesomeIcon icon={faHashtag} style={{ marginRight: 8 }} /> #{ch}
                 </div>
@@ -7082,7 +8013,7 @@ export default function Main({ username }: { username: string }) {
                             onMouseEnter={() => beginStreamerReveal(revealKey)}
                             onMouseLeave={() => endStreamerReveal(revealKey)}
                           >
-                            <img src={avatar} alt={p.user} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${meta.color}` }} />
+                            <img src={avatar} alt={p.user} {...avatarLoadProps} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${meta.color}` }} />
                             <span style={{ position: 'absolute', bottom: -2, right: -2 }}>{renderCallStatusIconGraphic(meta, 12)}</span>
                           </div>
                           <div style={{ flex: 1 }}>
@@ -7103,7 +8034,7 @@ export default function Main({ username }: { username: string }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
               <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                {viewerCallMeta.label} • {callLocationInfo?.label || 'Direct Call'}
+                {viewerCallMeta.label}  -  {callLocationInfo?.label || 'Direct Call'}
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button

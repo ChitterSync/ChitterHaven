@@ -131,6 +131,7 @@ async function loadPermissions(haven: string) {
   }
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const payload = await requireUser(req, res);
   if (!payload) return;

@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faXmark, faUserPlus, faUserCheck, faUserXmark, faCommentDots, faLink, faLocationDot, faEdit } from "@fortawesome/free-solid-svg-icons";
 
@@ -9,6 +9,9 @@ type Props = {
   username: string;
   me: string;
   contextLabel?: string;
+  blockedUsers?: string[];
+  showBlockActions?: boolean;
+  onToggleBlock?: (user: string, nextBlocked: boolean) => void;
   callPresence?: {
     color: string;
     label: string;
@@ -20,13 +23,17 @@ type Props = {
 
 type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
 
-export default function ProfileModal({ isOpen, onClose, username, me, contextLabel, callPresence }: Props) {
+export default function ProfileModal({ isOpen, onClose, username, me, contextLabel, blockedUsers, showBlockActions, onToggleBlock, callPresence }: Props) {
   const [profile, setProfile] = useState<any>(null);
   const [friends, setFriends] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
   const [status, setStatus] = useState<string>("offline");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [richPresence, setRichPresence] = useState<RichPresence | null>(null);
   const [mutual, setMutual] = useState<{ havens: string[]; groupDMs: { id: string; users: string[] }[] }>({ havens: [], groupDMs: [] });
+  const [selfHavens, setSelfHavens] = useState<string[]>([]);
+  const [selfHavenMap, setSelfHavenMap] = useState<Record<string, string>>({});
+  const [selfGroupDMs, setSelfGroupDMs] = useState<{ id: string; users: string[]; title?: string }[]>([]);
+  const [confirmAction, setConfirmAction] = useState<null | { title: string; body: string; confirmLabel: string; onConfirm: () => void }>(null);
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<any>({});
   const [isMobileLayout, setIsMobileLayout] = useState(false);
@@ -52,9 +59,58 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
         setRichPresence(d.richPresence?.[username] || null);
       })
       .catch(()=>{});
-    fetch(`/api/mutual?user=${encodeURIComponent(username)}`).then(r=>r.json()).then(setMutual).catch(()=>{});
+    (async () => {
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const settingsJson = await settingsRes.json().catch(() => ({}));
+        const settingsPayload = settingsJson?.settings || settingsJson || {};
+        const rawHavens = settingsPayload?.havens;
+        const havenEntries =
+          rawHavens && typeof rawHavens === 'object'
+            ? Object.entries(rawHavens)
+            : [];
+        const havenMap = havenEntries.reduce<Record<string, string>>((acc, [key, value]) => {
+          if (Array.isArray(value)) {
+            acc[key] = key;
+            return acc;
+          }
+          if (value && typeof value === 'object' && typeof (value as any).name === 'string') {
+            acc[key] = String((value as any).name);
+            return acc;
+          }
+          acc[key] = key;
+          return acc;
+        }, {});
+        setSelfHavenMap(havenMap);
+        if (username === me) {
+          const havenNames = Object.values(havenMap).filter(Boolean);
+          setSelfHavens(Array.from(new Set(havenNames)));
+        }
+      } catch {
+        setSelfHavenMap({});
+        if (username === me) setSelfHavens([]);
+      }
+      if (username === me) {
+        try {
+          const dmsRes = await fetch('/api/dms');
+          const dmsJson = await dmsRes.json().catch(() => ({}));
+          const dms = Array.isArray(dmsJson?.dms) ? dmsJson.dms : [];
+          const groups = dms
+            .filter((dm) => dm?.group && Array.isArray(dm.users) && dm.users.includes(me))
+            .map((dm) => ({ id: dm.id, users: dm.users || [], title: dm.title }));
+          setSelfGroupDMs(groups);
+        } catch {
+          setSelfGroupDMs([]);
+        }
+        setMutual({ havens: [], groupDMs: [] });
+      } else {
+        fetch(`/api/mutual?user=${encodeURIComponent(username)}`).then(r=>r.json()).then(setMutual).catch(()=>{});
+        setSelfHavens([]);
+        setSelfGroupDMs([]);
+      }
+    })();
     setEditMode(false);
-  }, [isOpen, username]);
+  }, [isOpen, username, me]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const updateLayout = () => setIsMobileLayout(window.innerWidth < 720);
@@ -62,17 +118,32 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
     window.addEventListener("resize", updateLayout);
     return () => window.removeEventListener("resize", updateLayout);
   }, []);
+  const markAvatarLoaded = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    event.currentTarget.dataset.loaded = "true";
+  }, []);
+  const avatarLoadProps = {
+    "data-avatar": "true",
+    "data-loaded": "false",
+    onLoad: markAvatarLoaded,
+    onError: markAvatarLoaded,
+  } as const;
 
   if (!isOpen) return null;
   const isFriend = friends.friends.includes(username);
   const hasOutgoing = friends.outgoing.includes(username);
   const hasIncoming = friends.incoming.includes(username);
+  const isBlocked = Array.isArray(blockedUsers) && blockedUsers.includes(username);
+  const isSelf = username === me;
 
   const sendAction = async (action: string) => {
     await fetch('/api/friends', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ action, target: username }) });
     const f = await fetch('/api/friends').then(r=>r.json());
     setFriends(f);
   };
+  const openConfirm = (payload: { title: string; body: string; confirmLabel: string; onConfirm: () => void }) => {
+    setConfirmAction(payload);
+  };
+  const closeConfirm = () => setConfirmAction(null);
 
   const dotColor = status === 'online' ? '#22c55e' : status === 'idle' ? '#f59e0b' : status === 'dnd' ? '#ef4444' : '#6b7280';
 
@@ -101,11 +172,29 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
           maxHeight: isMobileLayout ? '100vh' : '90vh',
         }}
       >
-        {/* Banner */}
-        <div style={{ height: isMobileLayout ? 120 : 140, background: profile?.bannerUrl ? `url(${profile.bannerUrl}) center/cover no-repeat` : 'linear-gradient(90deg,#1f2937,#0f172a)', position: 'relative', zIndex: 0 }} />
-        <div style={{ padding: isMobileLayout ? 16 : 18, paddingTop: isMobileLayout ? 24 : 28, overflowY: 'auto', position: 'relative', zIndex: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: isMobileLayout ? -36 : -44, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
-            <img src={profile?.avatarUrl || '/favicon.ico'} alt={profile?.displayName || username} style={{ width: isMobileLayout ? 58 : 72, height: isMobileLayout ? 58 : 72, borderRadius: '50%', border: '3px solid #0b1222', transform: 'translateY(-10px)', zIndex: 3 }} />
+        {/* Banner + avatar layer */}
+        <div style={{ position: 'relative', zIndex: 0 }}>
+          <div style={{ height: isMobileLayout ? 120 : 140, background: profile?.bannerUrl ? `url(${profile.bannerUrl}) center/cover no-repeat` : 'linear-gradient(90deg,#1f2937,#0f172a)' }} />
+          <img
+            src={profile?.avatarUrl || '/favicon.ico'}
+            alt={profile?.displayName || username}
+            {...avatarLoadProps}
+            style={{
+              position: 'absolute',
+              left: isMobileLayout ? 16 : 18,
+              bottom: isMobileLayout ? -26 : -32,
+              width: isMobileLayout ? 58 : 72,
+              height: isMobileLayout ? 58 : 72,
+              borderRadius: '50%',
+              border: '3px solid #0b1222',
+              objectFit: 'cover',
+              zIndex: 3,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            }}
+          />
+        </div>
+        <div style={{ padding: isMobileLayout ? 16 : 18, paddingTop: isMobileLayout ? 42 : 52, overflowY: 'auto', position: 'relative', zIndex: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap', position: 'relative', zIndex: 2 }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 18, color: '#e5e7eb', fontWeight: 600 }}>{profile?.displayName || username}</span>
@@ -120,7 +209,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: 12, color: '#9ca3af' }}>@{username}{profile?.pronouns ? ` • ${profile.pronouns}`: ''}</div>
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>@{username}{profile?.pronouns ? ` - ${profile.pronouns}`: ''}</div>
             </div>
             <button className="btn-ghost" onClick={onClose} style={{ marginLeft: isMobileLayout ? 0 : 'auto', padding: '6px 10px' }}><FontAwesomeIcon icon={faXmark} /></button>
           </div>
@@ -199,7 +288,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 {callPresence.participants.slice(0, 6).map((p) => (
                   <div key={`profile-call-${p.user}`} title={p.user} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid #1f2937', overflow: 'hidden' }}>
-                    <img src={p.avatar} alt={p.user} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={p.avatar} alt={p.user} {...avatarLoadProps} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </div>
                 ))}
                 {callPresence.participants.length === 0 && <div style={{ color: '#9ca3af', fontSize: 12 }}>No participants listed.</div>}
@@ -254,7 +343,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                   <div style={{ display: 'grid', gap: 6 }}>
                     <label style={{ color: '#9ca3af', fontSize: 12 }}>Avatar</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <img src={draft.avatarUrl || profile?.avatarUrl || '/favicon.ico'} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%' }} />
+                      <img src={draft.avatarUrl || profile?.avatarUrl || '/favicon.ico'} alt="avatar" {...avatarLoadProps} style={{ width: 40, height: 40, borderRadius: '50%' }} />
                       <input ref={avatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e)=> { const f = e.currentTarget.files?.[0]; if (f) { const url = await uploadImage(f); setDraft((d:any)=>({ ...d, avatarUrl: url })); } }} />
                       <button className="btn-ghost" onClick={()=> avatarInputRef.current?.click()} style={{ padding: '6px 10px' }}>Upload</button>
                       <button className="btn-ghost" onClick={async ()=> { const link = prompt('Paste image URL'); if (link) setDraft((d:any)=>({ ...d, avatarUrl: link })); }} style={{ padding: '6px 10px' }}>Set from Link</button>
@@ -302,37 +391,100 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                 </>
               )}
               {isFriend && (
-                <button className="btn-ghost" onClick={()=>sendAction('remove')} style={{ padding: '6px 10px' }}><FontAwesomeIcon icon={faUserXmark} /> Remove Friend</button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => openConfirm({
+                    title: 'Remove friend?',
+                    body: `Remove @${username} from your friends list.`,
+                    confirmLabel: 'Remove',
+                    onConfirm: async () => {
+                      await sendAction('remove');
+                      closeConfirm();
+                    },
+                  })}
+                  style={{ padding: '6px 10px' }}
+                >
+                  <FontAwesomeIcon icon={faUserXmark} /> Remove Friend
+                </button>
               )}
               <button className="btn-ghost" style={{ padding: '6px 10px' }}><FontAwesomeIcon icon={faCommentDots} /> Message</button>
+              {showBlockActions !== false && (
+                <button
+                  className="btn-ghost"
+                  onClick={() => openConfirm({
+                    title: isBlocked ? 'Unblock user?' : 'Block user?',
+                    body: isBlocked
+                      ? `Allow @${username} to message you again.`
+                      : `Hide @${username}'s messages across ChitterHaven.`,
+                    confirmLabel: isBlocked ? 'Unblock' : 'Block',
+                    onConfirm: () => {
+                      if (onToggleBlock) onToggleBlock(username, !isBlocked);
+                      closeConfirm();
+                    },
+                  })}
+                  style={{ padding: '6px 10px', color: isBlocked ? '#93c5fd' : '#f87171' }}
+                >
+                  <FontAwesomeIcon icon={faUserXmark} /> {isBlocked ? 'Unblock' : 'Block'}
+                </button>
+              )}
             </div>
           )}
         </div>
-        {/* Mutuals */}
-        {(mutual.havens.length > 0 || mutual.groupDMs.length > 0) && (
+        {/* Friends + Havens/DMs */}
+        {(isSelf || mutual.havens.length > 0 || mutual.groupDMs.length > 0) && (
           <div style={{ padding: 16, paddingTop: 0 }}>
-            {mutual.havens.length > 0 && (
+            {isSelf && friends.friends.length > 0 && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>{username === me ? 'Your Havens' : 'Mutual Havens'}</div>
+                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>Friends</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {mutual.havens.map(h => (
-                    <span key={h} className="btn-ghost" style={{ padding: '4px 8px' }}>{h}</span>
+                  {friends.friends.map((friend) => (
+                    <span key={friend} className="btn-ghost" style={{ padding: '4px 8px' }}>@{friend}</span>
                   ))}
                 </div>
               </div>
             )}
-            {mutual.groupDMs.length > 0 && (
+            {(isSelf ? selfHavens.length > 0 : mutual.havens.length > 0) && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>{username === me ? 'Your Group DMs' : 'Mutual Group DMs'}</div>
+                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>{isSelf ? 'Your Havens' : 'Mutual Havens'}</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {mutual.groupDMs.map(g => (
-                    <span key={g.id} className="btn-ghost" title={g.users.join(', ')} style={{ padding: '4px 8px' }}>
-                      Group DM ({g.users.length}): {g.users.slice(0,3).join(', ')}{g.users.length>3?'…':''}
-                    </span>
-                  ))}
+                  {(isSelf ? selfHavens : mutual.havens).map(h => {
+                    const label = isSelf ? h : (selfHavenMap[h] || h);
+                    return (
+                      <span key={h} className="btn-ghost" style={{ padding: '4px 8px' }}>{label}</span>
+                    );
+                  })}
                 </div>
               </div>
             )}
+            {(isSelf ? selfGroupDMs.length > 0 : mutual.groupDMs.length > 0) && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>{isSelf ? 'Your Group DMs' : 'Mutual Group DMs'}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {(isSelf ? selfGroupDMs : mutual.groupDMs).map(g => {
+                    const title = (g as any).title ? String((g as any).title) : '';
+                    const fallback = g.users.slice(0, 3).join(', ');
+                    const overflow = g.users.length > 3 ? '...' : '';
+                    return (
+                      <span key={g.id} className="btn-ghost" title={g.users.join(', ')} style={{ padding: '4px 8px' }}>
+                        {title ? `Group DM: ${title}` : `Group DM (${g.users.length}): ${fallback}${overflow}`}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {confirmAction && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 90 }}>
+            <div style={{ width: 'min(360px, 92vw)', background: '#0b1222', border: '1px solid #1f2937', borderRadius: 12, padding: 16, color: '#e5e7eb', boxShadow: '0 16px 40px rgba(0,0,0,0.4)' }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{confirmAction.title}</div>
+              <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 12 }}>{confirmAction.body}</div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="btn-ghost" onClick={closeConfirm} style={{ padding: '6px 10px' }}>Cancel</button>
+                <button className="btn-ghost" onClick={confirmAction.onConfirm} style={{ padding: '6px 10px', color: '#f87171' }}>{confirmAction.confirmLabel}</button>
+              </div>
+            </div>
           </div>
         )}
       </div>

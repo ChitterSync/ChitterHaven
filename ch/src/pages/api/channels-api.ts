@@ -3,6 +3,7 @@ import { createChannel, getChannel, listUserChannels } from "./channels";
 import { prisma } from "./prismaClient";
 import { requireUser } from "./auth";
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const payload = await requireUser(req, res);
   if (!payload) return;

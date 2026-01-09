@@ -47,6 +47,7 @@ function writeReports(reports: ReportEntry[]) {
   fs.writeFileSync(REPORTS_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const payload = await requireUser(req, res);
   if (!payload) return;

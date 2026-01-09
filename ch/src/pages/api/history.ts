@@ -1,4 +1,3 @@
-
 import fs from "fs";
 import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
@@ -152,6 +151,7 @@ function pinMessage(room: string, messageId: string, pin: boolean): Message | nu
   return msg;
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
     const payload = await requireUser(req, res);

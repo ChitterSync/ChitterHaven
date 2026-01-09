@@ -56,6 +56,8 @@ async function load(haven: string) {
       if (haven === 'ChitterHaven') value.permissions.members['speed_devil50'] = ['Owner'];
       await prisma.serverSetting.upsert({ where: { key: haven }, update: { value: JSON.stringify(value) }, create: { key: haven, value: JSON.stringify(value) } });
     }
+    value.permissions.roles = value.permissions.roles || {};
+    value.permissions.roles.Owner = ['*'];
     return value;
   } catch (e) {
     const local = decryptLocal();
@@ -76,10 +78,13 @@ async function load(haven: string) {
       (local as any)[haven] = value;
       encryptLocal(local);
     }
+    value.permissions.roles = value.permissions.roles || {};
+    value.permissions.roles.Owner = ['*'];
     return value;
   }
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const payload = await requireUser(req, res);
   if (!payload) return;
@@ -98,6 +103,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const { action } = req.body || {};
     const value = await load(haven);
     const perms = value.permissions as { roles: RolesMap; members: MembersMap; defaults: any };
+    const ensureOwnerRole = () => {
+      perms.roles = perms.roles || {};
+      perms.roles.Owner = ['*'];
+    };
+    const isOwnerUser = (user?: string) => {
+      if (!user) return false;
+      const roles = (perms.members?.[user] || []) as string[];
+      return roles.includes('Owner');
+    };
+    const ownerUsers = () =>
+      Object.entries(perms.members || {}).filter(([, roles]) => (roles || []).includes('Owner')).map(([user]) => user);
     // Helper to compute whether a user has a permission in this haven
     const userHasPerm = (user: string | undefined, permission: string) => {
       if (!user) return false;
@@ -111,16 +127,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return false;
     };
     const actor = payload.username;
+    ensureOwnerRole();
     if (action === 'set-owner') {
       const user = String(req.body.user || '').trim();
       if (!user) return res.status(400).json({ error: 'Missing user' });
-      // only allow owners / manage_server to set a new owner
-      if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
+      const hasOwner = ownerUsers().length > 0;
+      // Allow bootstrapping an initial owner if none exist yet.
+      if (hasOwner && !userHasPerm(actor, 'manage_server') && !isOwnerUser(actor)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
       perms.members[user] = ['Owner'];
     } else if (action === 'assign-role') {
       const user = String(req.body.user || '').trim();
       const role = String(req.body.role || '').trim();
       if (!user || !role) return res.status(400).json({ error: 'Missing user/role' });
+      if (role === 'Owner' && !isOwnerUser(actor)) return res.status(403).json({ error: 'Forbidden' });
       if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       const list = new Set(perms.members[user] || []);
       list.add(role);
@@ -129,24 +150,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const user = String(req.body.user || '').trim();
       const role = String(req.body.role || '').trim();
       if (!user || !role) return res.status(400).json({ error: 'Missing user/role' });
+      if (role === 'Owner') {
+        if (!isOwnerUser(actor)) return res.status(403).json({ error: 'Forbidden' });
+        const owners = ownerUsers();
+        if (owners.length <= 1 && owners.includes(user)) {
+          return res.status(400).json({ error: 'Cannot remove the last owner' });
+        }
+      }
       if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       perms.members[user] = (perms.members[user] || []).filter(r => r !== role);
     } else if (action === 'define-role') {
       const role = String(req.body.role || '').trim();
       const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : [];
       if (!role) return res.status(400).json({ error: 'Missing role' });
+      if (role === 'Owner') return res.status(403).json({ error: 'Cannot edit Owner role' });
       if (!userHasPerm(actor, 'manage_roles') && !userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       perms.roles[role] = permissions;
     } else if (action === 'kick') {
       // add a short-lived kick record; requires manage_server
       const user = String(req.body.user || '').trim();
       if (!user) return res.status(400).json({ error: 'Missing user' });
+      if (isOwnerUser(user) && !isOwnerUser(actor)) return res.status(403).json({ error: 'Forbidden' });
       if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       if (!Array.isArray((perms as any).kicked)) (perms as any).kicked = [];
       (perms as any).kicked.push({ user, by: actor, at: Date.now() });
     } else if (action === 'ban') {
       const user = String(req.body.user || '').trim();
       if (!user) return res.status(400).json({ error: 'Missing user' });
+      if (isOwnerUser(user) && !isOwnerUser(actor)) return res.status(403).json({ error: 'Forbidden' });
       if (!userHasPerm(actor, 'manage_server')) return res.status(403).json({ error: 'Forbidden' });
       if (!Array.isArray((perms as any).banned)) (perms as any).banned = [];
       if (!((perms as any).banned.includes(user))) (perms as any).banned.push(user);

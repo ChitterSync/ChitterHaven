@@ -102,6 +102,15 @@ body.ch-theme-transition * {
   transition-timing-function: cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 
+img[data-avatar] {
+  filter: blur(10px);
+  transition: filter 180ms ease;
+}
+
+img[data-avatar][data-loaded="true"] {
+  filter: blur(0);
+}
+
 /* Scrollbar */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }

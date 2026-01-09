@@ -65,6 +65,50 @@ function setCookie(
   res.headers.append('Set-Cookie', cookie);
 }
 
+const PBKDF2_ITERS = 150000;
+const PBKDF2_BYTES = 32;
+const textEncoder = new TextEncoder();
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function hashPassword(password: string, saltBase64?: string) {
+  const salt = saltBase64 ? base64ToBytes(saltBase64) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', textEncoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    key,
+    PBKDF2_BYTES * 8,
+  );
+  const hash = bytesToBase64(new Uint8Array(bits));
+  return { hash, salt: saltBase64 || bytesToBase64(salt) };
+}
+
+async function verifyPassword(password: string, user: any) {
+  if (user.passwordHash && user.passwordSalt) {
+    const { hash } = await hashPassword(password, user.passwordSalt);
+    return { ok: hash === user.passwordHash, needsUpgrade: false };
+  }
+  if (user.password && user.password === password) {
+    return { ok: true, needsUpgrade: true };
+  }
+  return { ok: false, needsUpgrade: false };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -87,10 +131,16 @@ export async function POST(req: NextRequest) {
     }
     const user = JSON.parse(await userObj.text());
 
-    // NOTE: password is assumed to be encrypted client-side already.
-    // Here we just do a raw equality check.
-    if (!user.password || user.password !== password) {
+    const verify = await verifyPassword(password, user);
+    if (!verify.ok) {
       return NextResponse.json({ error: 'Invalid credentials.' }, { status: 401 });
+    }
+    if (verify.needsUpgrade) {
+      const { hash, salt } = await hashPassword(password);
+      user.passwordHash = hash;
+      user.passwordSalt = salt;
+      delete user.password;
+      await r2.put(`user:${userId}`, JSON.stringify(user));
     }
 
     const sessionId = uuidv4();

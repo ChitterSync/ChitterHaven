@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 
+// --- singleton client so dev doesn't fork the database.
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
 
 export const prisma =

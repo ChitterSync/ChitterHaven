@@ -2,17 +2,22 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import cookie from "cookie";
 import { verifyJWT } from "./jwt";
+import { getAuthCookie } from "./_lib/authCookie";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/settings.json");
-const DEFAULT_HAVENS: Record<string, string[]> = {
-  ChitterHaven: ["general", "random"],
+type HavenRecord = { name: string; channels: string[] };
+type HavenMap = Record<string, HavenRecord>;
+
+const DEFAULT_HAVENS: HavenMap = {
+  ChitterHaven: { name: "ChitterHaven", channels: ["general", "random"] },
 };
-const cloneDefaultHavens = () =>
-  Object.fromEntries(Object.entries(DEFAULT_HAVENS).map(([name, channels]) => [name, [...channels]]));
+const cloneDefaultHavens = (): HavenMap =>
+  Object.fromEntries(
+    Object.entries(DEFAULT_HAVENS).map(([id, record]) => [id, { name: record.name, channels: [...record.channels] }]),
+  );
 const AUTH_SERVICE_BASE_RAW = process.env.AUTH_SERVICE_URL || process.env.AUTH_BASE_URL || "";
 const AUTH_SERVICE_BASE = AUTH_SERVICE_BASE_RAW ? AUTH_SERVICE_BASE_RAW.replace(/\/$/, "") : "";
 const AUTH_SERVICE_KEY = process.env.AUTH_SERVICE_KEY || process.env.SERVICE_API_KEY || "";
@@ -35,6 +40,7 @@ type UserSettings = {
     maxContentWidth?: number | null;
     accentIntensity?: "subtle" | "normal" | "bold";
     readingMode?: boolean;
+    fillScreen?: boolean;
   };
   accentHex?: string;
   boldColorHex?: string;
@@ -59,10 +65,14 @@ type UserSettings = {
   blurOnUnfocused?: boolean;
   streamerMode?: boolean;
   streamerModeStyle?: 'blur' | 'shorten';
-  havens?: Record<string, string[]>;
+  havens?: HavenMap;
   enableOneko?: boolean;
+  callrfMobileSizing?: boolean;
   friendNicknames?: Record<string, string>;
   havenNicknames?: Record<string, Record<string, string>>;
+  lastSeenUpdateVersion?: string;
+  disableMinorUpdatePopups?: boolean;
+  disableMajorUpdatePopups?: boolean;
 };
 type SettingsData = { users: Record<string, UserSettings> };
 type GlobalSettingsResult =
@@ -86,22 +96,40 @@ function writeSettings(data: SettingsData) {
   fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
 }
 
-function sanitizeHavens(raw: any): Record<string, string[]> {
+function sanitizeHavens(raw: any): HavenMap {
   if (!raw || typeof raw !== "object") {
     return cloneDefaultHavens();
   }
-  const cleaned: Record<string, string[]> = {};
-  for (const [name, channels] of Object.entries(raw)) {
-    if (typeof name !== "string" || !Array.isArray(channels)) continue;
-    const normalized = Array.from(
-      new Set(
-        channels
-          .filter((ch): ch is string => typeof ch === "string")
-          .map((ch) => ch.trim())
-          .filter(Boolean),
-      ),
-    );
-    if (normalized.length > 0) cleaned[name] = normalized;
+  const cleaned: HavenMap = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (typeof id !== "string") continue;
+    if (Array.isArray(value)) {
+      const normalized = Array.from(
+        new Set(
+          value
+            .filter((ch): ch is string => typeof ch === "string")
+            .map((ch) => ch.trim())
+            .filter(Boolean),
+        ),
+      );
+      if (normalized.length > 0) cleaned[id] = { name: id, channels: normalized };
+      continue;
+    }
+    if (value && typeof value === "object") {
+      const name = typeof (value as any).name === "string" && (value as any).name.trim().length
+        ? String((value as any).name).trim()
+        : id;
+      const channelsRaw = Array.isArray((value as any).channels) ? (value as any).channels : [];
+      const normalized = Array.from(
+        new Set(
+          channelsRaw
+            .filter((ch: any): ch is string => typeof ch === "string")
+            .map((ch: string) => ch.trim())
+            .filter(Boolean),
+        ),
+      );
+      if (normalized.length > 0) cleaned[id] = { name, channels: normalized };
+    }
   }
   if (Object.keys(cleaned).length === 0) {
     return cloneDefaultHavens();
@@ -195,6 +223,9 @@ const sanitizeAppearancePatch = (raw: any): UserSettings["appearance"] | undefin
   if (typeof raw.readingMode !== "undefined") {
     patch.readingMode = raw.readingMode === true;
   }
+  if (typeof raw.fillScreen !== "undefined") {
+    patch.fillScreen = raw.fillScreen === true;
+  }
   return Object.keys(patch).length ? patch : undefined;
 };
 
@@ -245,9 +276,9 @@ async function pushGlobalSettings(username: string, settings: UserSettings) {
   }
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const cookies = cookie.parse(req.headers.cookie || "");
-  const token = cookies.chitter_token;
+  const token = getAuthCookie(req);
   const payload: any = token ? verifyJWT(token) : null;
   const me = payload?.username;
   if (!me) return res.status(401).json({ error: "Unauthorized" });
@@ -321,6 +352,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (typeof (patch as any).appearance !== "undefined") {
       patch.appearance = sanitizeAppearancePatch((patch as any).appearance);
+    }
+    if (typeof (patch as any).disableMinorUpdatePopups !== "undefined") {
+      patch.disableMinorUpdatePopups = (patch as any).disableMinorUpdatePopups === true;
+    }
+    if (typeof (patch as any).disableMajorUpdatePopups !== "undefined") {
+      patch.disableMajorUpdatePopups = (patch as any).disableMajorUpdatePopups === true;
+    }
+    if (typeof (patch as any).callrfMobileSizing !== "undefined") {
+      patch.callrfMobileSizing = (patch as any).callrfMobileSizing === true;
+    }
+    if (typeof (patch as any).lastSeenUpdateVersion !== "undefined") {
+      const rawVersion = (patch as any).lastSeenUpdateVersion;
+      if (typeof rawVersion === "string") {
+        const trimmed = rawVersion.trim();
+        if (trimmed) {
+          patch.lastSeenUpdateVersion = trimmed.slice(0, 64);
+        } else {
+          delete (patch as any).lastSeenUpdateVersion;
+        }
+      } else {
+        delete (patch as any).lastSeenUpdateVersion;
+      }
     }
     const remote = await fetchGlobalSettings(me);
     const base = remote.status === "ok" ? remote.settings || {} : current;

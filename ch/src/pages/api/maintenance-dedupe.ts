@@ -23,6 +23,7 @@ function encryptHistory(data: any) {
   fs.writeFileSync(HISTORY_PATH, Buffer.concat([iv, encrypted]), { mode: 0o600 });
 }
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);

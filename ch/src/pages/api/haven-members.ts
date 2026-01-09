@@ -25,6 +25,7 @@ function decryptHistory(): Record<string, Array<{ user: string }>> {
   }
 }
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', ['GET']);

@@ -9,11 +9,25 @@ import Main from "./Main";
 export default function Home() {
   const [user, setUser] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fillScreenActive, setFillScreenActive] = useState(false);
   useEffect(() => {
     fetch('/api/me').then(r => r.json()).then(d => {
       if (d && d.user && d.user.username) setUser(d.user.username);
       setLoading(false);
     }).catch(() => setLoading(false));
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const body = document.body;
+    setFillScreenActive(body?.dataset?.chFillScreen === "true");
+    const handler = (event: Event) => {
+      const custom = event as CustomEvent<{ enabled: boolean }>;
+      if (custom?.detail) {
+        setFillScreenActive(!!custom.detail.enabled);
+      }
+    };
+    window.addEventListener("ch_fill_screen", handler as EventListener);
+    return () => window.removeEventListener("ch_fill_screen", handler as EventListener);
   }, []);
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
@@ -23,11 +37,13 @@ export default function Home() {
       {loading ? (
         <div className="text-gray-400">Loading...</div>
       ) : user ? <Main username={user} /> : <Login onLogin={setUser} />}
-      <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
-        <p>ChitterSync © {new Date().getFullYear()}</p>
-        <p className="hidden md:block opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
-        <p className="hidden md:block opacity-80">v0.1.0 BETA</p>
-      </footer>
+      {!fillScreenActive && (
+        <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
+          <p>ChitterSync Ac {new Date().getFullYear()}</p>
+          <p className="hidden md:block opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>
+          <p className="hidden md:block opacity-80">v0.2.1 BETA</p>
+        </footer>
+      )}
     </div>
   );
 }

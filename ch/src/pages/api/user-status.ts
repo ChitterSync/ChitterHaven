@@ -2,8 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import cookie from "cookie";
 import { verifyJWT } from "./jwt";
+import { getAuthCookie } from "./_lib/authCookie";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -26,13 +26,13 @@ function readSettings(): SettingsData {
   try { return JSON.parse(json); } catch { return { users: {} }; }
 }
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
-  const cookies = cookie.parse(req.headers.cookie || "");
-  const token = cookies.chitter_token;
+  const token = getAuthCookie(req);
   const payload: any = token ? verifyJWT(token) : null;
   if (!payload?.username) return res.status(401).json({ error: "Unauthorized" });
 

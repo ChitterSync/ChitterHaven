@@ -1,9 +1,8 @@
 "use client";
-import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faSearch,
-  faPlus,
   faChevronLeft,
   faChevronRight,
   faChevronDown,
@@ -19,9 +18,13 @@ import {
   faHashtag,
   faGear,
   faServer,
+  faAt,
+  faFaceSmile,
+  faPaperclip,
 } from "@fortawesome/free-solid-svg-icons";
 import NavController from "./NavController";
 import EmojiPicker from "./EmojiPicker";
+import InviteCard, { type InvitePreview } from "./InviteCard";
 
 const COLOR_PANEL = "var(--ch-panel)";
 const COLOR_PANEL_ALT = "var(--ch-panel-alt)";
@@ -32,6 +35,9 @@ const COLOR_BORDER = "var(--ch-border)";
 const COLOR_TEXT = "var(--ch-text)";
 const COLOR_TEXT_MUTED = "var(--ch-text-muted)";
 const BORDER = `1px solid ${COLOR_BORDER}`;
+const INVITE_CODE_RE = /(CHINV-[A-Z0-9]{4,})/i;
+const SWIPE_THRESHOLD = 60;
+const SWIPE_MAX = 90;
 const statusColor = (status?: string) => {
   if (status === "online") return "#22c55e";
   if (status === "idle") return "#f59e0b";
@@ -47,6 +53,13 @@ const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
   return "12h";
 };
 
+const extractInviteCode = (text?: string) => {
+  if (!text || typeof text !== "string") return null;
+  const match = text.match(INVITE_CODE_RE);
+  if (!match || !match[1]) return null;
+  return match[1].toUpperCase();
+};
+
 type MobileDM = {
   id: string;
   users: string[];
@@ -58,6 +71,7 @@ type MobileDM = {
 };
 
 type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
+type HavenRecord = { id: string; name: string; channels: string[] };
 type AppearanceSettings = {
   messageGrouping?: "none" | "compact" | "aggressive";
   messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
@@ -68,6 +82,7 @@ type AppearanceSettings = {
   maxContentWidth?: number | null;
   accentIntensity?: "subtle" | "normal" | "bold";
   readingMode?: boolean;
+  fillScreen?: boolean;
 };
 
 type Props = {
@@ -75,7 +90,7 @@ type Props = {
   setActiveNav: (s: string) => void;
   isMobile: boolean;
   setShowMobileNav: (b: boolean) => void;
-  havens: { [k: string]: string[] };
+  havens: Record<string, HavenRecord>;
   setSelectedHaven: (h: string) => void;
   selectedHaven: string;
   dms: MobileDM[];
@@ -132,6 +147,12 @@ type Props = {
   renderDisplayName?: (user: string, opts?: { revealKey?: string; labelOverride?: string }) => React.ReactNode;
   renderDMLabel?: (dm?: MobileDM | null, opts?: { revealKey?: string }) => React.ReactNode;
   renderDMHandles?: (dm?: MobileDM | null) => React.ReactNode;
+  invitePreviews?: Record<string, InvitePreview>;
+  invitePreviewStatus?: Record<string, "loading" | "error" | "ready">;
+  inviteErrors?: Record<string, string>;
+  inviteJoinStatus?: Record<string, "idle" | "joining" | "success" | "error">;
+  joinInvite?: (code: string) => void;
+  onUploadFiles?: (files: File[]) => void;
 };
 
 export default function MobileApp(props: Props) {
@@ -195,8 +216,26 @@ export default function MobileApp(props: Props) {
     renderDisplayName,
     renderDMLabel,
     renderDMHandles,
+    invitePreviews = {},
+    invitePreviewStatus = {},
+    inviteErrors = {},
+    inviteJoinStatus = {},
+    joinInvite,
+    onUploadFiles,
   } = props;
+  const markAvatarLoaded = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    event.currentTarget.dataset.loaded = "true";
+  }, []);
+  const avatarLoadProps = {
+    "data-avatar": "true",
+    "data-loaded": "false",
+    onLoad: markAvatarLoaded,
+    onError: markAvatarLoaded,
+  } as const;
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [openEmojiFor, setOpenEmojiFor] = useState<string | null>(null);
   const [dmMenuOpen, setDmMenuOpen] = useState(false);
@@ -204,9 +243,82 @@ export default function MobileApp(props: Props) {
   const [collapsedSystemMessages, setCollapsedSystemMessages] = useState<Record<string, boolean>>({});
   const [activityTab, setActivityTab] = useState<"dms" | "friends">("dms");
   const [localFriendsTab, setLocalFriendsTab] = useState<"all" | "online" | "pending">("all");
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionList, setMentionList] = useState<{ username: string; displayName: string; avatarUrl: string }[]>([]);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const [mentionAnchor, setMentionAnchor] = useState<{ start: number; end: number } | null>(null);
+  const [mentionPopupStyle, setMentionPopupStyle] = useState<React.CSSProperties>({});
+  const mentionPopupRef = useRef<HTMLDivElement | null>(null);
+  const [swipeState, setSwipeState] = useState<{ id: string; offset: number } | null>(null);
+  const swipeStartRef = useRef<{ id: string; startX: number; startY: number; offset: number } | null>(null);
+  const [actionSheetMessage, setActionSheetMessage] = useState<any | null>(null);
+  const [emojiSheetOpen, setEmojiSheetOpen] = useState(false);
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+  const [composerHeight, setComposerHeight] = useState(0);
+  const longPressTimerRef = useRef<number | null>(null);
+  const getMentionContext = (value: string, cursor: number) => {
+    const upto = value.slice(0, cursor);
+    const atIndex = upto.lastIndexOf("@");
+    if (atIndex < 0) return null;
+    const prevChar = atIndex > 0 ? upto[atIndex - 1] : " ";
+    if (prevChar && !/\s/.test(prevChar)) return null;
+    const query = upto.slice(atIndex + 1);
+    if (query.includes(" ") || query.includes("\n")) return null;
+    return { start: atIndex, end: cursor, query };
+  };
+  const updateMentionPopupPosition = () => {
+    if (!mentionOpen || !inputRef.current) return;
+    const width = Math.min(360, window.innerWidth - 16);
+    const left = 8;
+    const bottom = Math.max(12, (composerHeight || 64) + keyboardOffset + 8);
+    setMentionPopupStyle({
+      position: "fixed",
+      left,
+      right: 8,
+      bottom,
+      width,
+      maxHeight: Math.min(260, window.innerHeight * 0.4),
+      overflowY: "auto",
+      zIndex: 120,
+    });
+  };
+  const applyMentionSelection = (username: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const value = el.value;
+    const cursor = el.selectionStart ?? value.length;
+    const anchor = mentionAnchor || getMentionContext(value, cursor);
+    const start = anchor?.start ?? cursor;
+    const before = value.slice(0, start);
+    const after = value.slice(cursor);
+    const insert = `@${username} `;
+    const next = `${before}${insert}${after}`;
+    setInput(next);
+    setMentionOpen(false);
+    setMentionQuery("");
+    setMentionAnchor(null);
+    setMentionActiveIndex(0);
+    requestAnimationFrame(() => {
+      try {
+        el.focus();
+        const pos = before.length + insert.length;
+        el.setSelectionRange(pos, pos);
+      } catch {}
+    });
+  };
+  const resizeComposerInput = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const maxHeight = Math.min(160, Math.floor(window.innerHeight * 0.3));
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  };
   const normalizedAppearance = appearance || {};
   const messageGrouping = normalizedAppearance.messageGrouping || "compact";
   const messageStyle = normalizedAppearance.messageStyle || "sleek";
+  const sortChannels = (channels: string[]) => channels.slice().sort((a, b) => a.localeCompare(b));
+  const orderedChannelsFor = (havenId: string) => sortChannels(havens[havenId]?.channels || []);
   const replyCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     messages.forEach((m) => {
@@ -218,6 +330,90 @@ export default function MobileApp(props: Props) {
   }, [messages]);
   const timeFormat = normalizedAppearance.timeFormat || resolveDefaultTimeFormat();
   const timeDisplay = normalizedAppearance.timeDisplay || "absolute";
+  const bottomInset = Math.max(140, composerHeight + keyboardOffset + 90);
+  useEffect(() => {
+    let ignore = false;
+    if (!mentionOpen) return;
+    const q = mentionQuery.trim();
+    (async () => {
+      try {
+        const res = await fetch(`/api/user-search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!ignore) setMentionList(Array.isArray(data.results) ? data.results : []);
+      } catch {
+        if (!ignore) setMentionList([]);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [mentionOpen, mentionQuery]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    setMentionActiveIndex(0);
+  }, [mentionOpen, mentionList.length]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    updateMentionPopupPosition();
+    const handleResize = () => updateMentionPopupPosition();
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("scroll", handleResize, true);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("scroll", handleResize, true);
+    };
+  }, [mentionOpen, input]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const update = () => {
+      const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKeyboardOffset(offset);
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!composerRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setComposerHeight(entry.contentRect.height);
+    });
+    observer.observe(composerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    const handleClick = (event: Event) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (mentionPopupRef.current?.contains(target)) return;
+      if (inputRef.current?.contains(target)) return;
+      setMentionOpen(false);
+      setMentionQuery("");
+      setMentionAnchor(null);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("touchstart", handleClick);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("touchstart", handleClick);
+    };
+  }, [mentionOpen]);
+  useEffect(() => {
+    resizeComposerInput();
+  }, [input]);
   const timestampGranularity = normalizedAppearance.timestampGranularity || "perMessage";
   const systemMessageEmphasis = normalizedAppearance.systemMessageEmphasis || "prominent";
   const maxContentWidth = typeof normalizedAppearance.maxContentWidth === "number" ? normalizedAppearance.maxContentWidth : null;
@@ -281,6 +477,24 @@ export default function MobileApp(props: Props) {
       </Fragment>
     ));
   };
+  const handleBackNav = () => {
+    if (activeNav === "channels") {
+      setActiveNav("havens");
+      return;
+    }
+    if (activeNav === "activity" && selectedDM) {
+      setSelectedDM(null);
+      return;
+    }
+    if (activeNav === "profile") {
+      setActiveNav("home");
+    }
+  };
+  const headerTitle = activeNav === "channels"
+    ? (selectedHaven === "__dms__" ? "Channels" : (havens[selectedHaven]?.name || selectedHaven || "Channels"))
+    : activeNav === "activity"
+      ? (selectedDM ? "Direct Message" : "Activity")
+      : activeNav.charAt(0).toUpperCase() + activeNav.slice(1);
   const renderName = (user: string, revealKey: string) =>
     renderDisplayName ? renderDisplayName(user, { revealKey }) : user;
   const renderNameWithPrefix = (user: string, prefix: string, revealKey: string) =>
@@ -379,46 +593,53 @@ export default function MobileApp(props: Props) {
       {/* Mobile header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: `1px solid ${COLOR_PANEL_ALT}`, background: `linear-gradient(180deg, ${COLOR_CARD}, ${COLOR_CARD_ALT})` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className="btn-ghost" onClick={() => setShowMobileNav(true)} style={{ padding: 8 }} aria-label="Open">
-            <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(90deg)' }} />
-          </button>
-          <div style={{ fontWeight: 700, fontSize: 16 }}>{activeNav.charAt(0).toUpperCase() + activeNav.slice(1)}</div>
-        </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn-ghost" onClick={() => setShowUserSettings && setShowUserSettings(true)} aria-label="Search" style={{ padding: 8 }}>
-              <FontAwesomeIcon icon={faSearch} />
+          {(activeNav === "channels" || (activeNav === "activity" && selectedDM) || activeNav === "profile") ? (
+            <button className="btn-ghost" onClick={handleBackNav} style={{ padding: 10, minWidth: 44, minHeight: 44 }} aria-label="Back">
+              <FontAwesomeIcon icon={faChevronLeft} /> <span style={{ marginLeft: 6, fontSize: 12 }}>Back</span>
             </button>
-            {setShowServerSettings && selectedHaven && selectedHaven !== "__dms__" && (
-              <button
-                className="btn-ghost"
-                onClick={() => setShowServerSettings(true)}
-                aria-label="Server settings"
-                style={{ padding: 8 }}
-              >
-                <FontAwesomeIcon icon={faServer} />
-              </button>
-            )}
-            {currentAvatarUrl ? (
-              <img
-                src={currentAvatarUrl}
-                alt={username}
-                style={{ width: 36, height: 36, borderRadius: 18, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.03)' }}
-                onClick={() => setActiveNav('profile')}
-              />
-            ) : (
-              <div
-                style={{ width: 36, height: 36, borderRadius: 18, background: COLOR_PANEL, display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT }}
-                onClick={() => setActiveNav('profile')}
-              >
-                {username?.charAt(0)?.toUpperCase() ?? 'U'}
-              </div>
-            )}
-          </div>
+          ) : (
+            <button className="btn-ghost" onClick={() => setShowMobileNav(true)} style={{ padding: 10, minWidth: 44, minHeight: 44 }} aria-label="Open navigation">
+              <FontAwesomeIcon icon={faBars} />
+            </button>
+          )}
+          <div style={{ fontWeight: 700, fontSize: 16 }}>{headerTitle}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn-ghost" onClick={() => setShowUserSettings && setShowUserSettings(true)} aria-label="User settings" style={{ padding: 10, minWidth: 44, minHeight: 44 }}>
+            <FontAwesomeIcon icon={faGear} />
+          </button>
+          {setShowServerSettings && selectedHaven && selectedHaven !== "__dms__" && (
+            <button
+              className="btn-ghost"
+              onClick={() => setShowServerSettings(true)}
+              aria-label="Server settings"
+              style={{ padding: 10, minWidth: 44, minHeight: 44 }}
+            >
+              <FontAwesomeIcon icon={faServer} />
+            </button>
+          )}
+          {currentAvatarUrl ? (
+            <img
+              src={currentAvatarUrl}
+              alt={username}
+              {...avatarLoadProps}
+              style={{ width: 36, height: 36, borderRadius: 18, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.03)' }}
+              onClick={() => setActiveNav('profile')}
+            />
+          ) : (
+            <div
+              style={{ width: 36, height: 36, borderRadius: 18, background: COLOR_PANEL, display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT }}
+              onClick={() => setActiveNav('profile')}
+            >
+              {username?.charAt(0)?.toUpperCase() ?? 'U'}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Main content area */}
       {/* adjust bottom padding so fixed nav / FAB don't overlap content on mobile */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 12, paddingBottom: bottomInset }}>
         {activeNav === 'home' && (
           <div>
             <div style={{ padding: 12, borderRadius: 12, background: COLOR_CARD, marginBottom: 12 }}>
@@ -438,9 +659,9 @@ export default function MobileApp(props: Props) {
             {selectedHaven && selectedHaven !== '__dms__' && (
               <div style={{ padding: 12, borderRadius: 12, background: COLOR_PANEL_ALT, border: BORDER, marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div>
-                  <div style={{ fontWeight: 700 }}>{selectedHaven}</div>
+                  <div style={{ fontWeight: 700 }}>{havens[selectedHaven]?.name || selectedHaven}</div>
                   <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>
-                    {(havens[selectedHaven] || []).length ? `Channels: ${(havens[selectedHaven] || []).slice(0, 3).map((c) => `#${c}`).join(', ')}` : 'No channels yet.'}
+                    {orderedChannelsFor(selectedHaven).length ? `Channels: ${orderedChannelsFor(selectedHaven).slice(0, 3).map((c) => `#${c}`).join(', ')}` : 'No channels yet.'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -460,9 +681,9 @@ export default function MobileApp(props: Props) {
             )}
             {Object.keys(havens).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED' }}>No havens yet.</div>}
             {Object.keys(havens).map(h => (
-              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8 }}>
-                <div style={{ fontWeight: 700 }}>{h}</div>
-                <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>{(havens[h] || []).slice(0,3).map(c => `#${c}`).join(' • ')}</div>
+              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(orderedChannelsFor(h)[0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8 }}>
+                <div style={{ fontWeight: 700 }}>{havens[h]?.name || h}</div>
+                <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>{(havens[h]?.channels || []).slice(0,3).map(c => `#${c}`).join('  -  ')}</div>
               </div>
             ))}
           </div>
@@ -589,7 +810,7 @@ export default function MobileApp(props: Props) {
                     >
                       <div style={{ width: 40, height: 40, borderRadius: '35%', border: BORDER, background: '#040c1a', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                         {groupAvatar ? (
-                          <img src={groupAvatar} alt={title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <img src={groupAvatar} alt={title} {...avatarLoadProps} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                         ) : (
                           <span style={{ fontWeight: 700 }}>{initials}</span>
                         )}
@@ -675,7 +896,7 @@ export default function MobileApp(props: Props) {
                             }}
                           >
                             <div style={{ position: 'relative', width: 38, height: 38 }}>
-                              <img src={avatar} alt={friend} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                              <img src={avatar} alt={friend} {...avatarLoadProps} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
                               <span style={{ position: 'absolute', bottom: 2, right: 2, width: 10, height: 10, borderRadius: '50%', border: `2px solid ${COLOR_PANEL}`, background: statusColor(presenceMap[friend]) }} />
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
@@ -719,7 +940,7 @@ export default function MobileApp(props: Props) {
                             const revealKey = `mobile-incoming-${friend}`;
                             return (
                               <div key={`incoming-${friend}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, border: BORDER, background: COLOR_PANEL_ALT }}>
-                                <img src={avatar} alt={friend} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                                <img src={avatar} alt={friend} {...avatarLoadProps} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
                                 <div style={{ flex: 1 }}>
                                   <div style={{ fontWeight: 600 }}>{renderName(friend, revealKey)}</div>
                                   <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</div>
@@ -751,7 +972,7 @@ export default function MobileApp(props: Props) {
                             const revealKey = `mobile-outgoing-${friend}`;
                             return (
                               <div key={`outgoing-${friend}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, border: BORDER, background: COLOR_PANEL_ALT }}>
-                                <img src={avatar} alt={friend} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
+                                <img src={avatar} alt={friend} {...avatarLoadProps} style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: BORDER }} />
                                 <div style={{ flex: 1 }}>
                                   <div style={{ fontWeight: 600 }}>{renderName(friend, revealKey)}</div>
                                   <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</div>
@@ -804,7 +1025,7 @@ export default function MobileApp(props: Props) {
         {/* Channel / message view */}
         {(activeNav === 'channels' || activeNav === 'activity') && (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>{activeNav === 'channels' ? `Channels in ${selectedHaven}` : 'Messages'}</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{activeNav === 'channels' ? `Channels in ${havens[selectedHaven]?.name || selectedHaven}` : 'Messages'}</div>
 
             {mobileCallsEnabled && (
               <div
@@ -1290,6 +1511,67 @@ export default function MobileApp(props: Props) {
                     </div>
                   );
                 })() : null;
+                const inviteCode = extractInviteCode(m.text || "");
+                const invitePreview = inviteCode ? invitePreviews[inviteCode] : null;
+                const inviteStatus = inviteCode ? invitePreviewStatus[inviteCode] : undefined;
+                const inviteError = inviteCode ? inviteErrors[inviteCode] : null;
+                const inviteJoin = inviteCode ? inviteJoinStatus[inviteCode] : "idle";
+                const inviteHaven = invitePreview?.haven || inviteCode || "";
+                const inviteAlreadyJoined = inviteHaven ? !!havens[inviteHaven] : false;
+                const swipeId = m.id || messageKey;
+                const swipeOffset = swipeState?.id === swipeId ? swipeState.offset : 0;
+                const canSwipeActions = ownMessage && !!handleEdit && !!handleDelete;
+                const handleTouchStart = (e: React.TouchEvent) => {
+                  if (isSystemMessage) return;
+                  const touch = e.touches[0];
+                  swipeStartRef.current = {
+                    id: swipeId,
+                    startX: touch.clientX,
+                    startY: touch.clientY,
+                    offset: 0,
+                  };
+                  setSwipeState({ id: swipeId, offset: 0 });
+                  if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+                  longPressTimerRef.current = window.setTimeout(() => {
+                    if (handleReply || canSwipeActions) {
+                      setActionSheetMessage(m);
+                    }
+                  }, 450);
+                };
+                const handleTouchMove = (e: React.TouchEvent) => {
+                  const state = swipeStartRef.current;
+                  if (!state || state.id !== swipeId) return;
+                  const touch = e.touches[0];
+                  const dx = touch.clientX - state.startX;
+                  const dy = touch.clientY - state.startY;
+                  if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return;
+                  if (longPressTimerRef.current) {
+                    window.clearTimeout(longPressTimerRef.current);
+                    longPressTimerRef.current = null;
+                  }
+                  const clamped = Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, dx));
+                  swipeStartRef.current = { ...state, offset: clamped };
+                  setSwipeState({ id: swipeId, offset: clamped });
+                  if (Math.abs(dx) > 10) e.preventDefault();
+                };
+                const handleTouchEnd = () => {
+                  const state = swipeStartRef.current;
+                  if (!state || state.id !== swipeId) return;
+                  if (longPressTimerRef.current) {
+                    window.clearTimeout(longPressTimerRef.current);
+                    longPressTimerRef.current = null;
+                  }
+                  const offset = state.offset;
+                  swipeStartRef.current = null;
+                  setSwipeState(null);
+                  if (offset > SWIPE_THRESHOLD && handleReply) {
+                    handleReply(m);
+                    return;
+                  }
+                  if (offset < -SWIPE_THRESHOLD && canSwipeActions) {
+                    setActionSheetMessage(m);
+                  }
+                };
                 return (
                   <Fragment key={messageKey}>
                     {showDateDivider && (
@@ -1314,7 +1596,7 @@ export default function MobileApp(props: Props) {
                       <div
                         data-mid={m.id}
                         style={{
-                          padding: isMinimalLog ? 6 : 8,
+                          padding: isMinimalLog ? 8 : 10,
                           borderRadius: cardRadius,
                           background: cardBackground,
                           marginBottom: isMinimalLog ? 0 : 12,
@@ -1340,7 +1622,7 @@ export default function MobileApp(props: Props) {
                     <div
                       data-mid={m.id}
                       style={{
-                        padding: isMinimalLog ? 6 : 10,
+                        padding: isMinimalLog ? 8 : 12,
                         borderRadius: cardRadius,
                         background: cardBackground,
                         marginBottom: isMinimalLog ? 0 : (isGrouped ? 6 : 12),
@@ -1348,7 +1630,14 @@ export default function MobileApp(props: Props) {
                         border: cardBorder,
                         borderLeft: threadBorder,
                         opacity: focusDim ? 0.6 : systemOpacity,
+                        transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
+                        transition: swipeOffset ? "none" : "transform 120ms ease",
+                        touchAction: "pan-y",
                       }}
+                      onTouchStart={handleTouchStart}
+                      onTouchMove={handleTouchMove}
+                      onTouchEnd={handleTouchEnd}
+                      onTouchCancel={handleTouchEnd}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1357,6 +1646,7 @@ export default function MobileApp(props: Props) {
                               <img
                                 src={avatarUrl}
                                 alt={m.user}
+                                {...avatarLoadProps}
                                 style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: BORDER }}
                               />
                               <span
@@ -1397,20 +1687,20 @@ export default function MobileApp(props: Props) {
                         </div>
                         {!readingMode && !isSystemMessage && (
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <button className="btn-ghost" title="Reply" onClick={() => handleReply && handleReply(m)} style={{ padding: 6 }}>
+                            <button className="btn-ghost" title="Reply" onClick={() => handleReply && handleReply(m)} style={{ padding: 8, minWidth: 44, minHeight: 44 }}>
                               <FontAwesomeIcon icon={faReply} />
                             </button>
                             {ownMessage && (
                               <>
-                                <button className="btn-ghost" title="Edit" onClick={() => handleEdit && handleEdit(m.id, m.text)} style={{ padding: 6 }}>
+                                <button className="btn-ghost" title="Edit" onClick={() => handleEdit && handleEdit(m.id, m.text)} style={{ padding: 8, minWidth: 44, minHeight: 44 }}>
                                   <FontAwesomeIcon icon={faEdit} />
                                 </button>
-                                <button className="btn-ghost" title="Delete" onClick={() => handleDelete && handleDelete(m.id)} style={{ padding: 6 }}>
+                                <button className="btn-ghost" title="Delete" onClick={() => handleDelete && handleDelete(m.id)} style={{ padding: 8, minWidth: 44, minHeight: 44 }}>
                                   <FontAwesomeIcon icon={faTrash} />
                                 </button>
                               </>
                             )}
-                            <button className="btn-ghost" title="React" onClick={() => setOpenEmojiFor(openEmojiFor === m.id ? null : m.id)} style={{ padding: 6 }}>
+                            <button className="btn-ghost" title="React" onClick={() => setOpenEmojiFor(openEmojiFor === m.id ? null : m.id)} style={{ padding: 8, minWidth: 44, minHeight: 44 }}>
                               <span style={{ fontSize: 14 }}>dY~S</span>
                             </button>
                           </div>
@@ -1426,8 +1716,26 @@ export default function MobileApp(props: Props) {
                           </button>
                         )}
                       </div>
-                      <div style={{ color: COLOR_TEXT, marginTop: 8, whiteSpace: 'pre-wrap', textAlign: isSystemMessage && (isMinimalLog || isBubbles || isRetro) ? 'center' : undefined }}>
-                        {isSystemMessage ? systemContent : m.text}
+                      <div style={{ color: COLOR_TEXT, marginTop: 8, whiteSpace: 'pre-wrap', lineHeight: 1.55, fontSize: 15, textAlign: isSystemMessage && (isMinimalLog || isBubbles || isRetro) ? 'center' : undefined }}>
+                        {isSystemMessage ? (
+                          systemContent
+                        ) : (
+                          <>
+                            {inviteCode && (
+                              <div style={{ marginBottom: 8 }}>
+                                <InviteCard
+                                  preview={invitePreview || undefined}
+                                  status={inviteStatus}
+                                  error={inviteError}
+                                  isJoined={inviteAlreadyJoined}
+                                  isBusy={inviteJoin === "joining"}
+                                  onJoin={() => inviteCode && joinInvite && joinInvite(inviteCode)}
+                                />
+                              </div>
+                            )}
+                            {m.text}
+                          </>
+                        )}
                       </div>
                       <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {(m.reactions && Object.keys(m.reactions).length > 0 && !readingMode)
@@ -1504,12 +1812,21 @@ export default function MobileApp(props: Props) {
       </div>
 
       {dmMenuOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 101 }}>
-          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 110 }}
+          onClick={() => setDmMenuOpen(false)}
+        >
+          <div
+            style={{ width: '100%', maxHeight: '80vh', background: COLOR_PANEL, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTop: BORDER, paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 8 }}>
+              <div style={{ width: 40, height: 4, borderRadius: 999, background: 'rgba(148,163,184,0.4)' }} />
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Direct Messages</div>
-              <button className="btn-ghost" onClick={() => setDmMenuOpen(false)} style={{ padding: '4px 8px' }}>
-                <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
+              <button className="btn-ghost" onClick={() => setDmMenuOpen(false)} style={{ padding: '6px 10px', minHeight: 44 }}>
+                Close
               </button>
             </div>
             <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
@@ -1525,7 +1842,7 @@ export default function MobileApp(props: Props) {
                   <div
                     key={dm.id}
                     onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setDmMenuOpen(false); setShowMobileNav(false); setActiveNav('activity'); }}
-                    style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT }}
+                    style={{ padding: '12px 10px', borderRadius: 10, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT, minHeight: 52 }}
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ fontWeight: 600, display: 'flex', flexWrap: 'wrap', gap: 4 }}>{renderDMTitleNode(dm, revealKey)}</span>
@@ -1546,22 +1863,84 @@ export default function MobileApp(props: Props) {
               })}
             </div>
           </div>
-          <div style={{ flex: 1 }} onClick={() => setDmMenuOpen(false)} />
+        </div>
+      )}
+
+      {actionSheetMessage && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.7)', zIndex: 110, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+          onClick={() => setActionSheetMessage(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 'min(420px, 94vw)', borderRadius: 18, marginBottom: 16, background: COLOR_PANEL, border: BORDER, padding: 12 }}
+          >
+            <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED, marginBottom: 8 }}>Message actions</div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {handleReply && (
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => {
+                    handleReply(actionSheetMessage);
+                    setActionSheetMessage(null);
+                  }}
+                  style={{ padding: '12px 14px', textAlign: 'left', minHeight: 44 }}
+                >
+                  <FontAwesomeIcon icon={faReply} /> Reply
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  if (handleEdit && actionSheetMessage?.id) handleEdit(actionSheetMessage.id, actionSheetMessage.text || '');
+                  setActionSheetMessage(null);
+                }}
+                style={{ padding: '12px 14px', textAlign: 'left', minHeight: 44 }}
+              >
+                <FontAwesomeIcon icon={faEdit} /> Edit message
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  if (handleDelete && actionSheetMessage?.id) handleDelete(actionSheetMessage.id);
+                  setActionSheetMessage(null);
+                }}
+                style={{ padding: '12px 14px', textAlign: 'left', color: '#fca5a5', minHeight: 44 }}
+              >
+                <FontAwesomeIcon icon={faTrash} /> Delete message
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setActionSheetMessage(null)} style={{ padding: '12px 14px', minHeight: 44 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {channelMenuOpen && selectedHaven && selectedHaven !== '__dms__' && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 101 }}>
-          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 110 }}
+          onClick={() => setChannelMenuOpen(false)}
+        >
+          <div
+            style={{ width: '100%', maxHeight: '80vh', background: COLOR_PANEL, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTop: BORDER, paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 8 }}>
+              <div style={{ width: 40, height: 4, borderRadius: 999, background: 'rgba(148,163,184,0.4)' }} />
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div>
                 <div style={{ fontWeight: 600 }}>Channels</div>
-                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{selectedHaven}</div>
+                <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{havens[selectedHaven]?.name || selectedHaven}</div>
               </div>
-              <button className="btn-ghost" onClick={() => setChannelMenuOpen(false)} style={{ padding: '4px 8px' }}>
-                <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
+              <button className="btn-ghost" onClick={() => setChannelMenuOpen(false)} style={{ padding: '6px 10px', minHeight: 44 }}>
+                Close
               </button>
             </div>
-            <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
+            <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Switch Haven</div>
               {Object.keys(havens).map((h) => (
                 <button
@@ -1569,29 +1948,31 @@ export default function MobileApp(props: Props) {
                   className="btn-ghost"
                   onClick={() => {
                     setSelectedHaven(h);
-                    const firstChannel = havens[h]?.[0] || '';
+                    const firstChannel = orderedChannelsFor(h)[0] || '';
                     setSelectedChannel && setSelectedChannel(firstChannel);
                   }}
                   style={{
                     width: '100%',
                     justifyContent: 'flex-start',
                     marginBottom: 6,
-                    borderRadius: 8,
+                    borderRadius: 10,
                     border: selectedHaven === h ? `1px solid ${accent}` : BORDER,
                     color: selectedHaven === h ? accent : COLOR_TEXT,
-                    padding: '8px 10px',
+                    padding: '12px 10px',
+                    minHeight: 48,
                   }}
                 >
-                  {h}
+                  {havens[h]?.name || h}
                 </button>
               ))}
             </div>
             <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
-              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
-              {(havens[selectedHaven] || []).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED', fontSize: 13 }}>No channels yet.</div>}
-              {(havens[selectedHaven] || []).map((channel) => (
-                <div
+              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {havens[selectedHaven]?.name || selectedHaven}</div>
+              {orderedChannelsFor(selectedHaven).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED', fontSize: 13 }}>No channels yet.</div>}
+              {orderedChannelsFor(selectedHaven).map((channel) => (
+                <button
                   key={channel}
+                  className="btn-ghost"
                   onClick={() => {
                     setSelectedChannel && setSelectedChannel(channel);
                     setChannelMenuOpen(false);
@@ -1599,45 +1980,66 @@ export default function MobileApp(props: Props) {
                     setActiveNav('channels');
                   }}
                   style={{
-                    padding: '8px 6px',
-                    borderRadius: 8,
+                    width: '100%',
+                    padding: '12px 10px',
+                    borderRadius: 10,
                     cursor: 'pointer',
+                    minHeight: 48,
+                    textAlign: 'left',
                     background: selectedChannel === channel ? COLOR_CARD : 'transparent',
                     color: selectedChannel === channel ? '#93c5fd' : COLOR_TEXT,
                   }}
                 >
                   #{channel}
-                </div>
+                </button>
               ))}
             </div>
           </div>
-          <div style={{ flex: 1 }} onClick={() => setChannelMenuOpen(false)} />
         </div>
       )}
-      {/* Mobile navigation drawer */}
+      {/* Mobile navigation sheet */}
       {showMobileNav && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', zIndex: 100 }}>
-          <div style={{ width: '82vw', maxWidth: 360, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 110 }}
+          onClick={() => setShowMobileNav(false)}
+        >
+          <div
+            style={{ width: '100%', maxHeight: '85vh', background: COLOR_PANEL, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTop: BORDER, paddingBottom: 'env(safe-area-inset-bottom)', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 8 }}>
+              <div style={{ width: 40, height: 4, borderRadius: 999, background: 'rgba(148,163,184,0.4)' }} />
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontWeight: 600 }}>Navigate</div>
-              <button className="btn-ghost" onClick={() => setShowMobileNav(false)} style={{ padding: '4px 8px' }}>
-                <FontAwesomeIcon icon={faChevronLeft} style={{ transform: 'rotate(-90deg)' }} />
+              <button className="btn-ghost" onClick={() => setShowMobileNav(false)} style={{ padding: '6px 10px', minHeight: 44 }}>
+                Close
               </button>
             </div>
             <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
               <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Havens</div>
               {Object.keys(havens).map((h) => (
-                <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(havens[h][0] || ''); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT }}>
-                  {h}
-                </div>
+                <button
+                  key={h}
+                  className="btn-ghost"
+                  onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(orderedChannelsFor(h)[0] || ''); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }}
+                  style={{ width: '100%', textAlign: 'left', padding: '12px 10px', borderRadius: 10, marginBottom: 6, background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT, minHeight: 48 }}
+                >
+                  {havens[h]?.name || h}
+                </button>
               ))}
             </div>
             <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT }}>
-              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {selectedHaven}</div>
-              {(havens[selectedHaven] || []).map((ch) => (
-                <div key={ch} onClick={() => { setSelectedChannel && setSelectedChannel(ch); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('activity'); }} style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedHaven === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT }}>
+              <div style={{ fontSize: 12, color: '#93c5fd', marginBottom: 6 }}>Channels in {havens[selectedHaven]?.name || selectedHaven}</div>
+              {orderedChannelsFor(selectedHaven).map((ch) => (
+                <button
+                  key={ch}
+                  className="btn-ghost"
+                  onClick={() => { setSelectedChannel && setSelectedChannel(ch); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }}
+                  style={{ width: '100%', textAlign: 'left', padding: '12px 10px', borderRadius: 10, marginBottom: 6, background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT, minHeight: 48 }}
+                >
                   #{ch}
-                </div>
+                </button>
               ))}
             </div>
             <div style={{ padding: 12, color: COLOR_TEXT, flex: 1, overflowY: 'auto' }}>
@@ -1654,7 +2056,7 @@ export default function MobileApp(props: Props) {
                   <div
                     key={dm.id}
                     onClick={() => { setSelectedHaven('__dms__'); setSelectedDM(dm.id); setShowMobileNav(false); setActiveNav('activity'); }}
-                    style={{ padding: '8px 6px', borderRadius: 8, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT }}
+                    style={{ padding: '12px 10px', borderRadius: 10, cursor: 'pointer', background: selectedDM === dm.id ? COLOR_CARD : 'transparent', color: selectedDM === dm.id ? '#93c5fd' : COLOR_TEXT, minHeight: 52 }}
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ fontWeight: 600, display: 'flex', flexWrap: 'wrap', gap: 4 }}>{renderDMTitleNode(dm, revealKey)}</span>
@@ -1675,19 +2077,12 @@ export default function MobileApp(props: Props) {
               })}
             </div>
           </div>
-          <div style={{ flex: 1 }} onClick={() => setShowMobileNav(false)} />
         </div>
       )}
 
-      {/* Floating action button */}
-      <div style={{ position: 'fixed', right: 18, bottom: isMobile ? 140 : 80, zIndex: 90 }}>
-        <button className="btn-primary" style={{ width: 56, height: 56, borderRadius: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => alert('Create new — hook this up')}>
-          <FontAwesomeIcon icon={faPlus} />
-        </button>
-      </div>
       {/* Jump to bottom button */}
       {!isAtBottom && (
-        <div style={{ position: 'fixed', right: 18, bottom: isMobile ? 200 : 140, zIndex: 95 }}>
+        <div style={{ position: 'fixed', right: 18, bottom: Math.max(200, composerHeight + keyboardOffset + 80), zIndex: 95 }}>
           <button
             className="btn-primary"
             onClick={() => {
@@ -1707,31 +2102,189 @@ export default function MobileApp(props: Props) {
       )}
       {canCompose && (
         <div
+          ref={composerRef}
           style={{
-            position: 'sticky',
-            bottom: 0,
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: keyboardOffset,
             background: COLOR_CARD_ALT,
-            padding: 10,
+            padding: '10px 12px calc(10px + env(safe-area-inset-bottom))',
             borderTop: `1px solid ${COLOR_PANEL_ALT}`,
-            zIndex: 80,
+            zIndex: 95,
           }}
         >
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
+          {mentionOpen && (
+            <div ref={mentionPopupRef} style={{ background: COLOR_PANEL, border: BORDER, borderRadius: 12, ...mentionPopupStyle }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderBottom: BORDER }}>
+                <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>Mention someone</div>
+                <button type="button" className="btn-ghost" onClick={() => setMentionOpen(false)} style={{ padding: '6px 10px', minHeight: 44 }}>
+                  Close
+                </button>
+              </div>
+              <div style={{ padding: 10 }}>
+                <input
+                  value={mentionQuery}
+                  onChange={(e) => setMentionQuery(e.target.value)}
+                  placeholder="Search users"
+                  className="input-dark"
+                  style={{ width: '100%', padding: 10, borderRadius: 10, minHeight: 44 }}
+                />
+              </div>
+              <div>
+                {mentionList.map((u, idx) => {
+                  const isActive = idx === mentionActiveIndex;
+                  return (
+                    <button
+                      key={u.username}
+                      type="button"
+                      onClick={() => applyMentionSelection(u.username)}
+                      style={{
+                        width: '100%',
+                        padding: '12px 14px',
+                        borderBottom: BORDER,
+                        cursor: 'pointer',
+                        color: COLOR_TEXT,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        background: isActive ? 'rgba(59,130,246,0.15)' : 'transparent',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ width: 10, height: 10, borderRadius: 999, background: statusColor(presenceMap[u.username]) }} />
+                      <span>@{u.username}</span>
+                      <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 12 }}>{u.displayName}</span>
+                    </button>
+                  );
+                })}
+                {mentionList.length === 0 && (
+                  <div style={{ padding: 12, color: COLOR_TEXT_MUTED }}>No users found</div>
+                )}
+              </div>
+            </div>
+          )}
+          {emojiSheetOpen && (
+            <div style={{ position: 'fixed', left: 0, right: 0, bottom: composerHeight + keyboardOffset + 8, zIndex: 120, padding: '0 12px' }}>
+              <div style={{ background: COLOR_PANEL, border: BORDER, borderRadius: 16, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderBottom: BORDER }}>
+                  <div style={{ fontWeight: 600 }}>Pick an emoji</div>
+                  <button type="button" className="btn-ghost" onClick={() => setEmojiSheetOpen(false)} style={{ padding: '6px 10px', minHeight: 44 }}>
+                    Close
+                  </button>
+                </div>
+                <div style={{ maxHeight: '40vh', overflow: 'auto' }}>
+                  <EmojiPicker onPick={(char) => { setInput((prev) => `${prev}${char}`); setEmojiSheetOpen(false); }} onClose={() => setEmojiSheetOpen(false)} />
+                </div>
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => setEmojiSheetOpen(true)}
+              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
+              aria-label="Emoji"
+            >
+              <FontAwesomeIcon icon={faFaceSmile} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                const el = inputRef.current;
+                if (!el) return;
+                const cursor = el.selectionStart ?? input.length;
+                const next = `${input.slice(0, cursor)}@${input.slice(cursor)}`;
+                setInput(next);
+                setMentionOpen(true);
+                setMentionQuery("");
+                setMentionAnchor({ start: cursor, end: cursor + 1 });
+                setMentionActiveIndex(0);
+                requestAnimationFrame(() => {
+                  try { el.focus(); el.setSelectionRange(cursor + 1, cursor + 1); } catch {}
+                });
+              }}
+              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
+              aria-label="Mention"
+            >
+              <FontAwesomeIcon icon={faAt} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => uploadInputRef.current?.click()}
+              disabled={!onUploadFiles}
+              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12, opacity: onUploadFiles ? 1 : 0.5 }}
+              aria-label="Attach file"
+            >
+              <FontAwesomeIcon icon={faPaperclip} />
+            </button>
+            <textarea
+              ref={inputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              rows={1}
+              onChange={(e) => {
+                const nextValue = e.target.value;
+                setInput(nextValue);
+                resizeComposerInput();
+                const cursor = e.target.selectionStart ?? nextValue.length;
+                const ctx = getMentionContext(nextValue, cursor);
+                if (ctx) {
+                  setMentionOpen(true);
+                  setMentionQuery(ctx.query);
+                  setMentionAnchor({ start: ctx.start, end: cursor });
+                  setMentionActiveIndex(0);
+                } else {
+                  setMentionOpen(false);
+                  setMentionQuery("");
+                  setMentionAnchor(null);
+                }
+              }}
               onKeyDown={(e) => {
+                if (mentionOpen && (e.key === "Enter" || e.key === "Tab")) {
+                  const target = mentionList[mentionActiveIndex];
+                  if (target) {
+                    e.preventDefault();
+                    applyMentionSelection(target.username);
+                    return;
+                  }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   sendMessage();
                 }
               }}
               placeholder="Message #channel or DM"
-              style={{ flex: 1, padding: 10, borderRadius: 10, background: COLOR_CARD_ALT, border: `1px solid ${COLOR_PANEL_ALT}`, color: COLOR_TEXT }}
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                borderRadius: 14,
+                background: COLOR_CARD_ALT,
+                border: `1px solid ${COLOR_PANEL_ALT}`,
+                color: COLOR_TEXT,
+                fontSize: 15,
+                lineHeight: 1.5,
+                minHeight: 44,
+                maxHeight: 160,
+                resize: 'none',
+              }}
             />
-            <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '8px 12px', borderRadius: 10 }}>
+            <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '10px 14px', borderRadius: 12, minHeight: 44 }}>
               Send
             </button>
+            <input
+              ref={uploadInputRef}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = Array.from(e.target.files || []);
+                if (files.length && onUploadFiles) onUploadFiles(files);
+                if (uploadInputRef.current) uploadInputRef.current.value = '';
+              }}
+            />
           </div>
         </div>
       )}

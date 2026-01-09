@@ -1,66 +1,64 @@
-
-import fs from "fs";
-import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { signJWT } from "./jwt";
-import cookie from "cookie";
 import crypto from "crypto";
+import { readUsers, writeUsers } from "./_lib/usersStore";
+import { generateSalt, hashPasswordPbkdf2, hashPasswordScrypt, timingSafeEqualBase64 } from "./_lib/passwords";
+import { setAuthCookie } from "./_lib/authCookie";
 
-const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const key = crypto.createHash("sha256").update(SECRET).digest();
-
-type UserProfile = {
-  displayName?: string;
-  avatarUrl?: string;
-  bio?: string;
-  [key: string]: any;
-};
-type User = { username: string; password: string; profile?: UserProfile; roles?: string[] };
-type UsersData = { users: User[] };
-
-function decryptUsers(): UsersData {
-  const usersPath = path.join(process.cwd(), "src/pages/api/users.json");
-  if (!fs.existsSync(usersPath)) return { users: [] };
-  const encrypted = fs.readFileSync(usersPath);
-  if (encrypted.length <= 16) return { users: [] };
-  const iv = encrypted.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted.slice(16)),
-    decipher.final()
-  ]).toString();
-  try {
-    return JSON.parse(decrypted);
-  } catch {
-    return { users: [] };
-  }
-}
-
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
   if (!username || !password) {
     res.status(400).json({ error: "Missing username or password" });
     return;
   }
-  const usersData = decryptUsers();
-  const user = usersData.users.find((u) => u.username === username && u.password === password);
+  const usersData = readUsers();
+  const user = usersData.users.find((u) => u.username === username);
   if (user) {
+    const inferredAlgo =
+      user.passwordAlgo ||
+      (user.passwordHash && user.passwordHash.length > 60 ? "scrypt" : "pbkdf2");
+    if (user.passwordHash && user.passwordSalt && inferredAlgo === "scrypt") {
+      const hash = hashPasswordScrypt(password, user.passwordSalt);
+      if (!timingSafeEqualBase64(hash, user.passwordHash)) {
+        res.status(401).json({ error: "Invalid credentials" });
+        return;
+      }
+    } else if (user.passwordHash && user.passwordSalt && inferredAlgo === "pbkdf2") {
+      const hash = hashPasswordPbkdf2(password, user.passwordSalt);
+      if (!timingSafeEqualBase64(hash, user.passwordHash)) {
+        res.status(401).json({ error: "Invalid credentials" });
+        return;
+      }
+      const upgradeSalt = generateSalt();
+      user.passwordHash = hashPasswordScrypt(password, upgradeSalt);
+      user.passwordSalt = upgradeSalt;
+      user.passwordAlgo = "scrypt";
+      writeUsers(usersData);
+    } else if (user.password) {
+      const left = Buffer.from(password);
+      const right = Buffer.from(user.password);
+      if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) {
+        res.status(401).json({ error: "Invalid credentials" });
+        return;
+      }
+      const upgradeSalt = generateSalt();
+      user.passwordHash = hashPasswordScrypt(password, upgradeSalt);
+      user.passwordSalt = upgradeSalt;
+      user.passwordAlgo = "scrypt";
+      delete user.password;
+      writeUsers(usersData);
+    } else {
+      res.status(401).json({ error: "Invalid credentials" });
+      return;
+    }
     // Create JWT and set as HTTP-only cookie
     const token = signJWT({ username: user.username });
-    res.setHeader(
-      "Set-Cookie",
-      cookie.serialize("chitter_token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 7 // 7 days
-      })
-    );
+    setAuthCookie(res, token);
     res.status(200).json({ success: true, username });
   } else {
     res.status(401).json({ error: "Invalid credentials" });

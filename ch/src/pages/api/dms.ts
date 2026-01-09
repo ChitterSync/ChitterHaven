@@ -2,8 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import cookie from "cookie";
 import { verifyJWT } from "./jwt";
+import { getAuthCookie } from "./_lib/authCookie";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -134,9 +134,9 @@ function ensureGroupDM(me: string, others: string[], title?: string, avatarUrl?:
   return { dm, existed: false };
 }
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const cookies = cookie.parse(req.headers.cookie || "");
-  const token = cookies.chitter_token;
+  const token = getAuthCookie(req);
   const payload: any = token ? verifyJWT(token) : null;
   const me = payload?.username;
   if (!me) return res.status(401).json({ error: "Unauthorized" });

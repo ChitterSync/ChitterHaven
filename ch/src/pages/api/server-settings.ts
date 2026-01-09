@@ -37,6 +37,7 @@ function encryptSettings(data: Record<string, any>) {
   fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, encrypted]), { mode: 0o600 });
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const haven = (req.query.haven || req.body.haven) as string;
   if (!haven) {

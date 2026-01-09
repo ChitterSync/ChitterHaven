@@ -1,6 +1,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Readable } from "stream";
 
+// --- R2 channel store (not glamorous, gets the job done).
 const R2_BUCKET = process.env.R2_BUCKET!;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID!;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY!;

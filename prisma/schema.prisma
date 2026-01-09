@@ -22,7 +22,7 @@ model Channel {
 model User {
   id        String   @id @default(cuid())
   username  String   @unique
-  password  String
+  passwordHash  String
   email     String?
   roles     String?  // Comma-separated roles
   createdAt DateTime @default(now())

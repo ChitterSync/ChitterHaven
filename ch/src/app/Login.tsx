@@ -1,9 +1,15 @@
 "use client";
+
+// --- deps (tiny but sharp).
 import { useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
 
-export default function Login({ onLogin }: { onLogin: (username: string) => void }) {
+type LoginProps = {
+  onLogin: (username: string) => void;
+};
+
+export default function Login({ onLogin }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -13,11 +19,16 @@ export default function Login({ onLogin }: { onLogin: (username: string) => void
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    if (!username || !password) {
+      setError("Username and password are required.");
+      return;
+    }
     const endpoint = mode === "login" ? "/api/login" : "/api/register";
+    const requestBody = { username, password };
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(requestBody),
     });
     const data = await res.json();
     if (data.success) {

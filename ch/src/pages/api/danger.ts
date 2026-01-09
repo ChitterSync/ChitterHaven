@@ -19,6 +19,7 @@ function decryptLocal() {
   try { return JSON.parse(json); } catch { return {} as any; }
 }
 
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);

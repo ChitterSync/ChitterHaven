@@ -5,6 +5,7 @@ import type { Socket as NetSocket } from "net";
 import fetch from "node-fetch";
 import cookie from "cookie";
 import { verifyJWT } from "./jwt";
+import { AUTH_COOKIE_NAME } from "./_lib/authCookie";
 
 export const config = {
   api: {
@@ -17,6 +18,7 @@ const userSockets: Record<string, Set<string>> = {};
 
 const getOnlineCount = () => Object.keys(userSockets).length;
 
+// --- handler (the main event).
 export default function handler(req: NextApiRequest, res: any) {
   if (!res.socket.server.io) {
     io = new Server(res.socket.server as unknown as HTTPServer, {
@@ -29,7 +31,7 @@ export default function handler(req: NextApiRequest, res: any) {
       let username: string | null = null;
       try {
         const cookies = cookie.parse(socket.request.headers.cookie || "");
-        const token = cookies.chitter_token;
+        const token = cookies[AUTH_COOKIE_NAME];
         const payload: any = token ? verifyJWT(token) : null;
         if (payload?.username) username = String(payload.username);
       } catch {

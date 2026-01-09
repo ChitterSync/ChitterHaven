@@ -7,6 +7,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faCirclePlay, faCirclePause } from "@fortawesome/free-solid-svg-icons";
 
 type ThemeStop = { color: string; position: number };
+
 type AppearanceSettings = {
   messageGrouping?: "none" | "compact" | "aggressive";
   messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
@@ -17,6 +18,7 @@ type AppearanceSettings = {
   maxContentWidth?: number | null;
   accentIntensity?: "subtle" | "normal" | "bold";
   readingMode?: boolean;
+  fillScreen?: boolean;
 };
 
 type Props = {
@@ -70,26 +72,85 @@ type Settings = {
   enableOneko?: boolean;
   friendNicknames?: Record<string, string>;
   havenNicknames?: Record<string, Record<string, string>>;
+  lastSeenUpdateVersion?: string;
+  disableMinorUpdatePopups?: boolean;
+  disableMajorUpdatePopups?: boolean;
+  blockedUsers?: string[];
+  showBlockActions?: boolean;
+  showReadingModeButton?: boolean;
+  callrfMobileSizing?: boolean;
 };
 
 type ThemePreviewFields = Pick<Settings, "theme" | "accentHex" | "customThemeGradient" | "customThemeImage" | "customThemeStops" | "customThemeAngle">;
+
 type AppearanceProfile = { id: string; name: string; settings: Partial<Settings> };
 
 const RINGTONE_OPTIONS = ["Drive", "Bandwidth", "Drift", "Progress", "Spooky"];
+
+const CustomDropdown = ({ label, items, emptyLabel }: { label: string; items: string[]; emptyLabel: string }) => {
+  const [open, setOpen] = useState(false);
+  const safeItems = Array.isArray(items) ? items : [];
+  return (
+    <div style={{ border: '1px solid #1f2937', borderRadius: 10, background: '#020617' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 10px',
+          color: '#e5e7eb',
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        <span style={{ fontSize: 12, color: '#9ca3af' }}>{safeItems.length}</span>
+      </button>
+      {open && (
+        <div style={{ padding: '8px 10px', borderTop: '1px solid #1f2937', display: 'grid', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+          {safeItems.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#6b7280' }}>{emptyLabel}</div>
+          ) : (
+            safeItems.map((item) => (
+              <div key={item} style={{ fontSize: 13, color: '#e5e7eb' }}>{item}</div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const DEFAULT_CUSTOM_THEME_GRADIENT = "linear-gradient(135deg, rgba(59,130,246,0.85), rgba(30,27,75,0.95))";
+
 const DEFAULT_CUSTOM_THEME_STOPS: ThemeStop[] = [
   { color: "#60a5fa", position: 0 },
   { color: "#4338ca", position: 55 },
   { color: "#7c3aed", position: 100 },
 ];
+
 const DEFAULT_CUSTOM_THEME_ANGLE = 135;
+
 const SECRET_THRESHOLD = 30;
+
 const MAX_STATUS_MESSAGE = 140;
+
 const MAX_RICH_TITLE = 80;
+
 const MAX_RICH_DETAILS = 160;
+
 const APPEARANCE_WIDTHS = [720, 840, 960, 1080];
+
 const APPEARANCE_PROFILE_STORAGE_KEY = "appearance.profiles";
+
 const APPEARANCE_PROFILE_ACTIVE_KEY = "appearance.activeProfileId";
+
+const LOCAL_DESKTOP_NOTIF_KEY = "desktop_notifications_enabled";
+
 const MESSAGE_STYLE_OPTIONS: Array<{ value: AppearanceSettings["messageStyle"]; label: string; description: string }> = [
   { value: "sleek", label: "Sleek", description: "Glass-like cards with balanced spacing." },
   { value: "classic", label: "Classic", description: "Discord-like rows with solid panels." },
@@ -159,6 +220,7 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
       : "normal";
   const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
   const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
+  const fillScreen = typeof base.fillScreen === "boolean" ? base.fillScreen : true;
   return {
     messageGrouping,
     messageStyle,
@@ -169,6 +231,7 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
     maxContentWidth,
     accentIntensity,
     readingMode: base.readingMode === true,
+    fillScreen,
   };
 };
 
@@ -340,6 +403,7 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
   if (!base.callRingtone || !RINGTONE_OPTIONS.includes(base.callRingtone)) base.callRingtone = "Drive";
   if (base.streamerModeStyle !== 'shorten') base.streamerModeStyle = 'blur';
   base.streamerModeHoverReveal = base.streamerModeHoverReveal !== false;
+  base.blurOnUnfocused = base.blurOnUnfocused !== false;
   base.statusMessage = sanitizeStatusMessage(base.statusMessage);
   base.dndIsCosmetic = base.dndIsCosmetic === true;
   base.richPresence = sanitizeRichPresence(base.richPresence);
@@ -364,6 +428,7 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
     base.chatStyle = 'sleek';
   }
   base.enableOneko = base.enableOneko === true;
+  base.callrfMobileSizing = base.callrfMobileSizing === true;
   base.appearance = normalizeAppearanceSettings(base.appearance, hasExistingSettings);
   if (!base.appearance?.messageStyle) {
     base.appearance = { ...base.appearance, messageStyle: base.chatStyle };
@@ -391,6 +456,13 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
             ]),
         )
       : {};
+  base.disableMinorUpdatePopups = base.disableMinorUpdatePopups === true;
+  base.disableMajorUpdatePopups = base.disableMajorUpdatePopups === true;
+  base.showBlockActions = base.showBlockActions !== false;
+  base.showReadingModeButton = base.showReadingModeButton !== false;
+  base.blockedUsers = Array.isArray(base.blockedUsers)
+    ? Array.from(new Set(base.blockedUsers.filter((u) => typeof u === "string").map((u) => u.trim()).filter(Boolean)))
+    : [];
   return base;
 };
 
@@ -401,12 +473,16 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const [appearanceProfiles, setAppearanceProfiles] = useState<AppearanceProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(false);
+  const [accountFriends, setAccountFriends] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
+  const [blockInput, setBlockInput] = useState("");
+  const [confirmBlockRemoval, setConfirmBlockRemoval] = useState<string | null>(null);
   const [syncProfilesEnabled, setSyncProfilesEnabled] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(false);
   const lastSavedThemeRef = useRef<ThemePreviewFields | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const [tab, setTab] = useState<'appearance'|'notifications'|'status'|'account'|'guides'|'dev'|'about'|'secrets'>('appearance');
+  const [tab, setTab] = useState<'appearance'|'notifications'|'privacy'|'status'|'account'|'guides'|'dev'|'about'|'secrets'>('appearance');
   const [guideChecked, setGuideChecked] = useState(true);
   const [guideLevel, setGuideLevel] = useState(60);
   const [demoToggleArmed, setDemoToggleArmed] = useState(false);
@@ -422,7 +498,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const [isLegacyAccount, setIsLegacyAccount] = useState(true);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     const updateLayout = () => setIsMobileLayout(window.innerWidth < 860);
@@ -430,7 +505,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     window.addEventListener("resize", updateLayout);
     return () => window.removeEventListener("resize", updateLayout);
   }, []);
-
   useEffect(() => {
     if (!isOpen || typeof window === "undefined") return;
     let profiles: AppearanceProfile[] = [];
@@ -452,7 +526,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     }
     setProfilesLoaded(true);
   }, [isOpen]);
-
   useEffect(() => {
     if (!profilesLoaded || typeof window === "undefined") return;
     try {
@@ -464,7 +537,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       }
     } catch {}
   }, [appearanceProfiles, activeProfileId, profilesLoaded]);
-
   useEffect(() => {
     if (!isOpen || !profilesLoaded || loading) return;
     if (appearanceProfiles.length === 0) {
@@ -477,7 +549,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       setActiveProfileId(baseProfile.id);
     }
   }, [appearanceProfiles.length, isOpen, profilesLoaded, settings, loading]);
-
   const fetchSettings = useCallback(async () => {
     setLoading(true);
     try {
@@ -500,14 +571,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     }
     setLoading(false);
   }, []);
-
   useEffect(() => {
     if (settings.enableOneko) {
       setSecretClicks((prev) => (prev >= SECRET_THRESHOLD ? prev : SECRET_THRESHOLD));
       lastSecretCountRef.current = SECRET_THRESHOLD;
     }
   }, [settings.enableOneko]);
-
   useEffect(() => {
     const justUnlocked = secretClicks >= SECRET_THRESHOLD && lastSecretCountRef.current < SECRET_THRESHOLD;
     if (justUnlocked && !settings.enableOneko) {
@@ -518,7 +587,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     }
     lastSecretCountRef.current = secretClicks;
   }, [secretClicks, settings.enableOneko]);
-
   useEffect(() => {
     if (!isOpen) return;
     fetchSettings();
@@ -536,7 +604,51 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       } catch {}
     }
   }, [isOpen, fetchSettings]);
-
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined") return;
+    try {
+      const stored = window.localStorage.getItem(LOCAL_DESKTOP_NOTIF_KEY);
+      setDesktopNotificationsEnabled(stored === "true");
+    } catch {}
+  }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch('/api/friends')
+      .then((r) => r.json())
+      .then((data) => setAccountFriends({
+        friends: Array.isArray(data?.friends) ? data.friends : [],
+        incoming: Array.isArray(data?.incoming) ? data.incoming : [],
+        outgoing: Array.isArray(data?.outgoing) ? data.outgoing : [],
+      }))
+      .catch(() => setAccountFriends({ friends: [], incoming: [], outgoing: [] }));
+  }, [isOpen]);
+  const handleDesktopNotificationsToggle = async () => {
+    if (typeof window === "undefined" || typeof Notification === "undefined") {
+      setSyncWarning("Desktop notifications are not supported in this browser.");
+      return;
+    }
+    if (desktopNotificationsEnabled) {
+      setDesktopNotificationsEnabled(false);
+      try { window.localStorage.setItem(LOCAL_DESKTOP_NOTIF_KEY, "false"); } catch {}
+      try { window.dispatchEvent(new CustomEvent("ch_desktop_notifications", { detail: { enabled: false } })); } catch {}
+      return;
+    }
+    let permission = Notification.permission;
+    if (permission !== "granted") {
+      try {
+        permission = await Notification.requestPermission();
+      } catch {
+        permission = "denied";
+      }
+    }
+    if (permission !== "granted") {
+      setSyncWarning("Notification permission was not granted.");
+      return;
+    }
+    setDesktopNotificationsEnabled(true);
+    try { window.localStorage.setItem(LOCAL_DESKTOP_NOTIF_KEY, "true"); } catch {}
+    try { window.dispatchEvent(new CustomEvent("ch_desktop_notifications", { detail: { enabled: true } })); } catch {}
+  };
   useEffect(() => {
     if (!isOpen || tab !== 'about' || aboutUser || aboutLoading) return;
     (async () => {
@@ -549,14 +661,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       setAboutLoading(false);
     })();
   }, [isOpen, tab, aboutUser, aboutLoading]);
-
   const broadcastSettingsUpdate = (payload: Settings) => {
     try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: payload })); } catch {}
     try { window.dispatchEvent(new CustomEvent('ch_theme_preview', { detail: pickThemeFields(payload) })); } catch {}
   };
-
   const activeProfile = appearanceProfiles.find((profile) => profile.id === activeProfileId) || null;
-
   const applyProfile = useCallback((profile: AppearanceProfile) => {
     const next = normalizeSettings({
       ...settings,
@@ -569,13 +678,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     setSettings(next);
     broadcastSettingsUpdate(next);
   }, [settings]);
-
   const handleSelectProfile = (id: string) => {
     setActiveProfileId(id);
     const profile = appearanceProfiles.find((p) => p.id === id);
     if (profile) applyProfile(profile);
   };
-
   const handleCreateProfile = () => {
     const name = window.prompt("Profile name");
     if (!name) return;
@@ -587,7 +694,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     setAppearanceProfiles((prev) => [...prev, profile]);
     setActiveProfileId(profile.id);
   };
-
   const handleDuplicateProfile = () => {
     if (!activeProfile) return;
     const profile: AppearanceProfile = {
@@ -598,7 +704,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     setAppearanceProfiles((prev) => [...prev, profile]);
     setActiveProfileId(profile.id);
   };
-
   const handleRenameProfile = () => {
     if (!activeProfile) return;
     const name = window.prompt("Rename profile", activeProfile.name);
@@ -609,7 +714,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       prev.map((profile) => (profile.id === activeProfile.id ? { ...profile, name: trimmed } : profile)),
     );
   };
-
   const handleDeleteProfile = () => {
     if (!activeProfile) return;
     if (appearanceProfiles.length <= 1) return;
@@ -620,7 +724,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     setActiveProfileId(next?.id ?? null);
     if (next) applyProfile(next);
   };
-
   const handleUpdateProfile = () => {
     if (!activeProfile) return;
     setAppearanceProfiles((prev) =>
@@ -629,7 +732,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       ),
     );
   };
-
   const save = async () => {
     try {
       const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
@@ -654,7 +756,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     }
     onClose();
   };
-
   const stopPreview = () => {
     if (previewAudioRef.current) {
       try {
@@ -665,7 +766,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     }
     setPreviewing(null);
   };
-
   const previewRingtone = (name: string) => {
     if (previewing === name) {
       stopPreview();
@@ -683,7 +783,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       setPreviewing(null);
     }
   };
-
   const ringtoneOptions: DropdownOption[] = RINGTONE_OPTIONS.map((opt) => ({
     value: opt,
     label: opt === "Drive" ? `${opt} (Default)` : opt,
@@ -698,25 +797,21 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       onClick: () => previewRingtone(opt),
     },
   }));
-
   useEffect(() => {
     if (!isOpen) {
       stopPreview();
     }
   }, [isOpen]);
-
   const dispatchThemePreview = useCallback((payload: ThemePreviewFields | null) => {
     if (!payload) return;
     try {
       window.dispatchEvent(new CustomEvent('ch_theme_preview', { detail: payload }));
     } catch {}
   }, []);
-
   const revertThemePreview = useCallback(() => {
     if (!lastSavedThemeRef.current) return;
     dispatchThemePreview(lastSavedThemeRef.current);
   }, [dispatchThemePreview]);
-
   useEffect(() => {
     if (!isOpen) return;
     if (!lastSavedThemeRef.current) {
@@ -727,9 +822,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       }
     }
   }, [isOpen, setSettings]);
-
   const themeStopsSignature = useMemo(() => JSON.stringify(settings.customThemeStops || []), [settings.customThemeStops]);
-
   useEffect(() => {
     if (!isOpen) return;
     dispatchThemePreview(pickThemeFields(settings));
@@ -743,30 +836,52 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     themeStopsSignature,
     dispatchThemePreview,
   ]);
-
   useEffect(() => {
     if (!isOpen) return undefined;
     return () => {
       revertThemePreview();
     };
   }, [isOpen, revertThemePreview]);
-
   const handleCancel = useCallback(() => {
     revertThemePreview();
     onClose();
   }, [revertThemePreview, onClose]);
-
   if (!isOpen) return null;
   const accent = settings.accentHex || '#60a5fa';
   const appearance = settings.appearance || normalizeAppearanceSettings(undefined, true);
+  const blockedUsers = Array.isArray(settings.blockedUsers) ? settings.blockedUsers : [];
   const messageStyle = appearance.messageStyle || settings.chatStyle || "sleek";
+  const previewAccent = settings.accentHex || '#60a5fa';
+  const previewMention = settings.mentionColorHex || '#f97316';
+  const previewPin = settings.pinColorHex || '#facc15';
+  const previewBubbleBase = messageStyle === 'bubbles' ? '#0b1222' : messageStyle === 'sleek' ? '#0b1222' : messageStyle === 'retro' ? '#0d1b2a' : '#0b1222';
+  const previewCardStyle = (isSelf = false): React.CSSProperties => {
+    if (messageStyle === 'minimal_log') {
+      return { padding: '4px 0', borderBottom: '1px dashed rgba(148,163,184,0.2)' };
+    }
+    if (messageStyle === 'classic') {
+      return { padding: '8px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0b1222' };
+    }
+    if (messageStyle === 'thread_forward') {
+      return { padding: '10px 12px', borderRadius: 10, borderLeft: `3px solid ${previewAccent}`, background: '#0b1222' };
+    }
+    if (messageStyle === 'focus') {
+      return { padding: '10px 12px', borderRadius: 12, background: isSelf ? 'rgba(37,99,235,0.18)' : '#0b1222' };
+    }
+    if (messageStyle === 'retro') {
+      return { padding: '8px 10px', borderRadius: 0, border: '1px solid #1f2937', background: previewBubbleBase };
+    }
+    if (messageStyle === 'bubbles') {
+      return { padding: '10px 12px', borderRadius: 16, background: isSelf ? 'rgba(37,99,235,0.18)' : previewBubbleBase };
+    }
+    return { padding: '10px 12px', borderRadius: 12, border: '1px solid #1f2937', background: previewBubbleBase };
+  };
   const themeStops = settings.customThemeStops && settings.customThemeStops.length >= 2 ? settings.customThemeStops : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
   const themeAngle = normalizeAngle(settings.customThemeAngle ?? DEFAULT_CUSTOM_THEME_ANGLE);
   const gradientPreview =
     (settings.customThemeGradient && settings.customThemeGradient.trim().length ? settings.customThemeGradient : null) ||
     buildGradientFromStops(themeStops, themeAngle) ||
     DEFAULT_CUSTOM_THEME_GRADIENT;
-
   const updateThemeStops = (updater: (stops: ThemeStop[]) => ThemeStop[]) => {
     setSettings((prev) => {
       const current = prev.customThemeStops && prev.customThemeStops.length >= 2 ? cloneStops(prev.customThemeStops) : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
@@ -776,7 +891,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       return { ...prev, customThemeStops: nextStops, customThemeAngle: nextAngle, customThemeGradient: gradient };
     });
   };
-
   const updateThemeAngle = (nextAngle: number) => {
     setSettings((prev) => {
       const current = prev.customThemeStops && prev.customThemeStops.length >= 2 ? cloneStops(prev.customThemeStops) : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
@@ -785,7 +899,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       return { ...prev, customThemeStops: sanitizeStops(current), customThemeAngle: safeAngle, customThemeGradient: gradient };
     });
   };
-
   const handleThemeImageUpload = (file: File | null) => {
     if (!file) return;
     const reader = new FileReader();
@@ -797,7 +910,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     };
     reader.readAsDataURL(file);
   };
-
   const Switch = ({ checked }: { checked: boolean }) => {
     const knobOffset = checked ? 14 : 0;
     return (
@@ -833,12 +945,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
             transition: 'transform 140ms ease-out'
           }}
         >
-          {checked ? '✔' : '✕'}
+          {checked ? 'ON' : 'OFF'}
         </span>
       </span>
     );
   };
-
   const GuideSlider = ({ value, onChange }: { value: number; onChange: (v: number)=>void }) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: 220 }}>
       <div style={{ flex: 1, position: 'relative', height: 4, borderRadius: 999, background: '#111827' }}>
@@ -924,6 +1035,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
           >
             <button className="btn-ghost" onClick={()=> setTab('appearance')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='appearance' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Appearance</button>
             <button className="btn-ghost" onClick={()=> setTab('notifications')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='notifications' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Notifications</button>
+            <button className="btn-ghost" onClick={()=> setTab('privacy')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='privacy' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Privacy</button>
             <button className="btn-ghost" onClick={()=> setTab('status')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='status' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Status</button>
             <button className="btn-ghost" onClick={()=> setTab('account')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='account' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Account</button>
             <button className="btn-ghost" onClick={()=> setTab('guides')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='guides' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Guides & Feedback</button>
@@ -939,12 +1051,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
         </div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
-            <div style={{ fontWeight: 600 }}>User Settings — {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
+            <div style={{ fontWeight: 600 }}>User Settings - {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
             <button onClick={handleCancel} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
           </div>
           <div style={{ padding: 12, color: '#e5e7eb', overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {loading ? (
-              <div style={{ color: '#94a3b8' }}>Loading…</div>
+              <div style={{ color: '#94a3b8' }}>Loading...</div>
             ) : (
               <>
                 {tab === 'appearance' && (
@@ -1070,7 +1182,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             </div>
                           </div>
                           <div style={{ display: 'grid', gap: 6 }}>
-                            <span style={{ color: '#9ca3af', fontSize: 12 }}>Angle ({themeAngle}°)</span>
+                            <span style={{ color: '#9ca3af', fontSize: 12 }}>Angle ({themeAngle} deg)</span>
                             <input
                               type="range"
                               min={0}
@@ -1157,6 +1269,28 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                               </button>
                             );
                           })}
+                        </div>
+                      </div>
+                      <div style={{ padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617', display: 'grid', gap: 10 }}>
+                        <div style={{ fontWeight: 600 }}>Style preview</div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Alex · 12:21</div>
+                            <div style={previewCardStyle(false)}>
+                              <div style={{ fontSize: 13, color: '#e5e7eb' }}>
+                                New chat style active. Here is a normal message.
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>You · 12:22 · edited</div>
+                            <div style={{ ...previewCardStyle(true), borderLeft: `3px solid ${previewPin}` }}>
+                              <div style={{ fontSize: 13, color: '#e5e7eb' }}>
+                                Replying to <span style={{ color: previewAccent }}>@alex</span> with a
+                                <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 6, background: `${previewMention}22`, color: previewMention }}>mention</span>.
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
                       <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
@@ -1347,6 +1481,17 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           <option value="1080">1080px</option>
                         </select>
                       </label>
+                      <button
+                        type="button"
+                        onClick={()=> setSettings(s => ({ ...s, appearance: { ...s.appearance, fillScreen: !s.appearance?.fillScreen } }))}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                      >
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Fill screen layout</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Let the main canvas stretch edge-to-edge.</div>
+                        </div>
+                        <Switch checked={appearance.fillScreen === true} />
+                      </button>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Accent intensity</span>
                         <select
@@ -1367,19 +1512,19 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         </div>
                         <Switch checked={appearance.readingMode === true} />
                       </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, showReadingModeButton: s.showReadingModeButton === false ? true : false }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Show reading mode button</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Toggle the eye icon in the chat header.</div>
+                        </div>
+                        <Switch checked={settings.showReadingModeButton !== false} />
+                      </button>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, reduceMotion: !s.reduceMotion }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
                           <div>Reduce motion</div>
                           <div style={{ fontSize: 11, color: '#9ca3af' }}>Turn off most animations.</div>
                         </div>
                         <Switch checked={!!settings.reduceMotion} />
-                      </button>
-                      <button type="button" onClick={()=> setSettings(s => ({ ...s, blurOnUnfocused: !s.blurOnUnfocused }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
-                        <div style={{ textAlign: 'left' }}>
-                          <div>Blur when unfocused</div>
-                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Hide message text, usernames, and media whenever this tab loses focus.</div>
-                        </div>
-                        <Switch checked={!!settings.blurOnUnfocused} />
                       </button>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, streamerMode: !s.streamerMode }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
@@ -1433,7 +1578,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </button>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, callHavensServers: !s.callHavensServers }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
-                          <div>Call Havens “Servers”</div>
+                          <div>Call Havens 'Servers'</div>
                           <div style={{ fontSize: 11, color: '#9ca3af' }}>Rename Haven labels across the UI.</div>
                         </div>
                         <Switch checked={!!settings.callHavensServers} />
@@ -1510,7 +1655,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                                   className="input-dark"
                                   style={{ padding: 4, fontSize: 11 }}
                                 >
-                                  <option value="">Add…</option>
+                                  <option value="">Add...</option>
                                   {remaining.map(k => (
                                     <option key={k} value={k}>{labels[k] || k}</option>
                                   ))}
@@ -1522,7 +1667,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             <>
                               {renderRow('Your messages', own, applyOwn)}
                               {addRow('Add for your messages', own, applyOwn)}
-                              {renderRow('Others’ messages', others, applyOthers)}
+                              {renderRow("Others' messages", others, applyOthers)}
                               {addRow('Add for others', others, applyOthers)}
                               <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
                                 Tip: keep <strong>More menu</strong> so you can still reach the full context menu.
@@ -1581,6 +1726,17 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         </button>
                         <button
                           type="button"
+                          onClick={handleDesktopNotificationsToggle}
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                        >
+                          <div style={{ textAlign: 'left' }}>
+                            <div>Desktop notifications</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Show alerts when the app is unfocused.</div>
+                          </div>
+                          <Switch checked={desktopNotificationsEnabled} />
+                        </button>
+                        <button
+                          type="button"
                           onClick={()=> setSettings(s => ({ ...s, callsEnabled: !s.callsEnabled }))}
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
                         >
@@ -1626,6 +1782,73 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </div>
                     </div>
                   )}
+                {tab === 'privacy' && (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, blurOnUnfocused: !s.blurOnUnfocused }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Blur when unfocused</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Hide message text, usernames, and media when this tab loses focus.</div>
+                        </div>
+                        <Switch checked={!!settings.blurOnUnfocused} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, showBlockActions: s.showBlockActions === false ? true : false }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Show block actions</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Allow blocking from profile actions.</div>
+                        </div>
+                        <Switch checked={settings.showBlockActions !== false} />
+                      </button>
+                    </div>
+                    <div style={{ padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617', display: 'grid', gap: 8 }}>
+                      <div style={{ fontWeight: 600 }}>Blocked users</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af' }}>Messages from blocked users are hidden everywhere.</div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <input
+                          value={blockInput}
+                          onChange={(e)=> setBlockInput(e.target.value)}
+                          placeholder="Username"
+                          className="input-dark"
+                          style={{ padding: '6px 10px', minWidth: 180 }}
+                        />
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => {
+                            const trimmed = blockInput.trim();
+                            if (!trimmed) return;
+                            if (!blockedUsers.includes(trimmed)) {
+                              setSettings((s) => ({ ...s, blockedUsers: [...blockedUsers, trimmed] }));
+                            }
+                            setBlockInput("");
+                          }}
+                          style={{ padding: '6px 10px' }}
+                        >
+                          Block
+                        </button>
+                      </div>
+                      {blockedUsers.length === 0 ? (
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>No blocked users.</div>
+                      ) : (
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {blockedUsers.map((user) => (
+                            <div key={user} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, border: '1px solid #1f2937' }}>
+                              <span>@{user}</span>
+                              <button
+                                type="button"
+                                className="btn-ghost"
+                                onClick={() => setConfirmBlockRemoval(user)}
+                                style={{ padding: '4px 8px', color: '#f87171' }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {tab === 'status' && (
                   <div style={{ display: 'grid', gap: 12 }}>
                     <label style={{ display: 'grid', gap: 6, maxWidth: 240 }}>
@@ -1754,18 +1977,22 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             setConvertError(null);
                             setConvertMessage(null);
                             setConverting(true);
-                            try {
-                              const res = await fetch('/api/account/convert', { method: 'POST' });
-                              const data = await res.json().catch(() => ({}));
-                              if (!res.ok) {
-                                throw new Error(data?.error || 'Conversion failed.');
-                              } 
-                              setConvertMessage('Account successfully converted. Please sign back in using the new auth service.');
-                              try { await fetch('/api/logout', { method: 'POST' }); } catch {}
-                              await fetchSettings();
-                            } catch (err: any) {
-                              setConvertError(err?.message || 'Conversion failed.');
-                            } finally {
+                              try {
+                                const res = await fetch('/api/account/convert', { method: 'POST' });
+                                const data = await res.json().catch(() => ({}));
+                                if (!res.ok) {
+                                  throw new Error(data?.error || 'Conversion failed.');
+                                } 
+                                if (data?.url) {
+                                  window.location.href = data.url;
+                                  return;
+                                }
+                                setConvertMessage('Conversion link ready. Please sign back in using the new auth service.');
+                                try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+                                await fetchSettings();
+                              } catch (err: any) {
+                                setConvertError(err?.message || 'Conversion failed.');
+                              } finally {
                               setConverting(false);
                             }
                           }}
@@ -1826,6 +2053,19 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <div style={{ fontSize: 11, color: '#6b7280' }}>
                           Preferences saved from mobile, desktop, or the auth portal share the same source of truth. Reload if you change them elsewhere.
                         </div>
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          <div style={{ fontSize: 12, color: '#9ca3af' }}>Account lists</div>
+                          <CustomDropdown
+                            label="Friends"
+                            items={accountFriends.friends.map((friend) => `@${friend}`)}
+                            emptyLabel="No friends yet."
+                          />
+                          <CustomDropdown
+                            label="Blocked users"
+                            items={blockedUsers.map((user) => `@${user}`)}
+                            emptyLabel="No blocked users."
+                          />
+                        </div>
                       </>
                     )}
                   </div>
@@ -1842,7 +2082,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     <div>
                       <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>Your account</div>
                       {aboutLoading && !aboutUser && (
-                        <div style={{ color: '#94a3b8' }}>Loading…</div>
+                        <div style={{ color: '#94a3b8' }}>Loading...</div>
                       )}
                       {!aboutLoading && (
                         <div style={{ fontSize: 13 }}>
@@ -1877,114 +2117,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         ChitterHaven stores your data in encrypted JSON files on the server and uses a JWT cookie for authentication.
                         Basic usage metrics like havens and DMs on this device are kept locally in your browser.
                       </div>
-                    </div>
-                    <div>
-                    <div className="patch-notes-container">
-                        <header className="patch-notes-header">
-                          <h1>
-                            <i className="fa-solid fa-network-wired" /> ChitterHaven Beta Update
-                          </h1>
-                          <p className="version">
-                            Version <strong>v0.2.0 Beta</strong>
-                          </p>
-                          <p className="subtitle">
-                            Ecosystem Integration & Communication Overhaul
-                          </p>
-                        </header>
-
-                        <section>
-                          <h2>
-                            <i className="fa-solid fa-code-branch" /> Core Changes
-                          </h2>
-                          <ul>
-                            <li>
-                              Fully refactored the internal API to integrate with the wider
-                              ChitterSync ecosystem, enabling cross-service compatibility and
-                              future expansion.
-                            </li>
-                            <li>
-                              Multiple features that were previously local-only are now linked to
-                              user accounts, allowing settings and preferences to persist across
-                              devices.
-                            </li>
-                          </ul>
-                        </section>
-
-                        <section>
-                          <h2>
-                            <i className="fa-solid fa-palette" /> User Settings & Customization
-                          </h2>
-                          <ul>
-                            <li>
-                              Added new UI styles: <strong>Sleek</strong> and{" "}
-                              <strong>Bubble</strong>.
-                            </li>
-                            <li>
-                              Added new themes: Midnight, Sunset, Forest, Ocean, and Neon.
-                            </li>
-                            <li>
-                              Introduced a <strong>Custom Theme Creator</strong> for fully
-                              personalized color schemes.
-                            </li>
-                            <li>
-                              Added <strong>Streamer Mode</strong> and{" "}
-                              <strong>Unfocused Blur</strong> to improve privacy and prevent
-                              accidental information exposure.
-                            </li>
-                          </ul>
-                        </section>
-
-                        <section>
-                          <h2>
-                            <i className="fa-solid fa-server" /> Haven (Server) Improvements
-                          </h2>
-                          <ul>
-                            <li>
-                              Refactored server settings to align with the new layout and design
-                              system.
-                            </li>
-                            <li>
-                              Added <strong>Group DMs / Group Chats</strong> with built-in
-                              moderation tiers for better control and safety.
-                            </li>
-                          </ul>
-                        </section>
-
-                        <section>
-                          <h2>
-                            <i className="fa-solid fa-mobile-screen" /> Platform Support
-                          </h2>
-                          <ul>
-                            <li>
-                              Added mobile support with responsive layouts and interaction
-                              handling.
-                            </li>
-                          </ul>
-                        </section>
-
-                        <section>
-                          <h2>
-                            <i className="fa-solid fa-phone" /> Calls & Communication
-                          </h2>
-                          <ul>
-                            <li>Fixed multiple call syncing issues.</li>
-                            <li>
-                              Added audible feedback for mute and unmute actions during calls.
-                            </li>
-                          </ul>
-                        </section>
-
-                        <section className="in-progress">
-                          <h2>
-                            <i className="fa-solid fa-hourglass-half" /> In Progress
-                          </h2>
-                          <ul>
-                            <li>Camera support during calls</li>
-                            <li>Screen sharing during calls</li>
-                            <li>Group DM (GDM) voice and video calls</li>
-                          </ul>
-                        </section>
-                      </div> 
                     </div>
                   </div>
                 )}
@@ -2039,7 +2171,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       <div style={{ fontWeight: 600, marginBottom: 4 }}>Havens / Servers & channels</div>
                       <ul style={{ marginLeft: 16, color: '#e5e7eb' }}>
                         <li>Left sidebar lists Havens (or Servers, if you enabled that label), plus Direct Messages.</li>
-                        <li>Each Haven has its own channels; use the “New Channel” button to add one and choose its type.</li>
+                        <li>Each Haven has its own channels; use the GǣNew ChannelGǥ button to add one and choose its type.</li>
                       </ul>
                     </div>
                     <div>
@@ -2066,7 +2198,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       <div style={{ fontWeight: 600, marginBottom: 4 }}>Feedback</div>
                       <p style={{ color: '#9ca3af', marginBottom: 6 }}>Spotted a bug or have an idea?</p>
                       <textarea
-                        placeholder="Tell us what you like, what feels confusing, or what you’d like to see next."
+                        placeholder="Tell us what you like, what feels confusing, or what you'd like to see next."
                         rows={4}
                         style={{ width: '100%', resize: 'vertical', padding: 8, borderRadius: 8, border: '1px solid #1f2937', background: '#020617', color: '#e5e7eb' }}
                         onBlur={async (e) => {
@@ -2112,6 +2244,19 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <Switch checked={demoToggleArmed} />
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setSettings((s) => ({ ...s, callrfMobileSizing: !s.callrfMobileSizing }))}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 10, border: '1px solid #1f2937', background: '#050c1a' }}
+                    >
+                      <div style={{ textAlign: 'left' }}>
+                        <div style={{ fontWeight: 600 }}>CallRF mobile sizing</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                          Force mobile layout by viewport when enabled. Off disables mobile layout entirely.
+                        </div>
+                      </div>
+                      <Switch checked={settings.callrfMobileSizing === true} />
+                    </button>
                     <div style={{ color: '#9ca3af' }}>
                       Developer tools and diagnostics. These options are for debugging; they don&apos;t change how messages are stored on the server.
                     </div>
@@ -2141,6 +2286,27 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
               <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
             </div>
           </div>
+          {confirmBlockRemoval && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 95 }}>
+              <div style={{ width: 'min(360px, 92vw)', background: '#0b1222', border: '1px solid #1f2937', borderRadius: 12, padding: 16, color: '#e5e7eb', boxShadow: '0 16px 40px rgba(0,0,0,0.4)' }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Remove blocked user?</div>
+                <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 12 }}>Unblock @{confirmBlockRemoval} and allow messages again.</div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button className="btn-ghost" onClick={() => setConfirmBlockRemoval(null)} style={{ padding: '6px 10px' }}>Cancel</button>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => {
+                      setSettings((s) => ({ ...s, blockedUsers: blockedUsers.filter((u) => u !== confirmBlockRemoval) }));
+                      setConfirmBlockRemoval(null);
+                    }}
+                    style={{ padding: '6px 10px', color: '#f87171' }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

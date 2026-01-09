@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { requireUser } from "./auth";
+import { prisma } from "./prismaClient";
 
 type Invite = {
   code: string;
@@ -15,6 +16,7 @@ type Invite = {
 };
 
 const INVITE_PATH = path.join(process.cwd(), "src/pages/api/invites.json");
+const HISTORY_PATH = path.join(process.cwd(), "src/pages/api/history.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const IV_LENGTH = 16;
@@ -47,12 +49,58 @@ function encryptInvites(invites: Invite[]) {
   fs.writeFileSync(INVITE_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
 }
 
+function decryptHistory(): Record<string, Array<{ user: string }>> {
+  if (!fs.existsSync(HISTORY_PATH)) return {};
+  const encrypted = fs.readFileSync(HISTORY_PATH);
+  if (encrypted.length <= IV_LENGTH) return {};
+  const iv = encrypted.slice(0, IV_LENGTH);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+  const decrypted = Buffer.concat([
+    decipher.update(encrypted.slice(IV_LENGTH)),
+    decipher.final(),
+  ]).toString();
+  try {
+    return JSON.parse(decrypted);
+  } catch {
+    return {};
+  }
+}
+
 function isExpired(inv: Invite, now: number) {
   if (inv.expiresAt && now > inv.expiresAt) return true;
   if (inv.maxUses != null && inv.uses >= inv.maxUses) return true;
   return false;
 }
 
+async function loadHavenInfo(haven: string) {
+  try {
+    const setting = await prisma.serverSetting.findUnique({ where: { key: haven } });
+    const value = setting ? JSON.parse(setting.value) : {};
+    return {
+      name: typeof value?.name === "string" ? value.name : haven,
+      icon: typeof value?.icon === "string" ? value.icon : null,
+    };
+  } catch {
+    return { name: haven, icon: null };
+  }
+}
+
+function getHavenMemberCount(haven: string) {
+  const data = decryptHistory();
+  const users = new Set<string>();
+  Object.keys(data).forEach((room) => {
+    const parts = room.split("__");
+    if (parts.length === 2 && parts[0] === haven) {
+      const msgs = data[room] || [];
+      msgs.forEach((m) => {
+        if (m && typeof (m as any).user === "string") users.add((m as any).user);
+      });
+    }
+  });
+  return users.size;
+}
+
+// --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
@@ -67,6 +115,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const now = Date.now();
   const invites = decryptInvites();
 
+  if (action === "preview") {
+    const rawCode = String(req.body.code || "").trim().toUpperCase();
+    if (!rawCode) return res.status(400).json({ error: "Missing code" });
+    const invite = invites.find((inv) => inv.code.toUpperCase() === rawCode);
+    if (!invite) return res.status(404).json({ error: "Invite not found" });
+    if (isExpired(invite, now)) {
+      return res.status(410).json({ error: "Invite expired or exhausted" });
+    }
+    const havenInfo = await loadHavenInfo(invite.haven);
+    const memberCount = getHavenMemberCount(invite.haven);
+    return res.status(200).json({
+      invite: {
+        code: invite.code,
+        haven: invite.haven,
+        createdAt: invite.createdAt,
+        createdBy: invite.createdBy,
+        maxUses: invite.maxUses,
+        uses: invite.uses,
+        expiresAt: invite.expiresAt,
+      },
+      haven: {
+        name: havenInfo.name,
+        icon: havenInfo.icon,
+        memberCount,
+      },
+    });
+  }
+
   if (action === "consume") {
     const rawCode = String(req.body.code || "").trim().toUpperCase();
     if (!rawCode) return res.status(400).json({ error: "Missing code" });
@@ -78,7 +154,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     invites[idx] = { ...invite, uses: invite.uses + 1 };
     encryptInvites(invites);
-    return res.status(200).json({ haven: invite.haven, code: invite.code });
+    const havenInfo = await loadHavenInfo(invite.haven);
+    const memberCount = getHavenMemberCount(invite.haven);
+    return res.status(200).json({
+      haven: invite.haven,
+      code: invite.code,
+      info: {
+        name: havenInfo.name,
+        icon: havenInfo.icon,
+        memberCount,
+      },
+    });
   }
 
   // Default: create invite

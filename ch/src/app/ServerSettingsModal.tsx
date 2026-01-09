@@ -45,6 +45,23 @@ const GRADIENTS = [
   "linear-gradient(135deg, #fbbf24, #f97316)",
 ];
 
+const CACHE_TTL_MS = 30_000;
+const serverSettingsCache = new Map<string, { at: number; data: any }>();
+const permissionsCache = new Map<string, { at: number; data: any }>();
+const auditCache = new Map<string, { at: number; data: any }>();
+const integrationsCache = new Map<string, { at: number; data: any }>();
+
+const getCached = <T,>(store: Map<string, { at: number; data: T }>, key: string): T | null => {
+  const entry = store.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > CACHE_TTL_MS) return null;
+  return entry.data;
+};
+
+const setCached = <T,>(store: Map<string, { at: number; data: T }>, key: string, data: T) => {
+  store.set(key, { at: Date.now(), data });
+};
+
 const strHash = (value: string) => {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -68,19 +85,21 @@ export default function ServerSettingsModal({
   isOpen,
   onClose,
   havenName,
+  havenLabel,
 }: {
   isOpen: boolean;
   onClose: () => void;
   havenName: string;
+  havenLabel?: string;
 }) {
   const [tab, setTab] = useState("overview");
+  const safe = useMemo(() => havenLabel || havenName || "Haven", [havenLabel, havenName]);
   const badge = useMemo(() => {
-    const safe = havenName || "Haven";
     return {
       initials: formatInitials(safe),
       gradient: GRADIENTS[strHash(safe) % GRADIENTS.length],
     };
-  }, [havenName]);
+  }, [safe]);
 
   useEffect(() => {
     if (isOpen) setTab((prev) => prev || "overview");
@@ -93,7 +112,7 @@ export default function ServerSettingsModal({
       <div className="absolute inset-0 bg-black/70 backdrop-blur-md" onClick={onClose} />
       <div className="relative z-10 flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden">
         <header className="text-sm text-white/60">
-          Haven Settings <span className="font-semibold text-white">{havenName}</span>
+          Haven Settings <span className="font-semibold text-white">{safe}</span>
         </header>
         <div className="relative flex min-h-[60vh] flex-1 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#030711]/95 shadow-2xl md:min-h-[560px] md:flex-row">
           <aside className="w-full border-b border-white/5 bg-white/[0.03] p-4 md:w-64 md:border-b-0 md:border-r md:p-5">
@@ -106,7 +125,7 @@ export default function ServerSettingsModal({
               </div>
               <div>
                 <div className="text-xs uppercase tracking-[0.3em] text-white/50">Haven</div>
-                <div className="text-lg font-semibold text-white">{havenName}</div>
+                <div className="text-lg font-semibold text-white">{safe}</div>
               </div>
             </div>
             <nav className="mt-6 flex gap-2 overflow-x-auto pb-2 md:flex-col md:pb-0">
@@ -136,13 +155,13 @@ export default function ServerSettingsModal({
               <FontAwesomeIcon icon={faXmark} size="lg" />
             </button>
             <div className="space-y-6 text-white">
-              {tab === "overview" && <OverviewTab havenName={havenName} />}
-              {tab === "roles" && <RolesTab havenName={havenName} />}
-              {tab === "members" && <MembersTab havenName={havenName} />}
-              {tab === "channels" && <ChannelsTab havenName={havenName} />}
-              {tab === "audit" && <AuditTab havenName={havenName} />}
-              {tab === "integrations" && <IntegrationsTab havenName={havenName} />}
-              {tab === "danger" && <DangerZoneTab havenName={havenName} onClose={onClose} />}
+              {tab === "overview" && <OverviewTab havenName={havenName} havenLabel={safe} />}
+              {tab === "roles" && <RolesTab havenName={havenName} havenLabel={safe} />}
+              {tab === "members" && <MembersTab havenName={havenName} havenLabel={safe} />}
+              {tab === "channels" && <ChannelsTab havenName={havenName} havenLabel={safe} />}
+              {tab === "audit" && <AuditTab havenName={havenName} havenLabel={safe} />}
+              {tab === "integrations" && <IntegrationsTab havenName={havenName} havenLabel={safe} />}
+              {tab === "danger" && <DangerZoneTab havenName={havenName} havenLabel={safe} onClose={onClose} />}
             </div>
           </div>
         </div>
@@ -150,7 +169,7 @@ export default function ServerSettingsModal({
     </div>
   );
 }
-function OverviewTab({ havenName }: { havenName: string }) {
+function OverviewTab({ havenName }: { havenName: string; havenLabel?: string }) {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState(havenName);
   const [icon, setIcon] = useState("");
@@ -158,6 +177,14 @@ function OverviewTab({ havenName }: { havenName: string }) {
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
+    const cached = getCached(serverSettingsCache, havenName);
+    if (cached) {
+      setName(cached.name || havenName);
+      setIcon(cached.icon || "");
+      setDescription(cached.description || "");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`)
       .then((res) => res.json())
@@ -165,6 +192,7 @@ function OverviewTab({ havenName }: { havenName: string }) {
         setName(data.name || havenName);
         setIcon(data.icon || "");
         setDescription(data.description || "");
+        setCached(serverSettingsCache, havenName, data || {});
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -179,6 +207,9 @@ function OverviewTab({ havenName }: { havenName: string }) {
       body: JSON.stringify({ haven: havenName, name, icon, description }),
     });
     setLoading(false);
+    if (res.ok) {
+      setCached(serverSettingsCache, havenName, { name, icon, description });
+    }
     setStatus(res.ok ? "Saved!" : "Error saving settings");
   };
 
@@ -222,7 +253,7 @@ function OverviewTab({ havenName }: { havenName: string }) {
     </section>
   );
 }
-function RolesTab({ havenName }: { havenName: string }) {
+function RolesTab({ havenName }: { havenName: string; havenLabel?: string }) {
   const [loading, setLoading] = useState(true);
   const [roles, setRoles] = useState<{ [user: string]: string[] }>({});
   const [rolePerms, setRolePerms] = useState<{ [role: string]: string[] }>({});
@@ -245,6 +276,14 @@ function RolesTab({ havenName }: { havenName: string }) {
   ];
 
   useEffect(() => {
+    const cached = getCached(permissionsCache, havenName);
+    if (cached) {
+      const perms = cached.permissions || {};
+      setRoles(perms.members || {});
+      setRolePerms(perms.roles || {});
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`)
       .then((res) => res.json())
@@ -252,6 +291,7 @@ function RolesTab({ havenName }: { havenName: string }) {
         const perms = data.permissions || {};
         setRoles(perms.members || {});
         setRolePerms(perms.roles || {});
+        setCached(permissionsCache, havenName, data || {});
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -273,6 +313,8 @@ function RolesTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setRoles(updatedRoles);
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, members: updatedRoles } });
       setStatus("Saved!");
       setNewUser("");
       setNewRole("");
@@ -295,6 +337,8 @@ function RolesTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setRoles(updatedRoles);
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, members: updatedRoles } });
       setStatus("Saved!");
     } else {
       setStatus("Error saving roles");
@@ -322,6 +366,8 @@ function RolesTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setRolePerms((prev) => ({ ...prev, [editRole]: editPerms }));
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, roles: { ...(cachedPerms.roles || {}), [editRole]: editPerms } } });
       setStatus("Saved!");
       setEditRole(null);
     } else {
@@ -424,7 +470,7 @@ function RolesTab({ havenName }: { havenName: string }) {
     </section>
   );
 }
-function MembersTab({ havenName }: { havenName: string }) {
+function MembersTab({ havenName }: { havenName: string; havenLabel?: string }) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<string[]>([]);
   const [roles, setRoles] = useState<{ [user: string]: string[] }>({});
@@ -435,6 +481,18 @@ function MembersTab({ havenName }: { havenName: string }) {
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
+    const cached = getCached(permissionsCache, havenName);
+    if (cached) {
+      const perms = cached.permissions || {};
+      const members = perms.members || {};
+      setUsers(Object.keys(members));
+      setRoles(members);
+      setAllRoles(Object.keys(perms.roles || {}));
+      setBanned(Array.isArray(perms.banned) ? perms.banned : []);
+      setKicked(Array.isArray(perms.kicked) ? perms.kicked : []);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/permissions?haven=${encodeURIComponent(havenName)}`)
       .then((res) => res.json())
@@ -446,6 +504,7 @@ function MembersTab({ havenName }: { havenName: string }) {
         setAllRoles(Object.keys(perms.roles || {}));
         setBanned(Array.isArray(perms.banned) ? perms.banned : []);
         setKicked(Array.isArray(perms.kicked) ? perms.kicked : []);
+        setCached(permissionsCache, havenName, permData || {});
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -472,6 +531,15 @@ function MembersTab({ havenName }: { havenName: string }) {
         }
         return next;
       });
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      const updatedMembers = {
+        ...(cachedPerms.members || {}),
+        [user]: action === "assign-role"
+          ? Array.from(new Set([...(cachedPerms.members?.[user] || []), role]))
+          : (cachedPerms.members?.[user] || []).filter((r: string) => r !== role),
+      };
+      if (updatedMembers[user] && updatedMembers[user].length === 0) delete updatedMembers[user];
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, members: updatedMembers } });
       setStatus("Saved!");
     } else {
       setStatus("Error updating roles");
@@ -489,6 +557,9 @@ function MembersTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setKicked((prev) => [...prev, { user, at: Date.now() }]);
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      const kickedList = Array.isArray(cachedPerms.kicked) ? cachedPerms.kicked : [];
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, kicked: [...kickedList, { user, at: Date.now() }] } });
       setStatus("Kicked");
     } else {
       setStatus("Error kicking user");
@@ -506,6 +577,9 @@ function MembersTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setBanned((prev) => Array.from(new Set([...prev, user])));
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      const bannedList = Array.isArray(cachedPerms.banned) ? cachedPerms.banned : [];
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, banned: Array.from(new Set([...bannedList, user])) } });
       setStatus("Banned");
     } else {
       setStatus("Error banning user");
@@ -523,6 +597,9 @@ function MembersTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setBanned((prev) => prev.filter((u) => u !== user));
+      const cachedPerms = permissionsCache.get(havenName)?.data?.permissions || {};
+      const bannedList = Array.isArray(cachedPerms.banned) ? cachedPerms.banned : [];
+      setCached(permissionsCache, havenName, { permissions: { ...cachedPerms, banned: bannedList.filter((u: string) => u !== user) } });
       setStatus("Unbanned");
     } else {
       setStatus("Error unbanning user");
@@ -623,7 +700,7 @@ function RoleSelect({ roles, onSelect, label }: { roles: string[]; onSelect: (r:
     </div>
   );
 }
-function ChannelsTab({ havenName }: { havenName: string }) {
+function ChannelsTab({ havenName }: { havenName: string; havenLabel?: string }) {
   const [loading, setLoading] = useState(true);
   const [channels, setChannels] = useState<string[]>([]);
   const [newChannel, setNewChannel] = useState("");
@@ -632,11 +709,18 @@ function ChannelsTab({ havenName }: { havenName: string }) {
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
+    const cached = getCached(serverSettingsCache, havenName);
+    if (cached && Array.isArray(cached.channels)) {
+      setChannels(cached.channels);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/server-settings?haven=${encodeURIComponent(havenName)}`)
       .then((res) => res.json())
       .then((data) => {
         setChannels(Array.isArray(data.channels) ? data.channels : []);
+        setCached(serverSettingsCache, havenName, data || {});
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -653,6 +737,8 @@ function ChannelsTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setChannels(updated);
+      const cachedSettings = serverSettingsCache.get(havenName)?.data || {};
+      setCached(serverSettingsCache, havenName, { ...cachedSettings, channels: updated });
       setStatus("Saved!");
     } else {
       setStatus("Error saving channels");
@@ -762,18 +848,25 @@ function ChannelsTab({ havenName }: { havenName: string }) {
     </section>
   );
 }
-function AuditTab({ havenName }: { havenName: string }) {
+function AuditTab({ havenName }: { havenName: string; havenLabel?: string }) {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
+    const cached = getCached(auditCache, havenName);
+    if (cached) {
+      setLogs(Array.isArray(cached) ? cached : Array.isArray(cached?.entries) ? cached.entries : []);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/audit-log?haven=${encodeURIComponent(havenName)}`)
       .then((r) => r.json())
       .then((d) => {
         const arr = Array.isArray(d) ? d : Array.isArray(d?.entries) ? d.entries : [];
         setLogs(arr);
+        setCached(auditCache, havenName, d);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -791,6 +884,7 @@ function AuditTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setLogs([]);
+      setCached(auditCache, havenName, []);
       setStatus("Cleared audit log");
     } else {
       setStatus("Could not clear audit log");
@@ -831,7 +925,7 @@ function AuditTab({ havenName }: { havenName: string }) {
   );
 }
 
-function IntegrationsTab({ havenName }: { havenName: string }) {
+function IntegrationsTab({ havenName, havenLabel }: { havenName: string; havenLabel?: string }) {
   const [loading, setLoading] = useState(true);
   const [integrations, setIntegrations] = useState<any[]>([]);
   const [newUrl, setNewUrl] = useState("");
@@ -839,11 +933,18 @@ function IntegrationsTab({ havenName }: { havenName: string }) {
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
+    const cached = getCached(integrationsCache, havenName);
+    if (cached) {
+      setIntegrations(Array.isArray(cached?.integrations) ? cached.integrations : Array.isArray(cached) ? cached : []);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     fetch(`/api/integrations?haven=${encodeURIComponent(havenName)}`)
       .then((r) => r.json())
       .then((d) => {
         setIntegrations(Array.isArray(d?.integrations) ? d.integrations : []);
+        setCached(integrationsCache, havenName, d);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -863,6 +964,9 @@ function IntegrationsTab({ havenName }: { havenName: string }) {
     setLoading(false);
     if (res.ok) {
       setIntegrations((prev) => [...prev, item]);
+      const cachedIntegrations = integrationsCache.get(havenName)?.data || {};
+      const currentList = Array.isArray(cachedIntegrations.integrations) ? cachedIntegrations.integrations : [];
+      setCached(integrationsCache, havenName, { ...cachedIntegrations, integrations: [...currentList, item] });
       setNewUrl("");
       setNewName("");
       setStatus("Added");
@@ -879,8 +983,12 @@ function IntegrationsTab({ havenName }: { havenName: string }) {
       body: JSON.stringify({ haven: havenName, action: "remove", id }),
     });
     setLoading(false);
-    if (res.ok) setIntegrations((prev) => prev.filter((i) => (i.id || "") !== id));
-    else setStatus("Error removing integration");
+    if (res.ok) {
+      setIntegrations((prev) => prev.filter((i) => (i.id || "") !== id));
+      const cachedIntegrations = integrationsCache.get(havenName)?.data || {};
+      const currentList = Array.isArray(cachedIntegrations.integrations) ? cachedIntegrations.integrations : [];
+      setCached(integrationsCache, havenName, { ...cachedIntegrations, integrations: currentList.filter((i: any) => (i.id || "") !== id) });
+    } else setStatus("Error removing integration");
   };
 
   return (
@@ -896,7 +1004,7 @@ function IntegrationsTab({ havenName }: { havenName: string }) {
         <>
           <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">
             <div className="mb-3 text-sm text-white/60">
-              Haven: <span className="text-sky-300">{havenName}</span>
+              Haven: <span className="text-sky-300">{havenLabel || havenName}</span>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row">
               <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" className={INPUT_CLASS} />
@@ -937,12 +1045,12 @@ function IntegrationsTab({ havenName }: { havenName: string }) {
   );
 }
 
-function DangerZoneTab({ havenName, onClose }: { havenName: string; onClose?: () => void }) {
+function DangerZoneTab({ havenName, havenLabel, onClose }: { havenName: string; havenLabel?: string; onClose?: () => void }) {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   const deleteServer = async () => {
-    if (!window.confirm(`Delete server ${havenName}? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete server ${havenLabel || havenName}? This cannot be undone.`)) return;
     setStatus(null);
     setLoading(true);
     const res = await fetch("/api/danger", {
@@ -975,7 +1083,7 @@ function DangerZoneTab({ havenName, onClose }: { havenName: string; onClose?: ()
       </header>
       <div className="space-y-4 text-sm text-rose-100/80">
         <p>Deleting a haven removes every channel, message, and permission set. Ownership transfers should be handled from Roles.</p>
-        <div className="text-rose-300">Haven: {havenName}</div>
+        <div className="text-rose-300">Haven: {havenLabel || havenName}</div>
         <div className="flex flex-wrap items-center gap-3">
           <button type="button" className={`${PRIMARY_BUTTON_CLASS} from-rose-500 to-rose-700`} onClick={deleteServer} disabled={loading}>
             {loading ? "Deleting..." : "Delete Haven"}
