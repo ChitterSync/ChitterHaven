@@ -166,3 +166,30 @@ a:hover { color: color-mix(in oklab, rgb(var(--accent)), white 20%); }
   border-radius: 10px;
 }
 .btn-ghost:hover { border-color: color-mix(in oklab, rgb(var(--accent)), white 20%); color: #e5e7eb; }
+
+.btn-chittersync {
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  color: #fff;
+  border: 1px solid rgba(99,102,241,0.5);
+  border-radius: 10px;
+}
+.btn-chittersync:hover { filter: brightness(1.05); }
+
+.cs-logo {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid rgba(255,255,255,0.35);
+  object-fit: cover;
+}
+
+.cs-logo-fade {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 65%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 65%, transparent 100%);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}

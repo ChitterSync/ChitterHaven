@@ -4,6 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import { verifyJWT } from "./jwt";
 import { getAuthCookie } from "./_lib/authCookie";
+import { readSessionFromRequest } from "@/lib/auth/session";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -278,9 +279,10 @@ async function pushGlobalSettings(username: string, settings: UserSettings) {
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const session = readSessionFromRequest(req);
   const token = getAuthCookie(req);
   const payload: any = token ? verifyJWT(token) : null;
-  const me = payload?.username;
+  const me = session?.user?.username || payload?.username;
   if (!me) return res.status(401).json({ error: "Unauthorized" });
 
   const data = readSettings();

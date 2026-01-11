@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { verifyJWT } from "./jwt";
 import { getAuthCookie } from "./_lib/authCookie";
+import { readSessionFromRequest } from "@/lib/auth/session";
 
 // --- auth glue (legacy token, still paying the bills).
 
@@ -13,6 +14,11 @@ export interface AuthPayload {
 // This keeps all existing API routes working while we iterate on the new auth service.
 export async function requireUser(req: NextApiRequest, res: NextApiResponse): Promise<AuthPayload | null> {
   try {
+    const session = readSessionFromRequest(req);
+    if (session?.user?.username) {
+      return { username: session.user.username, ...session.user };
+    }
+
     const token = getAuthCookie(req);
     if (!token) {
       res.status(401).json({ error: "Not authenticated" });

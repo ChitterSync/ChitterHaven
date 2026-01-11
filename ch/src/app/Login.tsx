@@ -6,15 +6,22 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
 
 type LoginProps = {
-  onLogin: (username: string) => void;
+  onLogin: () => void;
+  authNotice?: string | null;
 };
 
-export default function Login({ onLogin }: LoginProps) {
+export default function Login({ onLogin, authNotice }: LoginProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
+
+  const handleChitterSyncLogin = () => {
+    if (typeof window === "undefined") return;
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    window.location.href = `/api/auth/start?returnTo=${encodeURIComponent(returnTo)}`;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,7 +39,7 @@ export default function Login({ onLogin }: LoginProps) {
     });
     const data = await res.json();
     if (data.success) {
-      onLogin(username);
+      onLogin();
     } else {
       setError(data.error || (mode === "login" ? "Login failed" : "Registration failed"));
     }
@@ -46,6 +53,11 @@ export default function Login({ onLogin }: LoginProps) {
       <h2 className="text-xl font-semibold mb-4">
         {mode === "login" ? "Welcome back" : "Create your account"}
       </h2>
+      {authNotice && (
+        <div className="text-sm text-amber-200/90 bg-amber-500/10 border border-amber-400/40 rounded-xl px-3 py-2 mb-3">
+          {authNotice}
+        </div>
+      )}
       <div className="space-y-3">
         <input
           value={username}
@@ -78,6 +90,25 @@ export default function Login({ onLogin }: LoginProps) {
       {error && <div className="text-red-400 text-sm mt-3">{error}</div>}
       <button type="submit" className="btn-primary w-full mt-4 py-2 text-sm font-medium">
         {mode === "login" ? "Sign in" : "Create account"}
+      </button>
+      <div className="flex items-center gap-3 text-xs text-gray-400 mt-4">
+        <span className="flex-1 h-px bg-white/10" />
+        <span>or</span>
+        <span className="flex-1 h-px bg-white/10" />
+      </div>
+      <button
+        type="button"
+        onClick={handleChitterSyncLogin}
+        className="btn-chittersync w-full mt-3 py-2 text-sm font-semibold"
+      >
+        <span className="inline-flex items-center justify-center gap-2">
+          <img
+            className="cs-logo cs-logo-fade"
+            src="https://avatars.githubusercontent.com/u/206038594?s=200&v=4"
+            alt="ChitterSync logo"
+          />
+          Continue with ChitterSync
+        </span>
       </button>
       <div className="text-center mt-4 text-sm">
         {mode === "login" ? (

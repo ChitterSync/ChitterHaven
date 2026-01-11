@@ -20,6 +20,13 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## ChitterSync Login Setup
+
+1. Copy `ch/.env.example` to `ch/.env` and fill in the ChitterSync Auth values.
+2. Ensure `NEXT_PUBLIC_CHITTERHAVEN_URL` matches the deployed origin.
+3. Register `CS_OIDC_REDIRECT_URI` with the ChitterSync Auth service (example: `https://chitterhaven.com/auth/callback`).
+4. Start the app and use “Continue with ChitterSync” on the login screen.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

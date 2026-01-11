@@ -10,6 +10,7 @@
     "test:a11y": "node ./scripts/check_dropdown_a11y.js"
     ,
     "test:call-summary": "node ./scripts/test_history_call_summary.js",
+    "test:auth": "tsx --test tests/auth-*.test.ts",
     "hash-users": "node ./scripts/hash_existing_users.js"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "prettier": "^3.6.2",
     "prisma": "^6.11.1",
     "tailwindcss": "^4",
+    "tsx": "^4.20.5",
     "typescript": "5.8.3"
   }
 }

@@ -496,6 +496,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const [convertMessage, setConvertMessage] = useState<string | null>(null);
   const [convertError, setConvertError] = useState<string | null>(null);
   const [isLegacyAccount, setIsLegacyAccount] = useState(true);
+  const [authProvider, setAuthProvider] = useState<"legacy" | "chittersync" | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
   useEffect(() => {
@@ -649,18 +650,44 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     try { window.localStorage.setItem(LOCAL_DESKTOP_NOTIF_KEY, "true"); } catch {}
     try { window.dispatchEvent(new CustomEvent("ch_desktop_notifications", { detail: { enabled: true } })); } catch {}
   };
+  const performLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {}
+    const authBase = process.env.NEXT_PUBLIC_CS_AUTH_URL;
+    if (authBase && authProvider === "chittersync") {
+      const trimmed = authBase.replace(/\/$/, "");
+      try {
+        await fetch(`${trimmed}/api/auth/logout`, {
+          method: "POST",
+          credentials: "include",
+        });
+      } catch {}
+      window.location.href = `${trimmed}/signin?loggedOut=true`;
+    }
+  };
   useEffect(() => {
     if (!isOpen || tab !== 'about' || aboutUser || aboutLoading) return;
     (async () => {
       setAboutLoading(true);
       try {
-        const r = await fetch('/api/me');
+        const r = await fetch('/api/auth/me');
         const d = await r.json();
         if (d && d.user) setAboutUser(d.user);
       } catch {}
       setAboutLoading(false);
     })();
   }, [isOpen, tab, aboutUser, aboutLoading]);
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch('/api/auth/me')
+      .then((r) => r.json())
+      .then((data) => {
+        const provider = (data as any)?.provider;
+        setAuthProvider(provider === "chittersync" || provider === "legacy" ? provider : null);
+      })
+      .catch(() => setAuthProvider(null));
+  }, [isOpen]);
   const broadcastSettingsUpdate = (payload: Settings) => {
     try { window.dispatchEvent(new CustomEvent('ch_settings_updated', { detail: payload })); } catch {}
     try { window.dispatchEvent(new CustomEvent('ch_theme_preview', { detail: pickThemeFields(payload) })); } catch {}
@@ -850,6 +877,8 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const accent = settings.accentHex || '#60a5fa';
   const appearance = settings.appearance || normalizeAppearanceSettings(undefined, true);
   const blockedUsers = Array.isArray(settings.blockedUsers) ? settings.blockedUsers : [];
+  const isChitterSyncAccount = authProvider === "chittersync";
+  const showLegacyConversion = isLegacyAccount && !isChitterSyncAccount;
   const messageStyle = appearance.messageStyle || settings.chatStyle || "sleek";
   const previewAccent = settings.accentHex || '#60a5fa';
   const previewMention = settings.mentionColorHex || '#f97316';
@@ -1010,7 +1039,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
               className="btn-ghost"
               onClick={async () => {
                 try {
-                  await fetch("/api/logout", { method: "POST" });
+                  await performLogout();
                 } catch {}
                 try {
                   router.push("/");
@@ -1943,7 +1972,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         {syncWarning}
                       </div>
                     )}
-                    {isLegacyAccount ? (
+                    {showLegacyConversion ? (
                       <>
                         <div>
                           <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>Account conversion</div>
@@ -1988,7 +2017,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                                   return;
                                 }
                                 setConvertMessage('Conversion link ready. Please sign back in using the new auth service.');
-                                try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+                                await performLogout();
                                 await fetchSettings();
                               } catch (err: any) {
                                 setConvertError(err?.message || 'Conversion failed.');
@@ -2018,7 +2047,23 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     ) : (
                       <>
                         <div>
-                          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>ChitterSync cloud settings</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <div style={{ fontSize: 12, color: '#9ca3af' }}>ChitterSync cloud settings</div>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.6,
+                                padding: '2px 6px',
+                                borderRadius: 999,
+                                border: '1px solid rgba(59,130,246,0.5)',
+                                color: '#93c5fd',
+                                background: 'rgba(30,58,138,0.25)',
+                              }}
+                            >
+                              Connected via ChitterSync
+                            </span>
+                          </div>
                           <p style={{ fontSize: 13, color: '#e5e7eb', lineHeight: 1.4 }}>
                             @{username} is linked to the new auth platform. Any changes you save here sync instantly to every ChitterSync app you sign in to.
                           </p>
@@ -2035,23 +2080,60 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <button
                           type="button"
                           onClick={() => { void fetchSettings(); }}
-                          disabled={loading}
+                          disabled={loading || !isChitterSyncAccount}
                           style={{
                             padding: '10px 14px',
                             borderRadius: 8,
                             border: '1px solid #1f2937',
-                            background: loading ? '#1f2937' : '#0b1120',
-                            color: '#93c5fd',
+                            background: loading || !isChitterSyncAccount ? '#1f2937' : '#0b1120',
+                            color: loading || !isChitterSyncAccount ? '#6b7280' : '#93c5fd',
                             fontWeight: 600,
-                            cursor: loading ? 'default' : 'pointer',
+                            cursor: loading || !isChitterSyncAccount ? 'default' : 'pointer',
                             transition: 'opacity 120ms ease',
-                            opacity: loading ? 0.7 : 1,
+                            opacity: loading || !isChitterSyncAccount ? 0.7 : 1,
                           }}
                         >
                           {loading ? 'Refreshing...' : 'Refresh from cloud'}
                         </button>
+                        {!isChitterSyncAccount && (
+                          <div style={{ fontSize: 11, color: '#6b7280' }}>
+                            Sign in with ChitterSync to refresh cloud settings.
+                          </div>
+                        )}
                         <div style={{ fontSize: 11, color: '#6b7280' }}>
                           Preferences saved from mobile, desktop, or the auth portal share the same source of truth. Reload if you change them elsewhere.
+                        </div>
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          <div style={{ fontSize: 12, color: '#9ca3af' }}>Linked accounts</div>
+                          {[
+                            { label: "Discord", hint: "Coming soon" },
+                            { label: "Steam", hint: "Coming soon" },
+                            { label: "Spotify", hint: "Coming soon" },
+                          ].map((item) => (
+                            <button
+                              key={item.label}
+                              type="button"
+                              disabled
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '10px 12px',
+                                borderRadius: 10,
+                                border: '1px solid #1f2937',
+                                background: '#0b1120',
+                                color: '#9ca3af',
+                                opacity: 0.7,
+                                cursor: 'not-allowed',
+                              }}
+                            >
+                              <div style={{ textAlign: 'left' }}>
+                                <div style={{ fontWeight: 600 }}>{item.label}</div>
+                                <div style={{ fontSize: 11, color: '#6b7280' }}>{item.hint}</div>
+                              </div>
+                              <span style={{ fontSize: 11, color: '#6b7280' }}>Unavailable</span>
+                            </button>
+                          ))}
                         </div>
                         <div style={{ display: 'grid', gap: 10 }}>
                           <div style={{ fontSize: 12, color: '#9ca3af' }}>Account lists</div>
