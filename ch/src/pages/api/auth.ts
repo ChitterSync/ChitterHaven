@@ -1,7 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { readSessionFromRequest } from "@/lib/auth/session";
 import { verifyJWT } from "./jwt";
 import { getAuthCookie } from "./_lib/authCookie";
-import { readSessionFromRequest } from "@/lib/auth/session";
+
+const AUTH_SERVICE_BASE_RAW =
+  process.env.AUTH_BASE_URL ||
+  process.env.AUTH_SERVICE_URL ||
+  process.env.NEXT_PUBLIC_CS_AUTH_URL ||
+  "";
+const AUTH_SERVICE_BASE = AUTH_SERVICE_BASE_RAW ? AUTH_SERVICE_BASE_RAW.replace(/\/$/, "") : "";
 
 // --- auth glue (legacy token, still paying the bills).
 
@@ -10,6 +17,25 @@ export interface AuthPayload {
   [key: string]: any;
 }
 
+const fetchAuthServiceUser = async (req: NextApiRequest): Promise<AuthPayload | null> => {
+  if (!AUTH_SERVICE_BASE) return null;
+  try {
+    const authRes = await fetch(`${AUTH_SERVICE_BASE}/api/auth/me`, {
+      headers: {
+        cookie: req.headers.cookie || "",
+      },
+    });
+    if (!authRes.ok) return null;
+    const data = await authRes.json();
+    if (data?.authenticated && data.user?.username) {
+      return { username: data.user.username, ...data.user };
+    }
+  } catch {
+    // ignore auth service failures, fall back to legacy
+  }
+  return null;
+};
+
 // Local-only auth helper: trusts the legacy auth cookie JWT.
 // This keeps all existing API routes working while we iterate on the new auth service.
 export async function requireUser(req: NextApiRequest, res: NextApiResponse): Promise<AuthPayload | null> {
@@ -17,6 +43,11 @@ export async function requireUser(req: NextApiRequest, res: NextApiResponse): Pr
     const session = readSessionFromRequest(req);
     if (session?.user?.username) {
       return { username: session.user.username, ...session.user };
+    }
+
+    const serviceUser = await fetchAuthServiceUser(req);
+    if (serviceUser) {
+      return serviceUser;
     }
 
     const token = getAuthCookie(req);

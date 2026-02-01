@@ -7,8 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:a11y": "node ./scripts/check_dropdown_a11y.js"
-    ,
+    "test:a11y": "node ./scripts/check_dropdown_a11y.js",
     "test:call-summary": "node ./scripts/test_history_call_summary.js",
     "test:auth": "tsx --test tests/auth-*.test.ts",
     "hash-users": "node ./scripts/hash_existing_users.js"
@@ -21,10 +20,10 @@
     "@prisma/client": "^6.11.1",
     "cookie": "^1.0.2",
     "jsonwebtoken": "^9.0.2",
-    "next": "15.3.2",
+    "next": "^16.1.4",
     "node-fetch": "^3.3.2",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
     "react-markdown": "^10.1.0",
     "scrypt-js": "^3.0.1",
     "socket.io": "^4.8.1",

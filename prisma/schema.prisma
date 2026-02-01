@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
   /// Connection URL removed from schema; configure migrate/client connection in prisma.config.ts
 }
