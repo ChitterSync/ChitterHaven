@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { createSessionPayload, readSessionFromRequest, setSessionCookie } from "@/lib/auth/session";
 import { getAuthCookie } from "../_lib/authCookie";
 import { verifyJWT } from "../jwt";
 
@@ -31,6 +31,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (authRes.ok) {
         const data = await authRes.json();
         if (data?.authenticated) {
+          if (data.user?.username) {
+            const session = createSessionPayload({
+              id: data.user.id || data.user.username,
+              username: data.user.username,
+              displayName: data.user.displayName || data.user.username,
+              avatar: data.user.avatar || null,
+              email: data.user.email || null,
+              roles: data.user.roles || null,
+            });
+            setSessionCookie(res, session);
+          }
           return res.status(200).json({
             ...data,
             provider: data.provider || "chittersync",

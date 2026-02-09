@@ -23,11 +23,19 @@ function readLog(): AuditEntry[] {
   const buf = fs.readFileSync(LOG_PATH);
   if (buf.length <= 16) return [];
   const iv = buf.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
     return JSON.parse(json);
   } catch {
+    try {
+      const plaintext = buf.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      if (Array.isArray(parsed)) {
+        writeLog(parsed);
+        return parsed;
+      }
+    } catch {}
     return [];
   }
 }
@@ -46,12 +54,22 @@ function decryptLocal() {
   const buf = fs.readFileSync(SETTINGS_PATH);
   if (buf.length <= 16) return {} as any;
   const iv = buf.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY2, iv);
-  const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY2, iv);
+    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
     return JSON.parse(json);
   } catch {
-    return {} as any;
+    try {
+      const plaintext = buf.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      const iv2 = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv("aes-256-cbc", KEY2, iv2);
+      const enc = Buffer.concat([cipher.update(JSON.stringify(parsed)), cipher.final()]);
+      fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv2, enc]), { mode: 0o600 });
+      return parsed;
+    } catch {
+      return {} as any;
+    }
   }
 }
 

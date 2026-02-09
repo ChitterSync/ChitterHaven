@@ -19,10 +19,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const { verifier, challenge } = createPkcePair();
-    const state = createState();
-    const nonce = createState();
-
     const returnTo = sanitizeReturnTo(typeof req.query.returnTo === "string" ? req.query.returnTo : null);
     const authBase = normalizeBaseUrl(
       process.env.AUTH_BASE_URL ||
@@ -31,12 +27,27 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         "",
     );
     const preferCentral = (process.env.CS_AUTH_START_MODE || "").toLowerCase() === "central";
+    const hasOidcConfig = Boolean(process.env.CS_OIDC_CLIENT_ID && process.env.CS_OIDC_REDIRECT_URI);
 
-    if (authBase && preferCentral) {
-      const redirect = returnTo || "/";
+    if (authBase && (preferCentral || !hasOidcConfig)) {
+      const proto =
+        (req.headers["x-forwarded-proto"] as string | undefined) ||
+        (req.headers["X-Forwarded-Proto"] as string | undefined) ||
+        "http";
+      const host =
+        (req.headers["x-forwarded-host"] as string | undefined) ||
+        (req.headers["X-Forwarded-Host"] as string | undefined) ||
+        req.headers.host ||
+        "";
+      const origin = host ? `${proto}://${host}` : "";
+      const redirect = origin ? `${origin}${returnTo || "/"}` : returnTo || "/";
       res.writeHead(302, { Location: `${authBase}/signin?redirect=${encodeURIComponent(redirect)}` });
       return res.end();
     }
+
+    const { verifier, challenge } = createPkcePair();
+    const state = createState();
+    const nonce = createState();
 
     setOidcCookies(res, { state, nonce, codeVerifier: verifier, returnTo: returnTo || undefined });
 

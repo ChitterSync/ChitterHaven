@@ -16,12 +16,17 @@ function readSettings(): SettingsData {
   const buf = fs.readFileSync(SETTINGS_PATH);
   if (buf.length <= 16) return { users: {} };
   const iv = buf.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
     return JSON.parse(json);
   } catch {
-    return { users: {} };
+    try {
+      const plaintext = buf.toString("utf8");
+      return JSON.parse(plaintext);
+    } catch {
+      return { users: {} };
+    }
   }
 }
 

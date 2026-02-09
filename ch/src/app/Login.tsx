@@ -1,7 +1,7 @@
 "use client";
 
 // --- deps (tiny but sharp).
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faEye, faEyeSlash } from "@fortawesome/free-solid-svg-icons";
 
@@ -16,12 +16,30 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
+  const [popupPending, setPopupPending] = useState(false);
   const [authProvider, setAuthProvider] = useState<"local" | "chittersync">(() => {
     const pref = (process.env.NEXT_PUBLIC_AUTH_PREFERENCE || "").toLowerCase();
-    return pref === "chittersync" ? "chittersync" : "local";
+    if (pref === "local") return "local";
+    return "chittersync";
   });
 
-  const authBaseUrl = (process.env.NEXT_PUBLIC_CS_AUTH_URL || process.env.NEXT_PUBLIC_AUTH_BASE_URL || "").replace(/\/$/, "");
+  const popupRef = useRef<Window | null>(null);
+  const popupTimerRef = useRef<number | null>(null);
+  const popupMessageRef = useRef(false);
+
+  const authBaseUrl = (
+    process.env.NEXT_PUBLIC_CS_AUTH_URL ||
+    process.env.NEXT_PUBLIC_AUTH_BASE_URL ||
+    "https://auth.chittersync.com"
+  ).replace(/\/$/, "");
+
+  const authOrigin = (() => {
+    try {
+      return new URL(authBaseUrl).origin;
+    } catch {
+      return "";
+    }
+  })();
 
   const buildAuthRedirect = (path: "signin" | "register") => {
     if (!authBaseUrl) return null;
@@ -29,14 +47,109 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
     return `${authBaseUrl}/${path}?redirect=${encodeURIComponent(returnTo)}`;
   };
 
+  const isTrustedRedirect = (url: string, allowedDomains?: string[]) => {
+    const domains = allowedDomains || ["chittersync.com", "ch.chittersync.com"];
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (parsed.origin === window.location.origin) return true;
+      return domains.some((domain) => {
+        const host = parsed.hostname;
+        return host === domain || host.endsWith(`.${domain}`);
+      });
+    } catch {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = (event: MessageEvent) => {
+      const data = event.data as { type?: string; redirectUrl?: string } | null;
+      if (!data || data.type !== "chittersync:auth") return;
+      if (authOrigin && event.origin !== authOrigin) return;
+      popupMessageRef.current = true;
+      if (popupTimerRef.current !== null) {
+        window.clearInterval(popupTimerRef.current);
+        popupTimerRef.current = null;
+      }
+      if (popupRef.current && !popupRef.current.closed) {
+        popupRef.current.close();
+      }
+      setPopupPending(false);
+      if (data.redirectUrl && isTrustedRedirect(data.redirectUrl)) {
+        window.location.href = data.redirectUrl;
+        return;
+      }
+      onLogin();
+    };
+    window.addEventListener("message", handler);
+    return () => {
+      window.removeEventListener("message", handler);
+      if (popupTimerRef.current !== null) {
+        window.clearInterval(popupTimerRef.current);
+        popupTimerRef.current = null;
+      }
+    };
+  }, [authOrigin, onLogin]);
+
+  const openAuthPopup = (url: string) => {
+    if (typeof window === "undefined") return;
+    const width = 520;
+    const height = 720;
+    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+    const features = [
+      "popup=yes",
+      "toolbar=no",
+      "location=no",
+      "status=no",
+      "menubar=no",
+      "scrollbars=yes",
+      "resizable=yes",
+      `width=${width}`,
+      `height=${height}`,
+      `left=${Math.round(left)}`,
+      `top=${Math.round(top)}`,
+    ].join(",");
+
+    const popup = window.open(url, "chittersync_auth", features);
+    if (!popup) {
+      return false;
+    }
+    popupRef.current = popup;
+    popupMessageRef.current = false;
+    setPopupPending(true);
+
+    if (popupTimerRef.current !== null) {
+      window.clearInterval(popupTimerRef.current);
+    }
+    popupTimerRef.current = window.setInterval(() => {
+      if (popup.closed) {
+        window.clearInterval(popupTimerRef.current as number);
+        popupTimerRef.current = null;
+        setPopupPending(false);
+        if (!popupMessageRef.current) {
+          onLogin();
+        }
+      }
+    }, 500);
+
+    return true;
+  };
+
   const handleChitterSyncLogin = () => {
     if (typeof window === "undefined") return;
-    const target = buildAuthRedirect("signin");
-    if (!target) {
+    if (!authBaseUrl) {
       setError("ChitterSync auth is not configured.");
       return;
     }
-    window.location.href = target;
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    const target = `/api/auth/start?returnTo=${encodeURIComponent(returnTo)}`;
+    const opened = openAuthPopup(target);
+    if (!opened) {
+      setPopupPending(false);
+      window.location.href = target;
+    }
   };
 
   const handleChitterSyncRegister = () => {
@@ -46,7 +159,11 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
       setError("ChitterSync auth is not configured.");
       return;
     }
-    window.location.href = target;
+    const opened = openAuthPopup(target);
+    if (!opened) {
+      setPopupPending(false);
+      window.location.href = target;
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -79,17 +196,17 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
       <div className="flex items-center gap-2 text-xs mb-4">
         <button
           type="button"
-          className={`flex-1 rounded-full border px-3 py-1 ${authProvider === "local" ? "border-indigo-400 text-indigo-200" : "border-white/20 text-gray-400"}`}
-          onClick={() => { setAuthProvider("local"); setError(""); }}
-        >
-          Local account
-        </button>
-        <button
-          type="button"
           className={`flex-1 rounded-full border px-3 py-1 ${authProvider === "chittersync" ? "border-indigo-400 text-indigo-200" : "border-white/20 text-gray-400"}`}
           onClick={() => { setAuthProvider("chittersync"); setError(""); }}
         >
           ChitterSync
+        </button>
+        <button
+          type="button"
+          className={`flex-1 rounded-full border px-3 py-1 ${authProvider === "local" ? "border-indigo-400 text-indigo-200" : "border-white/20 text-gray-400"}`}
+          onClick={() => { setAuthProvider("local"); setError(""); }}
+        >
+          Local account
         </button>
       </div>
       {authNotice && (
@@ -159,15 +276,25 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
           <button
             type="button"
             onClick={handleChitterSyncLogin}
-            className="btn-chittersync w-full mt-3 py-2 text-sm font-semibold"
+            className="btn-chittersync w-full mt-3 py-2 text-sm font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
+            disabled={popupPending}
           >
             <span className="inline-flex items-center justify-center gap-2">
-              <img
-                className="cs-logo cs-logo-fade"
-                src="https://avatars.githubusercontent.com/u/206038594?s=200&v=4"
-                alt="ChitterSync logo"
-              />
-              Continue with ChitterSync
+              {popupPending ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-4 w-4 rounded-full border-2 border-white/70 border-t-transparent animate-spin" />
+                  Awaiting modal...
+                </span>
+              ) : (
+                <>
+                  <img
+                    className="cs-logo cs-logo-fade"
+                    src="https://avatars.githubusercontent.com/u/206038594?s=200&v=4"
+                    alt="ChitterSync logo"
+                  />
+                  Continue with ChitterSync
+                </>
+              )}
             </span>
           </button>
         </>
@@ -177,23 +304,34 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
           <button
             type="button"
             onClick={handleChitterSyncLogin}
-            className="btn-chittersync w-full mt-2 py-2 text-sm font-semibold"
+            className="btn-chittersync w-full mt-2 py-2 text-sm font-semibold disabled:opacity-70 disabled:cursor-not-allowed"
+            disabled={popupPending}
           >
             <span className="inline-flex items-center justify-center gap-2">
-              <img
-                className="cs-logo cs-logo-fade"
-                src="https://avatars.githubusercontent.com/u/206038594?s=200&v=4"
-                alt="ChitterSync logo"
-              />
-              Sign in with ChitterSync
+              {popupPending ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-4 w-4 rounded-full border-2 border-white/70 border-t-transparent animate-spin" />
+                  Awaiting modal...
+                </span>
+              ) : (
+                <>
+                  <img
+                    className="cs-logo cs-logo-fade"
+                    src="https://avatars.githubusercontent.com/u/206038594?s=200&v=4"
+                    alt="ChitterSync logo"
+                  />
+                  Sign in with ChitterSync
+                </>
+              )}
             </span>
           </button>
           <button
             type="button"
             onClick={handleChitterSyncRegister}
-            className="btn-primary w-full mt-3 py-2 text-sm font-medium"
+            className="btn-primary w-full mt-3 py-2 text-sm font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+            disabled={popupPending}
           >
-            Create a ChitterSync account
+            {popupPending ? "Awaiting modal..." : "Create a ChitterSync account"}
           </button>
         </>
       )}

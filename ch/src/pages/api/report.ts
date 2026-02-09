@@ -24,16 +24,24 @@ function readReports(): ReportEntry[] {
   const buf = fs.readFileSync(REPORTS_PATH);
   if (buf.length <= IV_LENGTH) return [];
   const iv = buf.slice(0, IV_LENGTH);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const json = Buffer.concat([
-    decipher.update(buf.slice(IV_LENGTH)),
-    decipher.final(),
-  ]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const json = Buffer.concat([
+      decipher.update(buf.slice(IV_LENGTH)),
+      decipher.final(),
+    ]).toString();
     const parsed = JSON.parse(json);
     return Array.isArray(parsed.reports) ? parsed.reports : [];
   } catch {
-    return [];
+    try {
+      const plaintext = buf.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      const reports = Array.isArray(parsed.reports) ? parsed.reports : [];
+      writeReports(reports);
+      return reports;
+    } catch {
+      return [];
+    }
   }
 }
 

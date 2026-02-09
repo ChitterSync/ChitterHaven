@@ -12,9 +12,18 @@ function decryptHistory() {
   const encrypted = fs.readFileSync(HISTORY_PATH);
   if (encrypted.length <= 16) return {};
   const iv = encrypted.slice(0, 16);
-  const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
-  const decrypted = Buffer.concat([ decipher.update(encrypted.slice(16)), decipher.final() ]).toString();
-  try { return JSON.parse(decrypted); } catch { return {}; }
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
+    const decrypted = Buffer.concat([ decipher.update(encrypted.slice(16)), decipher.final() ]).toString();
+    return JSON.parse(decrypted);
+  } catch {
+    try {
+      const plaintext = encrypted.toString('utf8');
+      return JSON.parse(plaintext);
+    } catch {
+      return {};
+    }
+  }
 }
 function encryptHistory(data: any) {
   const iv = crypto.randomBytes(16);

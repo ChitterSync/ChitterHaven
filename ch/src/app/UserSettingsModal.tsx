@@ -4,7 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faCirclePlay, faCirclePause } from "@fortawesome/free-solid-svg-icons";
+import {
+  faBell,
+  faBook,
+  faCirclePause,
+  faCirclePlay,
+  faCode,
+  faGlobe,
+  faInfoCircle,
+  faKey,
+  faLock,
+  faLink,
+  faMicrophone,
+  faPalette,
+  faShield,
+  faUser,
+} from "@fortawesome/free-solid-svg-icons";
 
 type ThemeStop = { color: string; position: number };
 
@@ -79,6 +94,18 @@ type Settings = {
   showBlockActions?: boolean;
   showReadingModeButton?: boolean;
   callrfMobileSizing?: boolean;
+  steamId?: string;
+  steamRichPresence?: boolean;
+  syncProfileToChitterSync?: boolean;
+  voice?: {
+    noiseSuppression?: boolean;
+    echoCancellation?: boolean;
+    autoGain?: boolean;
+    pushToTalk?: boolean;
+    inputVolume?: number;
+    outputVolume?: number;
+    micTestTone?: boolean;
+  };
 };
 
 type ThemePreviewFields = Pick<Settings, "theme" | "accentHex" | "customThemeGradient" | "customThemeImage" | "customThemeStops" | "customThemeAngle">;
@@ -429,6 +456,19 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
   }
   base.enableOneko = base.enableOneko === true;
   base.callrfMobileSizing = base.callrfMobileSizing === true;
+  base.steamRichPresence = base.steamRichPresence === true;
+  base.steamId = typeof base.steamId === 'string' ? base.steamId.trim() : '';
+  base.syncProfileToChitterSync = base.syncProfileToChitterSync === true;
+  const voice = base.voice && typeof base.voice === 'object' ? { ...base.voice } : {};
+  base.voice = {
+    noiseSuppression: voice.noiseSuppression !== false,
+    echoCancellation: voice.echoCancellation !== false,
+    autoGain: voice.autoGain !== false,
+    pushToTalk: voice.pushToTalk === true,
+    inputVolume: typeof voice.inputVolume === 'number' ? Math.min(1, Math.max(0, voice.inputVolume)) : 0.85,
+    outputVolume: typeof voice.outputVolume === 'number' ? Math.min(1, Math.max(0, voice.outputVolume)) : 0.9,
+    micTestTone: voice.micTestTone === true,
+  };
   base.appearance = normalizeAppearanceSettings(base.appearance, hasExistingSettings);
   if (!base.appearance?.messageStyle) {
     base.appearance = { ...base.appearance, messageStyle: base.chatStyle };
@@ -474,6 +514,35 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = (event: MessageEvent) => {
+      const data = event.data as { type?: string; steamId?: string } | null;
+      if (!data || data.type !== "chittersync:steam_linked") return;
+      if (!data.steamId) return;
+      setSettings((s) => ({ ...s, steamId: data.steamId, steamRichPresence: true }));
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+  const cleanupLegacySettings = useCallback(() => {
+    setSettings((s) => {
+      const next = { ...s } as any;
+      [
+        "legacyTheme",
+        "themePreset",
+        "compactMode",
+        "messageDensity",
+        "oldSidebarWidth",
+        "legacyAccent",
+        "classicSidebar",
+        "chatterStyle",
+      ].forEach((key) => {
+        if (key in next) delete next[key];
+      });
+      return next;
+    });
+  }, []);
   const [accountFriends, setAccountFriends] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
   const [blockInput, setBlockInput] = useState("");
   const [confirmBlockRemoval, setConfirmBlockRemoval] = useState<string | null>(null);
@@ -482,7 +551,20 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const lastSavedThemeRef = useRef<ThemePreviewFields | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const [tab, setTab] = useState<'appearance'|'notifications'|'privacy'|'status'|'account'|'guides'|'dev'|'about'|'secrets'>('appearance');
+  const [tab, setTab] = useState<'appearance'|'notifications'|'voice'|'privacy'|'status'|'account'|'connections'|'browser'|'guides'|'dev'|'about'|'secrets'>('appearance');
+  const [settingsSearch, setSettingsSearch] = useState('');
+  const [hoveredTab, setHoveredTab] = useState<string | null>(null);
+  const [browserInfo, setBrowserInfo] = useState({
+    userAgent: '',
+    platform: '',
+    language: '',
+    online: true,
+    cookiesEnabled: false,
+    deviceMemory: undefined as number | undefined,
+    hardwareConcurrency: undefined as number | undefined,
+    screen: '',
+  });
+  const [permissionStates, setPermissionStates] = useState<Record<string, string>>({});
   const [guideChecked, setGuideChecked] = useState(true);
   const [guideLevel, setGuideLevel] = useState(60);
   const [demoToggleArmed, setDemoToggleArmed] = useState(false);
@@ -760,6 +842,19 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     );
   };
   const save = async () => {
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      const normalized = normalizeSettings(settings);
+      try {
+        window.localStorage.setItem("ch_pending_settings", JSON.stringify(normalized));
+      } catch {}
+      setSettings(normalized);
+      setSyncWarning("Offline: saved locally. Changes will sync when you’re back online.");
+      if (normalized?.status && onStatusChangeAction) onStatusChangeAction(normalized.status);
+      if (onSavedAction) onSavedAction(normalized);
+      broadcastSettingsUpdate(normalized);
+      onClose();
+      return;
+    }
     try {
       const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
       if (!r.ok) {
@@ -869,6 +964,48 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       revertThemePreview();
     };
   }, [isOpen, revertThemePreview]);
+  useEffect(() => {
+    if (!isOpen || typeof navigator === 'undefined') return;
+    const info = {
+      userAgent: navigator.userAgent || '',
+      platform: (navigator as any).platform || '',
+      language: navigator.language || '',
+      online: typeof navigator.onLine === 'boolean' ? navigator.onLine : true,
+      cookiesEnabled: typeof navigator.cookieEnabled === 'boolean' ? navigator.cookieEnabled : false,
+      deviceMemory: (navigator as any).deviceMemory,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      screen: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : '',
+    };
+    setBrowserInfo(info);
+  }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen || typeof navigator === 'undefined' || !(navigator as any).permissions) return;
+    const names = ['notifications', 'microphone', 'camera', 'geolocation'] as const;
+    let cancelled = false;
+    const load = async () => {
+      const next: Record<string, string> = {};
+      for (const name of names) {
+        try {
+          const status = await (navigator as any).permissions.query({ name });
+          next[name] = status.state;
+          status.onchange = () => {
+            if (cancelled) return;
+            setPermissionStates((prev) => ({ ...prev, [name]: status.state }));
+          };
+        } catch {
+          next[name] = 'unsupported';
+        }
+      }
+      if (!cancelled) setPermissionStates(next);
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) setSettingsSearch('');
+  }, [isOpen]);
   const handleCancel = useCallback(() => {
     revertThemePreview();
     onClose();
@@ -879,6 +1016,35 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const blockedUsers = Array.isArray(settings.blockedUsers) ? settings.blockedUsers : [];
   const isChitterSyncAccount = authProvider === "chittersync";
   const showLegacyConversion = isLegacyAccount && !isChitterSyncAccount;
+  const tabLabels = useMemo(
+    () => [
+      { id: 'appearance', label: 'Appearance', icon: faPalette },
+      { id: 'notifications', label: 'Notifications', icon: faBell },
+      { id: 'voice', label: 'Voice', icon: faMicrophone },
+      { id: 'privacy', label: 'Privacy', icon: faShield },
+      { id: 'status', label: 'Status', icon: faCirclePlay },
+      { id: 'account', label: 'Account', icon: faUser },
+      { id: 'connections', label: 'Connections', icon: faLink },
+      { id: 'browser', label: 'Browser', icon: faGlobe },
+      { id: 'guides', label: 'Guides & Feedback', icon: faBook },
+      { id: 'dev', label: 'Dev', icon: faCode },
+      ...(secretsUnlocked ? [{ id: 'secrets', label: 'Secrets', icon: faKey }] : []),
+      { id: 'about', label: 'About', icon: faInfoCircle },
+    ],
+    [secretsUnlocked]
+  );
+  const filteredTabs = useMemo(() => {
+    const query = settingsSearch.trim().toLowerCase();
+    if (!query) return tabLabels;
+    return tabLabels.filter((tabItem) => tabItem.label.toLowerCase().includes(query));
+  }, [tabLabels, settingsSearch]);
+  useEffect(() => {
+    const query = settingsSearch.trim();
+    if (!query) return;
+    if (!filteredTabs.find((tabItem) => tabItem.id === tab) && filteredTabs.length > 0) {
+      setTab(filteredTabs[0].id as typeof tab);
+    }
+  }, [settingsSearch, filteredTabs, tab]);
   const messageStyle = appearance.messageStyle || settings.chatStyle || "sleek";
   const previewAccent = settings.accentHex || '#60a5fa';
   const previewMention = settings.mentionColorHex || '#f97316';
@@ -888,23 +1054,23 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     if (messageStyle === 'minimal_log') {
       return { padding: '4px 0', borderBottom: '1px dashed rgba(148,163,184,0.2)' };
     }
-    if (messageStyle === 'classic') {
-      return { padding: '8px 10px', borderRadius: 8, border: '1px solid #1f2937', background: '#0b1222' };
-    }
+      if (messageStyle === 'classic') {
+        return { padding: '8px 10px', borderRadius: 8, borderWidth: 1, borderStyle: 'solid', borderColor: '#1f2937', background: '#0b1222' };
+      }
     if (messageStyle === 'thread_forward') {
       return { padding: '10px 12px', borderRadius: 10, borderLeft: `3px solid ${previewAccent}`, background: '#0b1222' };
     }
     if (messageStyle === 'focus') {
       return { padding: '10px 12px', borderRadius: 12, background: isSelf ? 'rgba(37,99,235,0.18)' : '#0b1222' };
     }
-    if (messageStyle === 'retro') {
-      return { padding: '8px 10px', borderRadius: 0, border: '1px solid #1f2937', background: previewBubbleBase };
-    }
+      if (messageStyle === 'retro') {
+        return { padding: '8px 10px', borderRadius: 0, borderWidth: 1, borderStyle: 'solid', borderColor: '#1f2937', background: previewBubbleBase };
+      }
     if (messageStyle === 'bubbles') {
       return { padding: '10px 12px', borderRadius: 16, background: isSelf ? 'rgba(37,99,235,0.18)' : previewBubbleBase };
     }
-    return { padding: '10px 12px', borderRadius: 12, border: '1px solid #1f2937', background: previewBubbleBase };
-  };
+      return { padding: '10px 12px', borderRadius: 12, borderWidth: 1, borderStyle: 'solid', borderColor: '#1f2937', background: previewBubbleBase };
+    };
   const themeStops = settings.customThemeStops && settings.customThemeStops.length >= 2 ? settings.customThemeStops : cloneStops(DEFAULT_CUSTOM_THEME_STOPS);
   const themeAngle = normalizeAngle(settings.customThemeAngle ?? DEFAULT_CUSTOM_THEME_ANGLE);
   const gradientPreview =
@@ -980,7 +1146,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     );
   };
   const GuideSlider = ({ value, onChange }: { value: number; onChange: (v: number)=>void }) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: 220 }}>
+    <div className="range-row" style={{ width: 240 }}>
       <div style={{ flex: 1, position: 'relative', height: 4, borderRadius: 999, background: '#111827' }}>
         <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${value}%`, background: accent, borderRadius: 999 }} />
       </div>
@@ -992,46 +1158,41 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
         onChange={(e)=> onChange(Number(e.target.value))}
         style={{ width: 120 }}
       />
-      <span style={{ color: '#e5e7eb', fontSize: 11 }}>{value}%</span>
+      <span className="range-value">{value}%</span>
     </div>
   );
   return (
     <div
+      className="fixed inset-0 flex items-center justify-center h-dvh w-full overflow-x-hidden"
       style={{
-        position: 'fixed',
-        inset: 0,
         background: 'rgba(0,0,0,0.6)',
-        display: 'flex',
-        alignItems: isMobileLayout ? 'stretch' : 'center',
-        justifyContent: isMobileLayout ? 'flex-start' : 'center',
         zIndex: 80,
         padding: isMobileLayout ? 0 : 16,
       }}
     >
       <div
-        className="glass"
+        className="glass w-full max-w-5xl h-[90dvh] flex flex-col md:flex-row rounded-xl"
         style={{
-          width: isMobileLayout ? '100%' : 'min(760px, 94vw)',
-          height: isMobileLayout ? '100%' : undefined,
+          width: isMobileLayout ? '100%' : undefined,
           borderRadius: isMobileLayout ? 0 : 12,
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: isMobileLayout ? 'column' : 'row',
-          minHeight: isMobileLayout ? '100%' : 420,
-          maxHeight: isMobileLayout ? '100vh' : '80vh',
+          overflow: 'visible',
+          minHeight: 0,
         }}
       >
-        <div
-          style={{
-            width: isMobileLayout ? '100%' : 220,
-            borderRight: isMobileLayout ? 'none' : '1px solid #2a3344',
-            borderBottom: isMobileLayout ? '1px solid #2a3344' : 'none',
-            background: '#0b1222',
-            color: '#e5e7eb',
-            display: 'flex',
-            flexDirection: 'column',
-          }}
-        >
+        <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row">
+          <aside
+            className="w-full md:w-64 shrink-0 min-h-0"
+            style={{
+              borderRight: isMobileLayout ? 'none' : '1px solid #2a3344',
+              borderBottom: isMobileLayout ? '1px solid #2a3344' : 'none',
+              background: '#0b1222',
+              color: '#e5e7eb',
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
+              minWidth: 0,
+            }}
+          >
           <div style={{ padding: 12, borderBottom: '1px solid #2a3344', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span>Settings</span>
             <button
@@ -1052,38 +1213,118 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
               Log out
             </button>
           </div>
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: isMobileLayout ? 'row' : 'column',
-              flexWrap: isMobileLayout ? 'nowrap' : 'wrap',
-              gap: 6,
-              padding: isMobileLayout ? '8px 12px' : 0,
-              overflowX: isMobileLayout ? 'auto' : 'visible',
-            }}
-          >
-            <button className="btn-ghost" onClick={()=> setTab('appearance')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='appearance' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Appearance</button>
-            <button className="btn-ghost" onClick={()=> setTab('notifications')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='notifications' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Notifications</button>
-            <button className="btn-ghost" onClick={()=> setTab('privacy')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='privacy' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Privacy</button>
-            <button className="btn-ghost" onClick={()=> setTab('status')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='status' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Status</button>
-            <button className="btn-ghost" onClick={()=> setTab('account')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='account' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Account</button>
-            <button className="btn-ghost" onClick={()=> setTab('guides')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='guides' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Guides & Feedback</button>
-            <button className="btn-ghost" onClick={()=> setTab('dev')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='dev' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>Dev</button>
-            {secretsUnlocked && (
-              <button className="btn-ghost" onClick={()=> setTab('secrets')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='secrets' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>
-                Secrets
+          <div style={{ padding: 10, borderBottom: isMobileLayout ? '1px solid #2a3344' : 'none' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={settingsSearch}
+              onChange={(e) => setSettingsSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setSettingsSearch('');
+              }}
+              placeholder="Search settings"
+              aria-label="Search settings tabs"
+              className="input-dark"
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                borderRadius: 10,
+                fontSize: 12,
+              }}
+            />
+            {settingsSearch.trim().length > 0 && (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setSettingsSearch('')}
+                style={{ padding: '6px 10px', fontSize: 12, borderRadius: 10, border: '1px solid #1f2937' }}
+              >
+                Clear
               </button>
             )}
-            <button className="btn-ghost" onClick={()=> setTab('about')} style={{ textAlign: 'left', padding: '10px 12px', color: tab==='about' ? '#93c5fd' : undefined, whiteSpace: 'nowrap', flex: isMobileLayout ? '0 0 auto' : undefined }}>About</button>
+            </div>
           </div>
-          <div style={{ marginTop: isMobileLayout ? 0 : 'auto', padding: 12, borderTop: '1px solid #111827', fontSize: 12, color: '#9ca3af' }}>@{username}</div>
-        </div>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
-            <div style={{ fontWeight: 600 }}>User Settings - {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
-            <button onClick={handleCancel} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
+          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden md:overflow-y-auto md:overflow-x-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: isMobileLayout ? 'row' : 'column',
+                flexWrap: isMobileLayout ? 'nowrap' : 'wrap',
+                gap: 6,
+                paddingTop: isMobileLayout ? 8 : 8,
+                paddingBottom: isMobileLayout ? 8 : 12,
+                paddingLeft: isMobileLayout ? 12 : 10,
+                paddingRight: isMobileLayout ? 12 : 10,
+                overflowX: 'auto',
+                flex: '1 1 auto',
+                minHeight: 0,
+                scrollPaddingBottom: 12,
+              }}
+            >
+            {filteredTabs.length === 0 ? (
+              <div style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>No matches.</div>
+            ) : (
+              filteredTabs.map((tabItem) => {
+                const lockedConnections = !isChitterSyncAccount && tabItem.id === 'connections';
+                return (
+                  <button
+                    key={tabItem.id}
+                    className="btn-ghost"
+                    onClick={() => setTab(tabItem.id as typeof tab)}
+                    onMouseEnter={() => setHoveredTab(tabItem.id)}
+                    onMouseLeave={() => setHoveredTab((prev) => (prev === tabItem.id ? null : prev))}
+                    style={{
+                      textAlign: 'left',
+                      padding: '10px 12px',
+                      color: tab === tabItem.id ? '#e2e8f0' : '#cbd5f5',
+                      background: tab === tabItem.id ? 'rgba(59,130,246,0.18)' : (hoveredTab === tabItem.id ? 'rgba(30,41,59,0.6)' : 'transparent'),
+                      border: '1px solid',
+                      borderColor: tab === tabItem.id ? 'rgba(226,232,240,0.5)' : 'transparent',
+                      borderRadius: 12,
+                      whiteSpace: 'nowrap',
+                      flex: isMobileLayout ? '0 0 auto' : undefined,
+                      width: isMobileLayout ? 'auto' : '100%',
+                      transition: 'background 120ms ease, color 120ms ease, transform 120ms ease',
+                      position: 'relative',
+                      opacity: lockedConnections ? 0.85 : 1,
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        filter: lockedConnections ? 'blur(1.2px)' : undefined,
+                      }}
+                    >
+                      <FontAwesomeIcon icon={tabItem.icon} style={{ fontSize: 12, opacity: 0.85 }} />
+                      {tabItem.label}
+                    </span>
+                    {lockedConnections && (
+                      <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: '#e2e8f0' }}>
+                        <FontAwesomeIcon icon={faLock} />
+                      </span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+            </div>
           </div>
-          <div style={{ padding: 12, color: '#e5e7eb', overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          <div style={{ padding: 12, borderTop: '1px solid #111827', fontSize: 12, color: '#9ca3af', flexShrink: 0 }}>@{username}</div>
+          </aside>
+          <main className="flex-1 min-h-0 min-w-0 flex flex-col">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 12, borderBottom: '1px solid #2a3344', color: '#e5e7eb' }}>
+              <div style={{ fontWeight: 600 }}>User Settings - {tab.charAt(0).toUpperCase() + tab.slice(1)}</div>
+              <button onClick={handleCancel} className="btn-ghost" style={{ padding: '4px 8px' }}>Close</button>
+            </div>
+            <div
+            className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-6 break-words [overflow-wrap:anywhere]"
+            style={{
+              color: '#e5e7eb',
+              minHeight: 0,
+              minWidth: 0,
+            }}
+          >
             {loading ? (
               <div style={{ color: '#94a3b8' }}>Loading...</div>
             ) : (
@@ -1155,18 +1396,20 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                                     return next;
                                   })}
                                 />
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={100}
-                                  value={Math.round(stop.position)}
-                                  onChange={(e)=> updateThemeStops((stops) => {
-                                    const next = cloneStops(stops);
-                                    next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
-                                    return next;
-                                  })}
-                                  style={{ flex: 1, minWidth: 120 }}
-                                />
+                                <div className="range-row" style={{ flex: 1, minWidth: 160 }}>
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={100}
+                                    value={Math.round(stop.position)}
+                                    onChange={(e)=> updateThemeStops((stops) => {
+                                      const next = cloneStops(stops);
+                                      next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
+                                      return next;
+                                    })}
+                                  />
+                                  <span className="range-value">{Math.round(stop.position)}%</span>
+                                </div>
                                 <input
                                   type="number"
                                   min={0}
@@ -1212,13 +1455,16 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           </div>
                           <div style={{ display: 'grid', gap: 6 }}>
                             <span style={{ color: '#9ca3af', fontSize: 12 }}>Angle ({themeAngle} deg)</span>
-                            <input
-                              type="range"
-                              min={0}
-                              max={360}
-                              value={themeAngle}
-                              onChange={(e)=> updateThemeAngle(Number(e.target.value))}
-                            />
+                            <div className="range-row">
+                              <input
+                                type="range"
+                                min={0}
+                                max={360}
+                                value={themeAngle}
+                                onChange={(e)=> updateThemeAngle(Number(e.target.value))}
+                              />
+                              <span className="range-value">{themeAngle}°</span>
+                            </div>
                           </div>
                           <div style={{ display: 'grid', gap: 6 }}>
                             <span style={{ color: '#9ca3af', fontSize: 12 }}>Background image (optional)</span>
@@ -1760,7 +2006,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         >
                           <div style={{ textAlign: 'left' }}>
                             <div>Desktop notifications</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Show alerts when the app is unfocused.</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Show alerts when the app is unfocused. if this is the first time you're enabling this, you may need to enable desktop notifications in your browser settings. if you are in incognito mode or on mobile, this may not work.</div>
                           </div>
                           <Switch checked={desktopNotificationsEnabled} />
                         </button>
@@ -1799,7 +2045,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           }}
                         />
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="range-row">
                         <span style={{ color: '#9ca3af', fontSize: 12, minWidth: 60 }}>Volume</span>
                         <input
                           type="range"
@@ -1808,10 +2054,72 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           value={Math.round(((settings.notifications?.volume ?? 0.6) * 100))}
                           onChange={(e)=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), volume: Math.max(0, Math.min(1, Number(e.target.value)/100)) } }))}
                         />
+                        <span className="range-value">{Math.round(((settings.notifications?.volume ?? 0.6) * 100))}%</span>
                       </div>
                     </div>
                   )}
-                {tab === 'privacy' && (
+                
+                {tab === 'voice' && (
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                      Voice settings apply to calls and voice channels. These are stored per-device for quick tuning. assure you have a working microphone and speakers, then adjust these settings while in a call for best results. advanced device selection will appear here once browser permission is granted. if you change these settings while not in a call, they will be applied as soon as possible, but you may need to toggle a setting or restart the app to trigger them. if you experience issues with echo or background noise, try enabling noise suppression and echo cancellation. if your voice is too quiet or loud to others, adjust the input and output volumes. if you want to test how you sound to others, enable the mic test tone to hear a preview of your microphone with all settings applied. if you are in incognito mode, your input may not work.
+                    </div>
+                    <label style={{ display: 'grid', gap: 6 }}>
+                      <span style={{ color: '#9ca3af', fontSize: 12 }}>Input volume</span>
+                      <div className="range-row">
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={settings.voice?.inputVolume ?? 0.85}
+                          onChange={(e)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), inputVolume: Number(e.target.value) } }))}
+                        />
+                        <span className="range-value">{Math.round((settings.voice?.inputVolume ?? 0.85) * 100)}%</span>
+                      </div>
+                    </label>
+                    <label style={{ display: 'grid', gap: 6 }}>
+                      <span style={{ color: '#9ca3af', fontSize: 12 }}>Output volume</span>
+                      <div className="range-row">
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={settings.voice?.outputVolume ?? 0.9}
+                          onChange={(e)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), outputVolume: Number(e.target.value) } }))}
+                        />
+                        <span className="range-value">{Math.round((settings.voice?.outputVolume ?? 0.9) * 100)}%</span>
+                      </div>
+                    </label>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), noiseSuppression: !(s.voice?.noiseSuppression !== false) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <span>Noise suppression</span>
+                        <Switch checked={settings.voice?.noiseSuppression !== false} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), echoCancellation: !(s.voice?.echoCancellation !== false) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <span>Echo cancellation</span>
+                        <Switch checked={settings.voice?.echoCancellation !== false} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), autoGain: !(s.voice?.autoGain !== false) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <span>Auto gain</span>
+                        <Switch checked={settings.voice?.autoGain !== false} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), pushToTalk: !(s.voice?.pushToTalk === true) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <span>Push to talk</span>
+                        <Switch checked={settings.voice?.pushToTalk === true} />
+                      </button>
+                      <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), micTestTone: !(s.voice?.micTestTone === true) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
+                        <span>Mic test tone</span>
+                        <Switch checked={settings.voice?.micTestTone === true} />
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Note: advanced device selection will appear here once browser permission is granted.
+                    </div>
+                  </div>
+                )}
+{tab === 'privacy' && (
                   <div style={{ display: 'grid', gap: 12 }}>
                     <div style={{ display: 'grid', gap: 8 }}>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, blurOnUnfocused: !s.blurOnUnfocused }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
@@ -1889,7 +2197,36 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <option value="offline">Offline</option>
                       </select>
                     </label>
-                    <label style={{ display: 'grid', gap: 6 }}>
+                    
+                    <div style={{ display: 'grid', gap: 8, border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, padding: 10 }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af', fontWeight: 600 }}>Steam Rich Presence</div>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Steam ID (64-bit)</span>
+                        <input
+                          value={settings.steamId || ''}
+                          onChange={(e)=> setSettings(s => ({ ...s, steamId: e.target.value }))}
+                          placeholder="7656119..."
+                          className="input-dark"
+                          style={{ padding: 8 }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={()=> setSettings(s => ({ ...s, steamRichPresence: !s.steamRichPresence }))}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                      >
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Show Steam activity</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Display the game you are currently playing on Steam.</div>
+                        </div>
+                        <Switch checked={settings.steamRichPresence === true} />
+                      </button>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                        Requires your Steam profile to be public.
+                      </div>
+                    </div>
+
+<label style={{ display: 'grid', gap: 6 }}>
                       <span style={{ color: '#9ca3af', fontSize: 12 }}>Status message</span>
                       <input
                         value={settings.statusMessage || ''}
@@ -1967,7 +2304,42 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                 )}
                 {tab === 'account' && (
                   <div style={{ display: 'grid', gap: 16 }}>
-                    {syncWarning && (
+                      <button
+                        type="button"
+                        onClick={()=> setSettings(s => ({ ...s, syncProfileToChitterSync: !s.syncProfileToChitterSync }))}
+                        disabled={!isChitterSyncAccount}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: isChitterSyncAccount ? 'pointer' : 'not-allowed', opacity: isChitterSyncAccount ? 1 : 0.6 }}
+                      >
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Sync profile to ChitterSync</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                            Keeps display name, bio, pronouns, website, and location synced to your ChitterSync account.
+                          </div>
+                        </div>
+                        <Switch checked={settings.syncProfileToChitterSync === true} />
+                      </button>
+
+                    
+                      <button
+                        type="button"
+                        onClick={cleanupLegacySettings}
+                        className="btn-ghost"
+                        style={{ padding: '6px 10px', border: '1px dashed #334155', color: '#cbd5f5' }}
+                      >
+                        Remove legacy settings
+                      </button>
+
+
+                      <button
+                        type="button"
+                        onClick={() => setTab('connections')}
+                        className="btn-ghost"
+                        style={{ padding: '6px 10px', border: '1px solid #1f2937' }}
+                      >
+                        More connections
+                      </button>
+
+{syncWarning && (
                       <div style={{ padding: 10, borderRadius: 8, background: '#3f0c0c', border: '1px solid #ef4444', color: '#fecaca', fontSize: 13 }}>
                         {syncWarning}
                       </div>
@@ -2103,17 +2475,33 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <div style={{ fontSize: 11, color: '#6b7280' }}>
                           Preferences saved from mobile, desktop, or the auth portal share the same source of truth. Reload if you change them elsewhere.
                         </div>
-                        <div style={{ display: 'grid', gap: 10 }}>
-                          <div style={{ fontSize: 12, color: '#9ca3af' }}>Linked accounts</div>
-                          {[
-                            { label: "Discord", hint: "Coming soon" },
-                            { label: "Steam", hint: "Coming soon" },
-                            { label: "Spotify", hint: "Coming soon" },
-                          ].map((item) => (
+                          <div style={{ display: 'grid', gap: 10 }}>
+                            <div style={{ fontSize: 12, color: '#9ca3af' }}>Linked accounts</div>
                             <button
-                              key={item.label}
                               type="button"
-                              disabled
+                              onClick={() => {
+                                if (typeof window === "undefined") return;
+                                const returnTo = `${window.location.origin}/steam/callback`;
+                                const realm = window.location.origin;
+                                const params = new URLSearchParams({
+                                  "openid.ns": "http://specs.openid.net/auth/2.0",
+                                  "openid.mode": "checkid_setup",
+                                  "openid.return_to": returnTo,
+                                  "openid.realm": realm,
+                                  "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+                                  "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+                                });
+                                const url = `https://steamcommunity.com/openid/login?${params.toString()}`;
+                                const width = 520;
+                                const height = 720;
+                                const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+                                const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+                                window.open(
+                                  url,
+                                  "steam_link",
+                                  `popup=yes,width=${width},height=${height},left=${Math.round(left)},top=${Math.round(top)}`,
+                                );
+                              }}
                               style={{
                                 display: 'flex',
                                 alignItems: 'center',
@@ -2122,19 +2510,58 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                                 borderRadius: 10,
                                 border: '1px solid #1f2937',
                                 background: '#0b1120',
-                                color: '#9ca3af',
-                                opacity: 0.7,
-                                cursor: 'not-allowed',
+                                color: '#e2e8f0',
                               }}
                             >
                               <div style={{ textAlign: 'left' }}>
-                                <div style={{ fontWeight: 600 }}>{item.label}</div>
-                                <div style={{ fontSize: 11, color: '#6b7280' }}>{item.hint}</div>
+                                <div style={{ fontWeight: 600 }}>Steam</div>
+                                <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                                  {settings.steamId ? `Connected: ${settings.steamId}` : "Connect your Steam account"}
+                                </div>
                               </div>
-                              <span style={{ fontSize: 11, color: '#6b7280' }}>Unavailable</span>
+                              <span style={{ fontSize: 11, color: settings.steamId ? '#22c55e' : '#94a3b8' }}>
+                                {settings.steamId ? "Connected" : "Connect"}
+                              </span>
                             </button>
-                          ))}
-                        </div>
+                            {settings.steamId && (
+                              <button
+                                type="button"
+                                onClick={() => setSettings((s) => ({ ...s, steamId: "", steamRichPresence: false }))}
+                                className="btn-ghost"
+                                style={{ padding: '6px 10px', color: '#f87171', border: '1px dashed #334155' }}
+                              >
+                                Disconnect Steam
+                              </button>
+                            )}
+                            {[
+                              { label: "Discord", hint: "Coming soon" },
+                              { label: "Spotify", hint: "Coming soon" },
+                            ].map((item) => (
+                              <button
+                                key={item.label}
+                                type="button"
+                                disabled
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  padding: '10px 12px',
+                                  borderRadius: 10,
+                                  border: '1px solid #1f2937',
+                                  background: '#0b1120',
+                                  color: '#9ca3af',
+                                  opacity: 0.7,
+                                  cursor: 'not-allowed',
+                                }}
+                              >
+                                <div style={{ textAlign: 'left' }}>
+                                  <div style={{ fontWeight: 600 }}>{item.label}</div>
+                                  <div style={{ fontSize: 11, color: '#6b7280' }}>{item.hint}</div>
+                                </div>
+                                <span style={{ fontSize: 11, color: '#6b7280' }}>Unavailable</span>
+                              </button>
+                            ))}
+                          </div>
                         <div style={{ display: 'grid', gap: 10 }}>
                           <div style={{ fontSize: 12, color: '#9ca3af' }}>Account lists</div>
                           <CustomDropdown
@@ -2230,6 +2657,259 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     </div>
                   </div>
                 )}
+                
+                {tab === 'connections' && (
+                  <div style={{ position: 'relative', display: 'grid', gap: 16 }}>
+                    {!isChitterSyncAccount && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof window !== 'undefined') {
+                            window.alert("Please link your account in order to use connections to other platforms");
+                          }
+                        }}
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 5,
+                          background: 'rgba(2,6,23,0.55)',
+                          backdropFilter: 'blur(6px)',
+                          border: '1px solid rgba(148,163,184,0.2)',
+                          borderRadius: 12,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 10,
+                          color: '#e2e8f0',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                        title="Link your account to unlock connections"
+                      >
+                        <FontAwesomeIcon icon={faLock} />
+                        <span>Connections locked</span>
+                      </button>
+                    )}
+                    {!isChitterSyncAccount && (
+                      <div
+                        style={{
+                          padding: 12,
+                          borderRadius: 10,
+                          border: '1px solid rgba(148,163,184,0.35)',
+                          background: 'rgba(2,6,23,0.6)',
+                          color: '#e2e8f0',
+                          fontSize: 13,
+                        }}
+                      >
+                        Please link your account in order to use connections to other platforms
+                      </div>
+                    )}
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                      Manage connected services for this account.
+                    </div>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>Linked accounts</div>
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => setTab('account')}
+                          className="btn-ghost"
+                          style={{ padding: '6px 10px' }}
+                        >
+                          Back to Account
+                        </button>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>Steam</div>
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                          {settings.steamId ? `Connected: ${settings.steamId}` : 'Not connected'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof window === 'undefined') return;
+                            const returnTo = `${window.location.origin}/steam/callback`;
+                            const realm = window.location.origin;
+                            const params = new URLSearchParams({
+                              'openid.ns': 'http://specs.openid.net/auth/2.0',
+                              'openid.mode': 'checkid_setup',
+                              'openid.return_to': returnTo,
+                              'openid.realm': realm,
+                              'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
+                              'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+                            });
+                            const url = `https://steamcommunity.com/openid/login?${params.toString()}`;
+                            const width = 520;
+                            const height = 720;
+                            const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+                            const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+                            window.open(url, 'steam_link', `popup=yes,width=${width},height=${height},left=${Math.round(left)},top=${Math.round(top)}`);
+                          }}
+                          className="btn-ghost"
+                          style={{ padding: '8px 10px' }}
+                          title="Purpose: presence"
+                        >
+                          {settings.steamId ? 'Reconnect Steam' : 'Connect Steam'}
+                        </button>
+                        {settings.steamId && (
+                          <button
+                            type="button"
+                            onClick={() => setSettings((s) => ({ ...s, steamId: '', steamRichPresence: false }))}
+                            className="btn-ghost"
+                            style={{ padding: '6px 10px', color: '#f87171', border: '1px dashed #334155' }}
+                            title="Purpose: presence"
+                          >
+                            Disconnect Steam
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>More connections</div>
+                      {[
+                        { label: 'Google', purpose: 'syncing' },
+                        { label: 'Apple', purpose: 'syncing' },
+                        { label: 'Microsoft', purpose: 'syncing' },
+                        { label: 'GitHub', purpose: 'SDK' },
+                        { label: 'Xbox', purpose: 'presence' },
+                        { label: 'PlayStation', purpose: 'presence' },
+                        { label: 'Epic Games', purpose: 'presence' },
+                        { label: 'Roblox', purpose: 'presence' },
+                        { label: 'YouTube', purpose: 'presence' },
+                        { label: 'Twitch', purpose: 'presence' },
+                        { label: 'Apple Music', purpose: 'presence' },
+                        { label: 'SoundCloud', purpose: 'presence' },
+                        { label: 'Reddit', purpose: 'other' },
+                        { label: 'CurseForge', purpose: 'SDK' },
+                        { label: 'Modrinth', purpose: 'SDK' },
+                      ].map((item) => (
+                        <button
+                          key={item.label}
+                          type="button"
+                          disabled
+                          title={`Purpose: ${item.purpose}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '10px 12px',
+                            borderRadius: 10,
+                            border: '1px solid #1f2937',
+                            background: '#0b1120',
+                            color: '#9ca3af',
+                            opacity: 0.7,
+                            cursor: 'not-allowed',
+                          }}
+                        >
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontWeight: 600 }}>{item.label}</div>
+                            <div style={{ fontSize: 11, color: '#6b7280' }}>Purpose: {item.purpose}</div>
+                          </div>
+                          <span style={{ fontSize: 11, color: '#6b7280' }}>Unavailable</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {tab === 'browser' && (
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                      Browser details and permission controls are managed locally by your device.
+                    </div>
+                    <div style={{ display: 'grid', gap: 8, padding: 12, borderRadius: 12, border: '1px solid #1f2937', background: '#020617' }}>
+                      <div style={{ fontWeight: 600 }}>Browser info</div>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>User agent</div>
+                      <div style={{ fontSize: 12, color: '#e5e7eb', wordBreak: 'break-word' }}>{browserInfo.userAgent || 'Unknown'}</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, fontSize: 12 }}>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Platform</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.platform || 'Unknown'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Language</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.language || 'Unknown'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Online</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.online ? 'Yes' : 'No'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Cookies</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.cookiesEnabled ? 'Enabled' : 'Disabled'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Device memory</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.deviceMemory ? `${browserInfo.deviceMemory} GB` : 'Unknown'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>CPU cores</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.hardwareConcurrency || 'Unknown'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#9ca3af' }}>Screen</div>
+                          <div style={{ color: '#e5e7eb' }}>{browserInfo.screen || 'Unknown'}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>Permissions</div>
+                      {[
+                        { key: 'notifications', label: 'Notifications', request: async () => {
+                          if (typeof Notification === 'undefined') return;
+                          await Notification.requestPermission();
+                        }},
+                        { key: 'microphone', label: 'Microphone', request: async () => {
+                          if (!navigator.mediaDevices?.getUserMedia) return;
+                          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                          stream.getTracks().forEach((t) => t.stop());
+                        }},
+                        { key: 'camera', label: 'Camera', request: async () => {
+                          if (!navigator.mediaDevices?.getUserMedia) return;
+                          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                          stream.getTracks().forEach((t) => t.stop());
+                        }},
+                        { key: 'geolocation', label: 'Location', request: async () => {
+                          if (!navigator.geolocation) return;
+                          navigator.geolocation.getCurrentPosition(() => undefined, () => undefined);
+                        }},
+                      ].map((perm) => (
+                        <div
+                          key={perm.key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '10px 12px',
+                            borderRadius: 10,
+                            border: '1px solid #1f2937',
+                            background: '#0b1120',
+                          }}
+                        >
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontWeight: 600 }}>{perm.label}</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                              Status: {permissionStates[perm.key] || 'unknown'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            onClick={async () => {
+                              try {
+                                await perm.request();
+                              } catch {}
+                            }}
+                            style={{ padding: '6px 10px' }}
+                          >
+                            Request
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {tab === 'guides' && (
                   <div style={{ display: 'grid', gap: 14, fontSize: 13 }}>
                     <div style={{ color: '#9ca3af' }}>
@@ -2362,10 +3042,10 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
             )}
           </div>
           <div style={{ padding: 12, borderTop: '1px solid #2a3344', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: '#07101a' }}>
-            <p style={{ margin: 0, color: '#9ca3af', fontSize: 13 }}>Some settings will not properly sync without reloading after.</p>
+            <p style={{ margin: 0, color: '#9ca3af', fontSize: 13 }}>remember to save your changes</p>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn-ghost" onClick={handleCancel} style={{ padding: '6px 10px' }}>Cancel</button>
-              <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
+              <button className="btn-ghost" onClick={handleCancel} style={{ padding: '6px 10px', color: '#f87171' }}>Cancel</button>
+              <button className="btn-ghost" onClick={save} style={{ padding: '6px 10px', color: '#93fd98' }}>Save</button>
             </div>
           </div>
           {confirmBlockRemoval && (
@@ -2389,6 +3069,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
               </div>
             </div>
           )}
+          </main>
         </div>
       </div>
     </div>

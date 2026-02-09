@@ -4,6 +4,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import { prisma } from "./prismaClient";
 import { requireUser } from "./auth";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 const HISTORY_PATH = path.join(process.cwd(), "src/pages/api/history.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
@@ -14,15 +15,24 @@ function decryptHistory() {
   const encrypted = fs.readFileSync(HISTORY_PATH);
   if (encrypted.length <= 16) return {};
   const iv = encrypted.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted.slice(16)),
-    decipher.final()
-  ]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const decrypted = Buffer.concat([
+      decipher.update(encrypted.slice(16)),
+      decipher.final()
+    ]).toString();
     return JSON.parse(decrypted);
   } catch {
-    return {};
+    // Fallback: file might be plaintext JSON or encrypted with an old key.
+    try {
+      const plaintext = encrypted.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      // Re-encrypt to the current key if plaintext was valid.
+      encryptHistory(parsed);
+      return parsed;
+    } catch {
+      return {};
+    }
   }
 }
 
@@ -171,6 +181,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const payload = await requireUser(req, res);
     if (!payload) return;
     const me = payload.username as string;
+    if (!isExemptUsername(me)) {
+      const ip = getClientIp(req);
+      const limit = rateLimit(`history:${me || ip}`, 60, 60_000);
+      if (!limit.allowed) {
+        return res.status(429).json({ error: "Too many messages. Try again shortly." });
+      }
+    }
 
     const ensurePermissions = async (havenName: string) => {
       // Load server settings via Prisma and ensure a default permissions scaffold exists

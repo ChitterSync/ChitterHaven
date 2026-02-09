@@ -36,14 +36,63 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
   const [confirmAction, setConfirmAction] = useState<null | { title: string; body: string; confirmLabel: string; onConfirm: () => void }>(null);
   const [editMode, setEditMode] = useState(false);
   const [draft, setDraft] = useState<any>({});
+  const [syncProfileToChitterSync, setSyncProfileToChitterSync] = useState(false);
+  const [profileNotice, setProfileNotice] = useState<string>("");
   const [isMobileLayout, setIsMobileLayout] = useState(false);
   const avatarInputRef = React.useRef<HTMLInputElement>(null);
   const bannerInputRef = React.useRef<HTMLInputElement>(null);
-  const uploadImage = async (file: File) => {
+  const uploadImage = async (file: File, opts: { maxWidth: number; maxHeight: number; quality?: number }) => {
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      throw new Error("Offline");
+    }
+    const maxBytes = 4 * 1024 * 1024;
+    const quality = typeof opts.quality === "number" ? opts.quality : 0.85;
+
+    const resizeImage = async () => {
+      if (typeof window === "undefined") return file;
+      try {
+        const img = await createImageBitmap(file);
+        const scale = Math.min(1, opts.maxWidth / img.width, opts.maxHeight / img.height);
+        const targetW = Math.max(1, Math.round(img.width * scale));
+        const targetH = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return file;
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        const blob: Blob | null = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/webp", quality),
+        );
+        if (!blob) return file;
+        return new File([blob], file.name.replace(/\.\w+$/, ".webp"), { type: "image/webp" });
+      } catch {
+        return file;
+      }
+    };
+
+    const processed = await resizeImage();
+    if (processed.size > maxBytes) {
+      throw new Error("Image is too large after compression.");
+    }
+
     const reader = new FileReader();
-    const dataUrl: string = await new Promise((resolve, reject) => { reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); });
-    const r = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, data: dataUrl, type: file.type }) });
-    const d = await r.json();
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(processed);
+    });
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    const r = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: processed.name, data: dataUrl, type: processed.type }),
+      signal: controller.signal,
+    }).finally(() => window.clearTimeout(timeout));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d?.error || "Upload failed");
     return d?.url as string;
   };
 
@@ -64,6 +113,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
         const settingsRes = await fetch('/api/settings');
         const settingsJson = await settingsRes.json().catch(() => ({}));
         const settingsPayload = settingsJson?.settings || settingsJson || {};
+        setSyncProfileToChitterSync(settingsPayload?.syncProfileToChitterSync === true);
         const rawHavens = settingsPayload?.havens;
         const havenEntries =
           rawHavens && typeof rawHavens === 'object'
@@ -110,6 +160,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
       }
     })();
     setEditMode(false);
+    setProfileNotice("");
   }, [isOpen, username, me]);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -129,9 +180,9 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
   } as const;
 
   if (!isOpen) return null;
-  const isFriend = friends.friends.includes(username);
-  const hasOutgoing = friends.outgoing.includes(username);
-  const hasIncoming = friends.incoming.includes(username);
+  const isFriend = Array.isArray(friends?.friends) && friends.friends.includes(username);
+  const hasOutgoing = Array.isArray(friends?.outgoing) && friends.outgoing.includes(username);
+  const hasIncoming = Array.isArray(friends?.incoming) && friends.incoming.includes(username);
   const isBlocked = Array.isArray(blockedUsers) && blockedUsers.includes(username);
   const isSelf = username === me;
 
@@ -213,7 +264,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
             </div>
             <button className="btn-ghost" onClick={onClose} style={{ marginLeft: isMobileLayout ? 0 : 'auto', padding: '6px 10px' }}><FontAwesomeIcon icon={faXmark} /></button>
           </div>
-          {(statusMessage || (richPresence && richPresence.title)) && (
+          {statusMessage && (
             <div
               style={{
                 position: 'relative',
@@ -265,18 +316,35 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                   border: '1px solid #1f2937',
                 }}
               />
-              {statusMessage && (
-                <div style={{ whiteSpace: 'pre-wrap' }}>{statusMessage}</div>
-              )}
-              {richPresence && richPresence.title && (
-                <div style={{ color: '#93c5fd', marginTop: statusMessage ? 4 : 0 }}>
-                  {richPresence.type === 'music' ? 'Listening to' : richPresence.type === 'game' ? 'Playing' : 'Activity'} {richPresence.title}
-                  {richPresence.details ? ` - ${richPresence.details}` : ''}
-                </div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>{statusMessage}</div>
+            </div>
+          )}
+          {richPresence && richPresence.title && (
+            <div
+              style={{
+                marginTop: statusMessage ? 10 : 8,
+                marginLeft: isMobileLayout ? 0 : 92,
+                padding: '10px 12px',
+                borderRadius: 12,
+                border: '1px solid #1f2937',
+                background: '#0b1222',
+                color: '#e2e8f0',
+                display: 'grid',
+                gap: 6,
+                maxWidth: 360,
+              }}
+            >
+              <div style={{ fontSize: 11, color: '#93c5fd', letterSpacing: 0.3 }}>Rich Presence</div>
+              <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                {richPresence.type === 'music' ? 'Listening to' : richPresence.type === 'game' ? 'Playing' : 'Activity'}
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{richPresence.title}</div>
+              {richPresence.details && (
+                <div style={{ fontSize: 12, color: '#94a3b8' }}>{richPresence.details}</div>
               )}
             </div>
           )}
-          {callPresence && (
+{callPresence && (
             <div style={{ marginTop: 12, border: '1px solid #1f2937', background: '#010914', borderRadius: 10, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ fontWeight: 600, color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {callPresence.icon}
@@ -344,7 +412,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                     <label style={{ color: '#9ca3af', fontSize: 12 }}>Avatar</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <img src={draft.avatarUrl || profile?.avatarUrl || '/favicon.ico'} alt="avatar" {...avatarLoadProps} style={{ width: 40, height: 40, borderRadius: '50%' }} />
-                      <input ref={avatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e)=> { const f = e.currentTarget.files?.[0]; if (f) { const url = await uploadImage(f); setDraft((d:any)=>({ ...d, avatarUrl: url })); } }} />
+                        <input ref={avatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e)=> { const f = e.currentTarget.files?.[0]; if (f) { try { const url = await uploadImage(f, { maxWidth: 512, maxHeight: 512, quality: 0.82 }); setDraft((d:any)=>({ ...d, avatarUrl: url })); } catch { setProfileNotice("Uploads are blocked while offline."); } } }} />
                       <button className="btn-ghost" onClick={()=> avatarInputRef.current?.click()} style={{ padding: '6px 10px' }}>Upload</button>
                       <button className="btn-ghost" onClick={async ()=> { const link = prompt('Paste image URL'); if (link) setDraft((d:any)=>({ ...d, avatarUrl: link })); }} style={{ padding: '6px 10px' }}>Set from Link</button>
                       <button className="btn-ghost" onClick={()=> setDraft((d:any)=>({ ...d, avatarUrl: '' }))} style={{ padding: '6px 10px', color: '#f87171' }}>Clear</button>
@@ -354,22 +422,35 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                     <label style={{ color: '#9ca3af', fontSize: 12 }}>Banner</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ width: 80, height: 32, background: (draft.bannerUrl || profile?.bannerUrl) ? `url(${draft.bannerUrl || profile?.bannerUrl}) center/cover no-repeat` : '#111827', borderRadius: 6 }} />
-                      <input ref={bannerInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e)=> { const f = e.currentTarget.files?.[0]; if (f) { const url = await uploadImage(f); setDraft((d:any)=>({ ...d, bannerUrl: url })); } }} />
+                        <input ref={bannerInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e)=> { const f = e.currentTarget.files?.[0]; if (f) { try { const url = await uploadImage(f, { maxWidth: 1600, maxHeight: 600, quality: 0.8 }); setDraft((d:any)=>({ ...d, bannerUrl: url })); } catch { setProfileNotice("Uploads are blocked while offline."); } } }} />
                       <button className="btn-ghost" onClick={()=> bannerInputRef.current?.click()} style={{ padding: '6px 10px' }}>Upload</button>
                       <button className="btn-ghost" onClick={async ()=> { const link = prompt('Paste image URL'); if (link) setDraft((d:any)=>({ ...d, bannerUrl: link })); }} style={{ padding: '6px 10px' }}>Set from Link</button>
                       <button className="btn-ghost" onClick={()=> setDraft((d:any)=>({ ...d, bannerUrl: '' }))} style={{ padding: '6px 10px', color: '#f87171' }}>Clear</button>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    {profileNotice && (
+                      <div style={{ padding: 8, borderRadius: 8, background: '#0b1222', border: '1px solid #1f2937', color: '#93c5fd', fontSize: 12 }}>
+                        {profileNotice}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                     <button className="btn-ghost" onClick={()=> setEditMode(false)} style={{ padding: '6px 10px' }}>Cancel</button>
-                    <button className="btn-ghost" onClick={async ()=>{
-                      try {
-                        await fetch('/api/profile', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(draft) });
-                        const p = await fetch(`/api/profile?user=${encodeURIComponent(username)}`).then(r=>r.json());
-                        setProfile(p);
-                        setEditMode(false);
-                      } catch {}
-                    }} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
+                      <button className="btn-ghost" onClick={async ()=>{
+                        try {
+                          if (typeof window !== "undefined" && !navigator.onLine) {
+                            const pending = { ...draft, syncToChitterSync: syncProfileToChitterSync };
+                            try { window.localStorage.setItem("ch_pending_profile", JSON.stringify(pending)); } catch {}
+                            setProfileNotice("Offline: saved locally. Changes will sync when you’re back online.");
+                            setProfile((prev: any) => ({ ...(prev || {}), ...draft }));
+                            setEditMode(false);
+                            return;
+                          }
+                          await fetch('/api/profile', { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ ...draft, syncToChitterSync: syncProfileToChitterSync }) });
+                          const p = await fetch(`/api/profile?user=${encodeURIComponent(username)}`).then(r=>r.json());
+                          setProfile(p);
+                          setEditMode(false);
+                        } catch {}
+                      }} style={{ padding: '6px 10px', color: '#93c5fd' }}>Save</button>
                   </div>
                 </div>
               )}
@@ -431,9 +512,9 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
           )}
         </div>
         {/* Friends + Havens/DMs */}
-        {(isSelf || mutual.havens.length > 0 || mutual.groupDMs.length > 0) && (
+        {(isSelf || (Array.isArray(mutual?.havens) && mutual.havens.length > 0) || (Array.isArray(mutual?.groupDMs) && mutual.groupDMs.length > 0)) && (
           <div style={{ padding: 16, paddingTop: 0 }}>
-            {isSelf && friends.friends.length > 0 && (
+            {isSelf && Array.isArray(friends?.friends) && friends.friends.length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ color: '#93c5fd', fontSize: 12, marginBottom: 4 }}>Friends</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

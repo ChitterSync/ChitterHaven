@@ -3,6 +3,7 @@ import { signJWT } from "./jwt";
 import { readUsers, writeUsers } from "./_lib/usersStore";
 import { generateSalt, hashPasswordScrypt } from "./_lib/passwords";
 import { setAuthCookie } from "./_lib/authCookie";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -14,6 +15,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!username || !password) {
     res.status(400).json({ error: "Missing username or password" });
     return;
+  }
+  if (!isExemptUsername(username)) {
+    const ip = getClientIp(req);
+    const limit = rateLimit(`register:${ip}`, 3, 60_000);
+    if (!limit.allowed) {
+      res.status(429).json({ error: "Too many registrations. Try again later." });
+      return;
+    }
   }
   const usersData = readUsers();
   if (usersData.users.find((u) => u.username === username)) {

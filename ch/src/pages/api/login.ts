@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { readUsers, writeUsers } from "./_lib/usersStore";
 import { generateSalt, hashPasswordPbkdf2, hashPasswordScrypt, timingSafeEqualBase64 } from "./_lib/passwords";
 import { setAuthCookie } from "./_lib/authCookie";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -15,6 +16,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!username || !password) {
     res.status(400).json({ error: "Missing username or password" });
     return;
+  }
+  if (!isExemptUsername(username)) {
+    const ip = getClientIp(req);
+    const limit = rateLimit(`login:${ip}`, 8, 60_000);
+    if (!limit.allowed) {
+      res.status(429).json({ error: "Too many login attempts. Try again later." });
+      return;
+    }
   }
   const usersData = readUsers();
   const user = usersData.users.find((u) => u.username === username);

@@ -15,15 +15,23 @@ function decryptSettings() {
   const encrypted = fs.readFileSync(SETTINGS_PATH);
   if (encrypted.length <= IV_LENGTH) return {};
   const iv = encrypted.slice(0, IV_LENGTH);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted.slice(IV_LENGTH)),
-    decipher.final()
-  ]).toString();
   try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const decrypted = Buffer.concat([
+      decipher.update(encrypted.slice(IV_LENGTH)),
+      decipher.final()
+    ]).toString();
     return JSON.parse(decrypted);
   } catch {
-    return {};
+    // Fallback: file might be plaintext JSON or encrypted with an old key.
+    try {
+      const plaintext = encrypted.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      encryptSettings(parsed);
+      return parsed;
+    } catch {
+      return {};
+    }
   }
 }
 

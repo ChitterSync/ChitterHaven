@@ -2,6 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { readSessionFromRequest } from "@/lib/auth/session";
+import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "./jwt";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 export const config = {
   api: {
@@ -23,6 +27,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+  const session = readSessionFromRequest(req);
+  const token = getAuthCookie(req);
+  const payload: any = token ? verifyJWT(token) : null;
+  const username = session?.user?.username || payload?.username;
+  if (!isExemptUsername(username)) {
+    const ip = getClientIp(req);
+    const limit = rateLimit(`upload:${username || ip}`, 10, 60_000);
+    if (!limit.allowed) {
+      return res.status(429).json({ error: "Too many uploads. Try again later." });
+    }
   }
   const { name, data, type } = req.body || {};
   if (!name || !data) return res.status(400).json({ error: "Missing name or data" });

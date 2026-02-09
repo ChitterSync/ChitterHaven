@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { verifyJWT } from "./jwt";
 import { getAuthCookie } from "./_lib/authCookie";
 import { readSessionFromRequest } from "@/lib/auth/session";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -69,6 +70,18 @@ type UserSettings = {
   havens?: HavenMap;
   enableOneko?: boolean;
   callrfMobileSizing?: boolean;
+  steamId?: string;
+  steamRichPresence?: boolean;
+  syncProfileToChitterSync?: boolean;
+  voice?: {
+    noiseSuppression?: boolean;
+    echoCancellation?: boolean;
+    autoGain?: boolean;
+    pushToTalk?: boolean;
+    inputVolume?: number;
+    outputVolume?: number;
+    micTestTone?: boolean;
+  };
   friendNicknames?: Record<string, string>;
   havenNicknames?: Record<string, Record<string, string>>;
   lastSeenUpdateVersion?: string;
@@ -85,9 +98,21 @@ function readSettings(): SettingsData {
   const buf = fs.readFileSync(SETTINGS_PATH);
   if (buf.length <= 16) return { users: {} };
   const iv = buf.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-  try { return JSON.parse(json); } catch { return { users: {} }; }
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
+    return JSON.parse(json);
+  } catch {
+    // Fallback: file might be plaintext JSON or encrypted with an old key.
+    try {
+      const plaintext = buf.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      writeSettings(parsed);
+      return parsed;
+    } catch {
+      return { users: {} };
+    }
+  }
 }
 
 function writeSettings(data: SettingsData) {
@@ -184,6 +209,29 @@ const sanitizeRichPresence = (raw: any): UserSettings["richPresence"] | undefine
   const details = typeof raw.details === "string" ? raw.details.trim().slice(0, MAX_RICH_DETAILS) : "";
   if (!type || !title) return undefined;
   return details ? { type, title, details } : { type, title };
+};
+
+const sanitizeSteamId = (value: any): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (!/^\d{15,20}$/.test(trimmed)) return undefined;
+  return trimmed;
+};
+
+const sanitizeVoice = (raw: any): UserSettings["voice"] | undefined => {
+  if (!raw || typeof raw !== "object") return undefined;
+  const inputVolume = Number(raw.inputVolume);
+  const outputVolume = Number(raw.outputVolume);
+  return {
+    noiseSuppression: raw.noiseSuppression !== false,
+    echoCancellation: raw.echoCancellation !== false,
+    autoGain: raw.autoGain !== false,
+    pushToTalk: raw.pushToTalk === true,
+    inputVolume: Number.isFinite(inputVolume) ? Math.min(1, Math.max(0, inputVolume)) : 0.85,
+    outputVolume: Number.isFinite(outputVolume) ? Math.min(1, Math.max(0, outputVolume)) : 0.9,
+    micTestTone: raw.micTestTone === true,
+  };
 };
 
 const sanitizeAppearancePatch = (raw: any): UserSettings["appearance"] | undefined => {
@@ -284,30 +332,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const payload: any = token ? verifyJWT(token) : null;
   const me = session?.user?.username || payload?.username;
   if (!me) return res.status(401).json({ error: "Unauthorized" });
+  const isCentralAccount = Boolean(session?.user?.username);
+  const canUseGlobalSync = isCentralAccount && hasGlobalSync;
 
   const data = readSettings();
   const current = data.users[me] || {};
 
   if (req.method === "GET") {
-    const remote = await fetchGlobalSettings(me);
-    if (remote.status === "ok") {
-      const remoteSettings = remote.settings || {};
-      const appearancePatch = sanitizeAppearancePatch((remoteSettings as any).appearance);
-      const sanitized = {
-        ...remoteSettings,
-        statusMessage: sanitizeStatusMessage((remoteSettings as any).statusMessage),
-        richPresence: sanitizeRichPresence((remoteSettings as any).richPresence),
-        dndIsCosmetic: (remoteSettings as any).dndIsCosmetic === true,
-        havens: sanitizeHavens((remoteSettings as any).havens),
-        friendNicknames: sanitizeFriendNicknames((remoteSettings as any).friendNicknames),
-        havenNicknames: sanitizeHavenNicknames((remoteSettings as any).havenNicknames),
-        appearance: appearancePatch || (remoteSettings as any).appearance,
-      };
-      return res.status(200).json({
-        legacy: false,
-        settings: sanitized,
-        syncedAt: remote.updatedAt ?? null,
-      });
+    if (canUseGlobalSync) {
+      const remote = await fetchGlobalSettings(me);
+      if (remote.status === "ok") {
+        const remoteSettings = remote.settings || {};
+        const appearancePatch = sanitizeAppearancePatch((remoteSettings as any).appearance);
+        const sanitized = {
+          ...remoteSettings,
+          statusMessage: sanitizeStatusMessage((remoteSettings as any).statusMessage),
+          richPresence: sanitizeRichPresence((remoteSettings as any).richPresence),
+          dndIsCosmetic: (remoteSettings as any).dndIsCosmetic === true,
+          havens: sanitizeHavens((remoteSettings as any).havens),
+          friendNicknames: sanitizeFriendNicknames((remoteSettings as any).friendNicknames),
+          havenNicknames: sanitizeHavenNicknames((remoteSettings as any).havenNicknames),
+          appearance: appearancePatch || (remoteSettings as any).appearance,
+        };
+        return res.status(200).json({
+          legacy: false,
+          settings: sanitized,
+          syncedAt: remote.updatedAt ?? null,
+        });
+      }
+      if (remote.status === "error") {
+        return res.status(200).json({
+          legacy: false,
+          settings: {
+            ...current,
+            statusMessage: sanitizeStatusMessage((current as any).statusMessage),
+            richPresence: sanitizeRichPresence((current as any).richPresence),
+            dndIsCosmetic: (current as any).dndIsCosmetic === true,
+            friendNicknames: sanitizeFriendNicknames((current as any).friendNicknames),
+            havenNicknames: sanitizeHavenNicknames((current as any).havenNicknames),
+            havens: sanitizeHavens(current.havens),
+            appearance: sanitizeAppearancePatch((current as any).appearance) || (current as any).appearance,
+          },
+          syncedAt: null,
+          syncError: "ChitterSync cloud settings are temporarily unavailable.",
+        });
+      }
     }
     const localNicknames = {
       friendNicknames: sanitizeFriendNicknames((current as any).friendNicknames),
@@ -326,13 +395,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       syncedAt: null,
     };
-    if (remote.status === "error") {
-      response.syncError = "ChitterSync cloud settings are temporarily unavailable.";
-    }
     return res.status(200).json(response);
   }
 
   if (req.method === "POST") {
+    if (!isExemptUsername(me)) {
+      const ip = getClientIp(req);
+      const limit = rateLimit(`settings:${me || ip}`, 20, 60_000);
+      if (!limit.allowed) {
+        return res.status(429).json({ error: "Too many settings updates. Try again later." });
+      }
+    }
     const patch: Partial<UserSettings> = req.body || {};
     if (patch.havens) {
       patch.havens = sanitizeHavens(patch.havens);
@@ -364,6 +437,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (typeof (patch as any).callrfMobileSizing !== "undefined") {
       patch.callrfMobileSizing = (patch as any).callrfMobileSizing === true;
     }
+    if (typeof (patch as any).steamRichPresence !== "undefined") {
+      patch.steamRichPresence = (patch as any).steamRichPresence === true;
+    }
+    if (typeof (patch as any).steamId !== "undefined") {
+      patch.steamId = sanitizeSteamId((patch as any).steamId);
+    }
+    if (typeof (patch as any).syncProfileToChitterSync !== "undefined") {
+      patch.syncProfileToChitterSync = (patch as any).syncProfileToChitterSync === true;
+    }
+    if (typeof (patch as any).voice !== "undefined") {
+      patch.voice = sanitizeVoice((patch as any).voice);
+    }
     if (typeof (patch as any).lastSeenUpdateVersion !== "undefined") {
       const rawVersion = (patch as any).lastSeenUpdateVersion;
       if (typeof rawVersion === "string") {
@@ -377,7 +462,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         delete (patch as any).lastSeenUpdateVersion;
       }
     }
-    const remote = await fetchGlobalSettings(me);
+    const remote = canUseGlobalSync ? await fetchGlobalSettings(me) : { status: "missing" as const };
     const base = remote.status === "ok" ? remote.settings || {} : current;
     const merged: UserSettings = {
       ...base,
@@ -389,6 +474,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       appearance: {
         ...(base.appearance || {}),
         ...(patch.appearance || {}),
+      },
+      voice: {
+        ...(base.voice || {}),
+        ...(patch.voice || {}),
       },
     };
 
@@ -413,9 +502,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       settings: merged,
       syncedAt: null,
     };
-    if (remote.status === "error") {
-      response.syncError = "ChitterSync cloud settings are temporarily unavailable.";
-    }
     return res.status(200).json(response);
   }
 

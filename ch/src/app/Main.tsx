@@ -2,7 +2,7 @@
 
 // --- imports (yes, it's a lot).
 import type React from "react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import io, { Socket } from "socket.io-client";
 import ReactMarkdown from "react-markdown";
 import dynamic from "next/dynamic";
@@ -47,8 +47,8 @@ import {
   faChevronDown,
   faEye,
   faEyeSlash,
+  faImage,
 } from "@fortawesome/free-solid-svg-icons";
-import { EMOJI_LIST, filterEmojis, CATEGORIES } from "./emojiData";
 import { parseCHInline, resolveCH } from "./chTokens";
 import UpdateNewsModal from "./UpdateNewsModal";
 import {
@@ -67,7 +67,7 @@ import HomePanel from "./components/HomePanel";
 import ProfilePanel from "./components/ProfilePanel";
 import MobileApp from "./components/MobileApp";
 import Oneko from "./components/Oneko";
-import EmojiPicker from "./components/EmojiPicker";
+const EmojiPicker = dynamic(() => import("./components/EmojiPicker"), { ssr: false });
 import InviteCard, { type InvitePreview } from "./components/InviteCard";
 
 // --- UI constants (aka the stuff you tweak at 2am).
@@ -97,6 +97,9 @@ const BORDER_THICK = `2px solid ${COLOR_BORDER}`;
 const INVITE_CODE_RE = /(CHINV-[A-Z0-9]{4,})/i;
 const LOCAL_DESKTOP_NOTIF_KEY = "desktop_notifications_enabled";
 const CALL_REJOIN_KEY = "ch_last_call";
+const MEMBERS_SIDEBAR_WIDTH = 260;
+const MAX_RENDER_MESSAGES = 250;
+const MAX_STORE_MESSAGES = 1000;
 
 // --- theme + appearance helpers (boring, but necessary).
 type ThemeStop = { color: string; position: number };
@@ -198,6 +201,9 @@ const sanitizeRichPresence = (raw?: { type?: string; title?: string; details?: s
   if (!type || !title) return undefined;
   return details ? { type, title, details } : { type, title };
 };
+
+const trimMessageList = (list: Message[]) =>
+  list.length > MAX_STORE_MESSAGES ? list.slice(-MAX_STORE_MESSAGES) : list;
 
 const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
   try {
@@ -601,6 +607,7 @@ export default function Main({ username }: { username: string }) {
   const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadItems, setUploadItems] = useState<{ id: string; name: string; type: string; size: number; progress: number; status: 'uploading'|'done'|'error'; url?: string; localUrl?: string }[]>([]);
+  const [isOnline, setIsOnline] = useState(true);
   const [presenceMap, setPresenceMap] = useState<Record<string, string>>({});
   const [statusMessageMap, setStatusMessageMap] = useState<Record<string, string>>({});
   const [richPresenceMap, setRichPresenceMap] = useState<Record<string, RichPresence>>({});
@@ -608,6 +615,7 @@ export default function Main({ username }: { username: string }) {
   const [profileContext, setProfileContext] = useState<string | undefined>(undefined);
   const [profileLauncherHover, setProfileLauncherHover] = useState(false);
   const statusColor = (s?: string) => (s === "online" ? "#22c55e" : s === "idle" ? "#f59e0b" : s === "dnd" ? "#ef4444" : "#6b7280");
+  const statusLabel = (s?: string) => (s === "online" ? "Online" : s === "idle" ? "Idle" : s === "dnd" ? "Do not disturb" : "Offline");
   const formatRichPresence = (presence?: RichPresence) => {
     if (!presence || !presence.title) return null;
     const prefix = presence.type === "music" ? "Listening to" : presence.type === "game" ? "Playing" : "Activity";
@@ -628,9 +636,25 @@ export default function Main({ username }: { username: string }) {
   };
   const [showPinned, setShowPinned] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
   // Active navigation controller: determines which content is focused.
   const [activeNav, setActiveNav] = useState<string>(() => { try { return localStorage.getItem('activeNav') || 'havens'; } catch { return 'havens'; } });
   useEffect(() => { try { localStorage.setItem('activeNav', activeNav); } catch {} }, [activeNav]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const wantsTutorial = params.get("tutorial") === "1";
+    const seen = window.localStorage.getItem("ch_tutorial_seen") === "1";
+    if (wantsTutorial && !seen) {
+      setShowTutorial(true);
+      window.localStorage.setItem("ch_tutorial_seen", "1");
+    }
+    if (wantsTutorial) {
+      params.delete("tutorial");
+      const next = `${window.location.pathname}${params.toString() ? `?${params}` : ""}`;
+      window.history.replaceState({}, "", next);
+    }
+  }, []);
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -685,6 +709,41 @@ export default function Main({ username }: { username: string }) {
       }
     } catch {}
   };
+  const flushPendingSync = useCallback(async () => {
+    if (typeof window === "undefined" || !navigator.onLine) return;
+    try {
+      const pendingSettings = window.localStorage.getItem("ch_pending_settings");
+      if (pendingSettings) {
+        const payload = JSON.parse(pendingSettings);
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          window.localStorage.removeItem("ch_pending_settings");
+          notify({ title: "Settings synced", body: "Your offline changes were synced.", type: "success" });
+        }
+      }
+    } catch {}
+
+    try {
+      const pendingProfile = window.localStorage.getItem("ch_pending_profile");
+      if (pendingProfile) {
+        const payload = JSON.parse(pendingProfile);
+        const res = await fetch("/api/profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          window.localStorage.removeItem("ch_pending_profile");
+          notify({ title: "Profile synced", body: "Your offline profile changes were synced.", type: "success" });
+        }
+      }
+    } catch {}
+  }, [notify]);
+
 
   const resolveRoomLabel = useCallback((room: string) => {
     if (!room) return "ChitterHaven";
@@ -758,7 +817,7 @@ export default function Main({ username }: { username: string }) {
       if (data?.message) {
         socketRef.current?.emit("message", { room, msg: data.message });
         if (selectedHaven === "__dms__" && selectedDM === room) {
-          setMessages((prev) => [...prev, data.message]);
+          setMessages((prev) => trimMessageList([...prev, data.message]));
         }
       }
     } catch {}
@@ -815,6 +874,7 @@ export default function Main({ username }: { username: string }) {
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
+    iceRestartAttemptedRef.current = false;
     pc.onicecandidate = (ev) => {
       const room = activeCallDM || selectedDM;
       if (ev.candidate && socketRef.current && room) {
@@ -822,7 +882,7 @@ export default function Main({ username }: { username: string }) {
       }
     };
     pc.ontrack = (ev) => {
-      const [stream] = ev.streams;
+      const stream = ev.streams?.[0] || new MediaStream([ev.track]);
       remoteStreamRef.current = stream;
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = stream;
@@ -840,6 +900,33 @@ export default function Main({ username }: { username: string }) {
     pc.onnegotiationneeded = () => {
       if (!hasJoinedCallRef.current) return;
       triggerRenegotiation();
+    };
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === 'failed' || state === 'disconnected') {
+        if (iceRestartingRef.current) return;
+        if (!iceRestartAttemptedRef.current) {
+          iceRestartAttemptedRef.current = true;
+          iceRestartingRef.current = true;
+          try {
+            requestRenegotiationRef.current?.({ iceRestart: true });
+            notify({ title: 'Reconnecting call…', body: 'Attempting to recover the connection.', type: 'warn' });
+          } finally {
+            setTimeout(() => { iceRestartingRef.current = false; }, 2000);
+          }
+        } else {
+          notify({ title: 'Call connection unstable', body: 'Network issues detected. Try reconnecting.', type: 'error' });
+        }
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      if (state === 'failed' && !iceRestartAttemptedRef.current) {
+        iceRestartAttemptedRef.current = true;
+        try {
+          requestRenegotiationRef.current?.({ iceRestart: true });
+        } catch {}
+      }
     };
     pcRef.current = pc;
     return pc;
@@ -1081,6 +1168,7 @@ export default function Main({ username }: { username: string }) {
     const target = room || incomingCall?.room || activeCallDM;
     if (!target) return;
     clearCallRejoin();
+    clearOfferRetry();
     try {
       if (ringAudioRef.current) {
         ringAudioRef.current.pause();
@@ -1106,6 +1194,7 @@ export default function Main({ username }: { username: string }) {
     const endedRoom = activeCallDM;
     const startedAt = callStartedAt;
     clearCallRejoin();
+    clearOfferRetry();
     if (endedRoom) {
       socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now(), participants: callParticipantsRef.current });
       try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-end', message: `Call ended in ${endedRoom}`, meta: { room: endedRoom } }) }); } catch {}
@@ -1162,6 +1251,7 @@ export default function Main({ username }: { username: string }) {
     }
   };
 
+
   const startCall = async () => {
     if (!selectedDM || selectedHaven !== '__dms__') return;
     if (callState !== 'idle') return;
@@ -1201,6 +1291,12 @@ export default function Main({ username }: { username: string }) {
         dial.play().catch(() => {});
         dialingAudioRef.current = dial;
       } catch {}
+      const micOk = await ensureMicAvailable();
+      if (!micOk) {
+        setCallState('idle');
+        setCallError('No microphone detected.');
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
       markJoined(true);
@@ -1215,6 +1311,7 @@ export default function Main({ username }: { username: string }) {
       const targets = targetDm ? targetDm.users.filter(u => u !== username) : [];
       pendingOfferRef.current = null;
       socketRef.current?.emit('call-offer', { room: selectedDM, offer, from: username, targets });
+      scheduleOfferRetry(selectedDM, targets);
       socketRef.current?.emit('call-state', { room: selectedDM, state: 'calling', from: username, participants: syncedRoster });
       await postCallSystemMessage(selectedDM, {
         text: `Voice call started by ${displayNameFor(username)}  -  ${formatElapsedClock(0)} elapsed`,
@@ -1422,9 +1519,22 @@ export default function Main({ username }: { username: string }) {
     });
     return ids;
   }, [messages, messageGrouping]);
+  const { visibleMessages, visibleOffset, isWindowed } = useMemo(() => {
+    const windowed = messages.length > MAX_RENDER_MESSAGES;
+    const offset = windowed ? messages.length - MAX_RENDER_MESSAGES : 0;
+    return {
+      isWindowed: windowed,
+      visibleOffset: offset,
+      visibleMessages: windowed ? messages.slice(offset) : messages,
+    };
+  }, [messages]);
   const showHavenIconsOnly = !!(userSettings as any).sidebarHavenIconOnly;
   const havenColumns = Math.max(1, Math.min(5, Number((userSettings as any).havenColumns) || 1));
   const privacyBlurActive = blurOnUnfocused && !windowFocused;
+  const membersSidebarVisible = showMembers && selectedHaven !== '__dms__';
+  const membersSidebarOffset = membersSidebarVisible ? MEMBERS_SIDEBAR_WIDTH : 0;
+  const havenIconSize = showHavenIconsOnly ? 46 : 36;
+  const havenIconFontSize = showHavenIconsOnly ? 18 : 14;
   const fontMap: Record<string, number> = { small: 13, medium: 15, large: 17 };
   const msgFontSize = fontMap[userSettings.messageFontSize || 'medium'] || 14;
   const codeColor = (userSettings as any).codeColorHex || '#a5b4fc';
@@ -1486,10 +1596,15 @@ export default function Main({ username }: { username: string }) {
   const [callState, setCallState] = useState<'idle' | 'calling' | 'in-call'>('idle');
   const callStateRef = useRef(callState);
   useEffect(() => { callStateRef.current = callState; }, [callState]);
+  useEffect(() => {
+    if (callState !== 'calling') clearOfferRetry();
+  }, [callState]);
   const callEndTimerRef = useRef<number | null>(null);
   const ringFallbackTimerRef = useRef<number | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const iceRestartAttemptedRef = useRef(false);
+  const iceRestartingRef = useRef(false);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -1892,6 +2007,18 @@ export default function Main({ username }: { username: string }) {
   useEffect(() => {
     callParticipantsRef.current = callParticipants;
   }, [callParticipants]);
+  const ensureMicAvailable = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return true;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasMic = devices.some((d) => d.kind === 'audioinput');
+      if (!hasMic) {
+        notify({ title: 'No microphone detected', body: 'Plug in a microphone or enable one before joining a call.', type: 'warn' });
+        return false;
+      }
+    } catch {}
+    return true;
+  }, [notify]);
   const rejoinCall = useCallback(async (room: string) => {
     if (!room || callStateRef.current !== 'idle') return;
     if (!callsEnabled) return;
@@ -1926,6 +2053,14 @@ export default function Main({ username }: { username: string }) {
         } catch {}
         dialingAudioRef.current = null;
       }
+      const micOk = await ensureMicAvailable();
+      if (!micOk) {
+        setCallState('idle');
+        markJoined(false);
+        setCallError('No microphone detected.');
+        clearCallRejoin();
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
       markJoined(true);
@@ -1939,6 +2074,7 @@ export default function Main({ username }: { username: string }) {
       const targets = dm.users.filter(u => u !== username);
       pendingOfferRef.current = null;
       socketRef.current?.emit('call-offer', { room, offer, from: username, targets });
+      scheduleOfferRetry(room, targets);
       socketRef.current?.emit('call-state', { room, state: 'calling', from: username, participants: syncedRoster });
       updateSelfParticipant({ muted: isMuted, deafened: isDeafened, status: 'connected', videoEnabled: isCameraOn, screenSharing: isScreenSharing });
     } catch (e: any) {
@@ -1947,7 +2083,7 @@ export default function Main({ username }: { username: string }) {
       setCallError(e?.message || 'Could not rejoin call');
       clearCallRejoin();
     }
-  }, [applyParticipantUpdate, callsEnabled, clearCallRejoin, dms, isCameraOn, isDeafened, isMuted, isScreenSharing, updateSelfParticipant, username]);
+  }, [applyParticipantUpdate, callsEnabled, clearCallRejoin, dms, ensureMicAvailable, isCameraOn, isDeafened, isMuted, isScreenSharing, updateSelfParticipant, username]);
   useEffect(() => {
     if (!callRosterDirtyRef.current) return;
     const timer = window.setTimeout(() => {
@@ -1993,6 +2129,12 @@ export default function Main({ username }: { username: string }) {
   // Context menu
   type CtxTarget = { type: 'message'|'channel'|'dm'|'blank'|'attachment'|'call'; id?: string; data?: any; debug?: boolean };
   const [ctxMenu, setCtxMenu] = useState<{ open: boolean; x: number; y: number; target: CtxTarget } | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  const [ctxMenuPos, setCtxMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const offerRetryTimerRef = useRef<number | null>(null);
+  const offerRetryCountRef = useRef(0);
+  const offerRetryTargetsRef = useRef<string[]>([]);
+  const offerRetryRoomRef = useRef<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<null | { title: string; body: string; confirmLabel: string; onConfirm: () => void }>(null);
   const [collapsedSystemMessages, setCollapsedSystemMessages] = useState<Record<string, boolean>>({});
   const [focusHoverGroupId, setFocusHoverGroupId] = useState<string | null>(null);
@@ -2018,14 +2160,14 @@ export default function Main({ username }: { username: string }) {
   }>({ canPin: true, canManageMessages: true, canManageServer: true, canManageChannels: true, canSend: true, canReact: true, canUpload: true });
   const [adminQuickButtons, setAdminQuickButtons] = useState<{ own: string[]; others: string[] } | null>(null);
 
-  const requestRenegotiation = useCallback(async () => {
+  const requestRenegotiation = useCallback(async (opts?: { iceRestart?: boolean }) => {
     const pc = pcRef.current;
     const room = activeCallDM || selectedDM;
     if (!pc || !room || callStateRef.current !== 'in-call' || renegotiationLockRef.current) return;
     if ((pc as any).signalingState === 'closed' || (pc as any).connectionState === 'closed') return;
     renegotiationLockRef.current = true;
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer(opts?.iceRestart ? { iceRestart: true } : undefined);
       if ((pc as any).signalingState === 'closed' || (pc as any).connectionState === 'closed') return;
       await pc.setLocalDescription(offer);
       socketRef.current?.emit('call-renegotiate', { room, offer, from: username });
@@ -2768,8 +2910,8 @@ export default function Main({ username }: { username: string }) {
         if (ignore) return;
         const list: Message[] = Array.isArray(data.messages) ? data.messages : [];
         const seen = new Set<string>();
-        const unique = list.filter(m => m && typeof m.id === 'string' && !seen.has(m.id) && seen.add(m.id));
-        setMessages(unique);
+          const unique = list.filter(m => m && typeof m.id === 'string' && !seen.has(m.id) && seen.add(m.id));
+          setMessages(trimMessageList(unique));
       });
 
     // Handler to add new messages only if they are not already present
@@ -2777,7 +2919,7 @@ export default function Main({ username }: { username: string }) {
       setMessages((prev) => {
         // Prevent duplicates (by id)
         if (prev.some((m) => m.id === msg.id)) return prev;
-        return [...prev, msg];
+        return trimMessageList([...prev, msg]);
       });
       if (msg.user !== username) {
         const isMention = (msg.text || '').includes(`@${username}`);
@@ -3077,6 +3219,7 @@ export default function Main({ username }: { username: string }) {
       if (!(room === activeCallDM || room === selectedDM || !activeCallDM)) return;
       if (!pcRef.current) return;
       try {
+        clearOfferRetry();
         if (!activeCallDM) setActiveCallDM(room);
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
         setCallState('in-call');
@@ -3428,6 +3571,38 @@ export default function Main({ username }: { username: string }) {
     e.preventDefault();
     const debug = !!(e as any).altKey;
     setCtxMenu({ open: true, x: e.clientX, y: e.clientY, target: { ...target, debug } as any });
+    setCtxMenuPos(null);
+  };
+
+  const clearOfferRetry = () => {
+    if (offerRetryTimerRef.current) {
+      window.clearTimeout(offerRetryTimerRef.current);
+      offerRetryTimerRef.current = null;
+    }
+    offerRetryCountRef.current = 0;
+    offerRetryRoomRef.current = null;
+    offerRetryTargetsRef.current = [];
+  };
+  const scheduleOfferRetry = (room: string, targets: string[]) => {
+    clearOfferRetry();
+    offerRetryRoomRef.current = room;
+    offerRetryTargetsRef.current = targets;
+    const attempt = () => {
+      if (callStateRef.current !== 'calling') return;
+      const pc = pcRef.current;
+      const currentRoom = offerRetryRoomRef.current;
+      if (!pc || !pc.localDescription || !currentRoom) return;
+      if (offerRetryCountRef.current >= 3) return;
+      offerRetryCountRef.current += 1;
+      socketRef.current?.emit('call-offer', {
+        room: currentRoom,
+        offer: pc.localDescription,
+        from: username,
+        targets: offerRetryTargetsRef.current,
+      });
+      offerRetryTimerRef.current = window.setTimeout(attempt, offerRetryCountRef.current === 1 ? 4000 : 6000);
+    };
+    offerRetryTimerRef.current = window.setTimeout(attempt, 4000);
   };
 
   const copyText = async (text: string) => { try { await navigator.clipboard.writeText(text); } catch {} };
@@ -3563,6 +3738,77 @@ export default function Main({ username }: { username: string }) {
     setCtxMenu(null);
   };
 
+  useLayoutEffect(() => {
+    if (!ctxMenu?.open) return;
+    if (typeof window === "undefined") return;
+    const pad = 12;
+    const fallbackWidth = 260;
+    const fallbackHeight = 360;
+    const menuEl = ctxMenuRef.current;
+    const rect = menuEl?.getBoundingClientRect();
+    const menuW = rect?.width ?? fallbackWidth;
+    const menuH = rect?.height ?? fallbackHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = ctxMenu.x;
+    let y = ctxMenu.y;
+    if (x + menuW + pad > vw) x = Math.max(pad, vw - menuW - pad);
+    if (y + menuH + pad > vh) y = Math.max(pad, vh - menuH - pad);
+    setCtxMenuPos({ x, y });
+  }, [ctxMenu?.open, ctxMenu?.x, ctxMenu?.y]);
+
+  const ctxMenuStyles = {
+    shell: {
+      position: 'fixed' as const,
+      top: ctxMenuPos?.y ?? ctxMenu?.y ?? 0,
+      left: ctxMenuPos?.x ?? ctxMenu?.x ?? 0,
+      background: 'linear-gradient(180deg, rgba(8,14,28,0.98), rgba(8,14,28,0.92))',
+      border: '1px solid rgba(148,163,184,0.22)',
+      borderRadius: 12,
+      minWidth: 220,
+      maxWidth: 320,
+      maxHeight: '70vh',
+      overflowY: 'auto' as const,
+      overflowX: 'hidden' as const,
+      color: COLOR_TEXT,
+      boxShadow: '0 18px 40px rgba(2,6,23,0.6)',
+      padding: 6,
+      backdropFilter: 'blur(10px)',
+    },
+    item: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      width: '100%',
+      textAlign: 'left' as const,
+      padding: '8px 10px',
+      borderRadius: 8,
+      background: 'transparent',
+      border: '1px solid transparent',
+      color: COLOR_TEXT,
+      cursor: 'pointer',
+    },
+    itemSubtle: {
+      fontSize: 12,
+      color: '#9ca3af',
+    },
+    divider: {
+      height: 1,
+      background: 'rgba(148,163,184,0.15)',
+      margin: '6px 4px',
+    },
+    iconWrap: {
+      width: 18,
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: '#93c5fd',
+    },
+    danger: {
+      color: '#f87171',
+    },
+  } as const;
+
   const dismissTips = async () => {
     setUserSettings((prev: any) => ({ ...prev, showTips: false }));
     try {
@@ -3674,10 +3920,14 @@ export default function Main({ username }: { username: string }) {
     };
   }, [selectedHaven, selectedChannel, selectedDM, username]);
 
-  const sendMessage = () => {
-    if (input.trim()) {
-      const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
-      const msg: any = { user: username, text: input };
+    const sendMessage = () => {
+      if (!isOnline) {
+        notify({ title: "Offline", body: "Messages are blocked while offline.", type: "warn" });
+        return;
+      }
+      if (input.trim()) {
+        const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
+        const msg: any = { user: username, text: input };
       if (replyTo?.id) msg.replyToId = replyTo.id;
       if (pendingFiles.length > 0) msg.attachments = pendingFiles;
       fetch("/api/history", {
@@ -3689,7 +3939,7 @@ export default function Main({ username }: { username: string }) {
         .then(data => {
           if (data.message) {
             socketRef.current?.emit("message", { room, msg: data.message });
-            setMessages((prev) => [...prev, data.message]);
+            setMessages((prev) => trimMessageList([...prev, data.message]));
           }
         });
       setInput("");
@@ -3746,7 +3996,7 @@ export default function Main({ username }: { username: string }) {
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   const commonEmojis = ["??","??","??","??","??","??"];
   const [emojiQuery, setEmojiQuery] = useState("");
-  const [emojiCategory, setEmojiCategory] = useState<typeof CATEGORIES[number]['key']>('smileys');
+  const [emojiCategory, setEmojiCategory] = useState<string>('smileys');
   const toggleReaction = (messageId: string, emoji: string) => {
     const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
     fetch("/api/history", {
@@ -4211,9 +4461,13 @@ export default function Main({ username }: { username: string }) {
     setUploadItems(prev => [...prev, { id, name: file.name, type: file.type || 'application/octet-stream', size: file.size, progress: 0, status: 'uploading', localUrl }]);
     await doUpload(file.name, file.type, file, id);
   };
-  const handleUploadFiles = useCallback(async (files: File[]) => {
-    if (!files.length) return;
-    setUploading(true);
+    const handleUploadFiles = useCallback(async (files: File[]) => {
+      if (!files.length) return;
+      if (!isOnline) {
+        notify({ title: "Offline", body: "Uploads are blocked while offline.", type: "warn" });
+        return;
+      }
+      setUploading(true);
     for (const file of files) {
       if (file.size > 25 * 1024 * 1024) {
         notify({ title: "File too large", body: `${file.name} exceeds 25MB limit`, type: "warn" });
@@ -4238,16 +4492,32 @@ export default function Main({ username }: { username: string }) {
 
   // Shift key tracking for expanded hover tools
   const [shiftDown, setShiftDown] = useState(false);
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(true); };
-    const onKeyUp = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(false); };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, []);
+    useEffect(() => {
+      const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(true); };
+      const onKeyUp = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftDown(false); };
+      window.addEventListener("keydown", onKeyDown);
+      window.addEventListener("keyup", onKeyUp);
+      return () => {
+        window.removeEventListener("keydown", onKeyDown);
+        window.removeEventListener("keyup", onKeyUp);
+      };
+    }, []);
+    useEffect(() => {
+      if (typeof window === "undefined") return;
+      const update = () => {
+        setIsOnline(navigator.onLine);
+        if (navigator.onLine) {
+          flushPendingSync();
+        }
+      };
+      update();
+      window.addEventListener("online", update);
+      window.addEventListener("offline", update);
+      return () => {
+        window.removeEventListener("online", update);
+        window.removeEventListener("offline", update);
+      };
+    }, [flushPendingSync]);
   const shellFilterParts: string[] = [];
   if (isBooting) shellFilterParts.push('blur(4px)');
   if (privacyBlurActive) shellFilterParts.push('blur(10px)');
@@ -4395,18 +4665,18 @@ export default function Main({ username }: { username: string }) {
           className="ch-shell"
           style={{
             display: "flex",
-            height: isMobile ? "calc(100vh - 1rem)" : "70vh",
+            height: "100dvh",
             width: "100%",
-            maxWidth: isMobile ? "100%" : 1100,
-            minWidth: 320,
-            margin: isMobile ? "0.5rem auto" : "2rem auto",
+            maxWidth: "100%",
+            minWidth: 0,
+            margin: 0,
             border: BORDER,
-            borderRadius: isMobile ? 10 : 14,
+            borderRadius: 0,
             background: "var(--ch-shell-bg)",
             backgroundSize: "var(--ch-shell-bg-size, cover)",
             backgroundPosition: "var(--ch-shell-bg-position, center)",
             backgroundRepeat: "var(--ch-shell-bg-repeat, no-repeat)",
-            boxShadow: isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)",
+            boxShadow: "none",
             filter: shellFilter,
             pointerEvents: shellPointerEvents,
             transition: 'filter 220ms ease'
@@ -4468,6 +4738,54 @@ export default function Main({ username }: { username: string }) {
 
   return (
     <>
+      {showTutorial && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(6,12,24,0.78)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ width: "min(92vw, 640px)", background: "#0b1220", border: "1px solid rgba(148,163,184,0.25)", borderRadius: 16, padding: 20, color: "#e5e7eb", boxShadow: "0 24px 60px rgba(0,0,0,0.45)" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>Welcome to ChitterHaven</div>
+                <div style={{ fontSize: 13, color: "rgba(226,232,240,0.8)", marginTop: 6 }}>
+                  Here is a quick tour to get you started.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTutorial(false)}
+                style={{ background: "transparent", color: "#94a3b8", border: "none", cursor: "pointer", fontSize: 14 }}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+              <div style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.2)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 600 }}>Havens & Channels</div>
+                <div style={{ fontSize: 13, color: "rgba(226,232,240,0.8)" }}>Join servers, create channels, and organize conversations.</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.2)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 600 }}>Direct Messages</div>
+                <div style={{ fontSize: 13, color: "rgba(226,232,240,0.8)" }}>Keep 1:1 chats in your DM home for quick access.</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.2)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 600 }}>Profile & Settings</div>
+                <div style={{ fontSize: 13, color: "rgba(226,232,240,0.8)" }}>Update your status, profile, and privacy controls anytime.</div>
+              </div>
+              <div style={{ background: "rgba(15,23,42,0.7)", border: "1px solid rgba(148,163,184,0.2)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 600 }}>Quick Actions</div>
+                <div style={{ fontSize: 13, color: "rgba(226,232,240,0.8)" }}>Create havens, invite friends, and manage roles fast.</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+              <button
+                type="button"
+                onClick={() => setShowTutorial(false)}
+                style={{ background: "#e2e8f0", color: "#0f172a", border: "none", borderRadius: 10, padding: "8px 16px", fontWeight: 600, cursor: "pointer" }}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div
         className="ch-shell"
         style={{
@@ -4576,10 +4894,24 @@ export default function Main({ username }: { username: string }) {
               border: showHavenIconsOnly ? 'none' : BORDER,
               borderLeft: showHavenIconsOnly ? undefined : (selectedHaven === '__dms__' ? `3px solid ${accent}` : '3px solid transparent'),
               borderRadius: showHavenIconsOnly ? 999 : 10,
+              transition: 'background 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms ease',
             }}
           >
-            <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#111c32', display: 'flex', alignItems: 'center', justifyContent: 'center', color: COLOR_TEXT, border: selectedHaven === '__dms__' ? `2px solid ${accent}` : BORDER }}>
-              <FontAwesomeIcon icon={faEnvelope} />
+            <div
+              style={{
+                width: havenIconSize,
+                height: havenIconSize,
+                borderRadius: '50%',
+                background: '#111c32',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: COLOR_TEXT,
+                border: selectedHaven === '__dms__' ? `2px solid ${accent}` : BORDER,
+                transition: 'transform 140ms ease, box-shadow 140ms ease',
+              }}
+            >
+              <FontAwesomeIcon icon={faEnvelope} style={{ fontSize: havenIconFontSize }} />
             </div>
             {!showHavenIconsOnly && <span>DMs</span>}
           </div>
@@ -4614,21 +4946,23 @@ export default function Main({ username }: { username: string }) {
                       border: showHavenIconsOnly ? 'none' : BORDER,
                       borderLeft: showHavenIconsOnly ? undefined : (active ? `3px solid ${accent}` : '3px solid transparent'),
                       borderRadius: showHavenIconsOnly ? 999 : 10,
+                      transition: 'background 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms ease',
                     }}
                   >
                     <div
                       style={{
-                        width: showHavenIconsOnly ? 42 : 34,
-                        height: showHavenIconsOnly ? 42 : 34,
+                        width: havenIconSize,
+                        height: havenIconSize,
                         borderRadius: '50%',
                         background: badge.background,
                         color: '#f8fafc',
                         fontWeight: 700,
-                        fontSize: showHavenIconsOnly ? 16 : 14,
+                        fontSize: havenIconFontSize,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         border: active ? `2px solid ${accent}` : '1px solid rgba(255,255,255,0.1)',
+                        transition: 'transform 140ms ease, box-shadow 140ms ease',
                       }}
                       onMouseEnter={() => beginStreamerReveal(revealKey)}
                       onMouseLeave={() => endStreamerReveal(revealKey)}
@@ -4637,7 +4971,7 @@ export default function Main({ username }: { username: string }) {
                         <img
                           src={iconSrc}
                           alt={`${renderHavenLabel(haven, revealKey)} icon`}
-                          style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }}
+                          style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', display: 'block' }}
                         />
                       ) : (
                         badge.initials
@@ -5020,7 +5354,7 @@ export default function Main({ username }: { username: string }) {
         )}
       </aside>
       {/* Main chat area */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", position: 'relative' }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", position: 'relative', paddingRight: membersSidebarOffset }}>
         <div style={{ padding: 16, borderBottom: "1px solid #333", color: "#fff", fontWeight: 600, fontSize: 18, display: 'flex', alignItems: 'center', gap: 8 }}>
           {isMobile && (
             <button className="btn-ghost" onClick={() => setShowMobileNav(true)} title="Open navigation" style={{ padding: '6px 8px' }}>
@@ -5311,6 +5645,7 @@ export default function Main({ username }: { username: string }) {
             overflowY: "auto",
             background: isClassic ? COLOR_PANEL_ALT : isBubbles ? "#040910" : isMinimalLog ? "#05080f" : isFocusStyle ? "#050b14" : isThreadForward ? "#050b16" : isRetro ? "#040b12" : "#030712",
             padding: compact ? 12 : 16,
+            paddingRight: (compact ? 12 : 16) + membersSidebarOffset,
             paddingBottom: (compact ? 12 : 16) + (viewingCallDM ? 140 : 0),
             color: "#fff",
             borderRadius: 0,
@@ -5577,14 +5912,20 @@ export default function Main({ username }: { username: string }) {
             </div>
           ) : (
             <Fragment>
-          {messages.map((msg, idx) => {
+          {isWindowed && (
+            <div style={{ fontSize: 12, color: "rgba(226,232,240,0.7)", margin: "6px 0 10px 0" }}>
+              Showing latest {MAX_RENDER_MESSAGES} messages to keep things fast.
+            </div>
+          )}
+          {visibleMessages.map((msg, idx) => {
+            const absoluteIndex = visibleOffset + idx;
             if (blockedUsers.has(msg.user)) return null;
-            const messageKey = msg.id ? `${msg.id}-${idx}` : `${msg.user}-${msg.timestamp}-${idx}`;
+            const messageKey = msg.id ? `${msg.id}-${absoluteIndex}` : `${msg.user}-${msg.timestamp}-${absoluteIndex}`;
             const revealKey = `msg-${messageKey}`;
             const avatarSrc = (userProfileCache[msg.user]?.avatarUrl) || '/favicon.ico';
             const isOwn = msg.user === username;
-            const prevMessage = messages[idx - 1];
-            const showDateDivider = idx === 0 || !isSameDay(prevMessage?.timestamp, msg.timestamp);
+            const prevMessage = messages[absoluteIndex - 1];
+            const showDateDivider = absoluteIndex === 0 || !isSameDay(prevMessage?.timestamp, msg.timestamp);
             const isSystemMessage = !!(msg as any).systemType;
             const prevIsSystem = !!(prevMessage as any)?.systemType;
             const groupingWindowMs = messageGrouping === 'aggressive' ? 30 * 60 * 1000 : messageGrouping === 'compact' ? 5 * 60 * 1000 : 0;
@@ -5596,7 +5937,7 @@ export default function Main({ username }: { username: string }) {
               !prevIsSystem &&
               prevMessage.user === msg.user &&
               (msg.timestamp - prevMessage.timestamp) <= groupingWindowMs;
-            const groupId = groupIds[idx] || messageKey;
+            const groupId = groupIds[absoluteIndex] || messageKey;
             const replyCount = msg.id ? replyCounts[msg.id] || 0 : 0;
             const hasReplies = replyCount > 0;
             const showHeader = !isGrouped && !isSystemMessage;
@@ -6252,7 +6593,7 @@ export default function Main({ username }: { username: string }) {
         </div>
         {/* Members sidebar with smooth slide + search */}
         {selectedHaven !== '__dms__' && (
-          <aside style={{ position: 'absolute', top: 0, right: showMembers ? 0 : -260, bottom: 0, width: 260, borderLeft: BORDER, background: COLOR_PANEL, padding: 12, transition: 'right 160ms ease', pointerEvents: showMembers ? 'auto' : 'none', opacity: showMembers ? 1 : 0.0 }}>
+          <aside style={{ position: 'absolute', top: 0, right: showMembers ? 0 : -MEMBERS_SIDEBAR_WIDTH, bottom: 0, width: MEMBERS_SIDEBAR_WIDTH, borderLeft: BORDER, background: COLOR_PANEL, padding: 12, transition: 'right 160ms ease', pointerEvents: showMembers ? 'auto' : 'none', opacity: showMembers ? 1 : 0.0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: BORDER, paddingBottom: 8 }}>
               <div style={{ color: COLOR_TEXT, fontWeight: 600 }}>
                 Members
@@ -6286,12 +6627,23 @@ export default function Main({ username }: { username: string }) {
                   if (roleA !== roleB) return roleA - roleB;
                   return a.localeCompare(b);
                 });
-                return ordered.map((name) => (
-                  <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', borderBottom: BORDER }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 999, background: statusColor(statusForUser(name)) }} />
-                    <button onClick={() => { setProfileUser(name); setProfileContext('Viewing Haven Profile'); }} className="btn-ghost" style={{ padding: 0, color: COLOR_TEXT }}>@{name}</button>
-                  </div>
-                ));
+                return ordered.map((name) => {
+                  const status = statusForUser(name);
+                  const presence = formatRichPresence(richPresenceMap[name]);
+                  const avatar = (userProfileCache[name]?.avatarUrl) || '/favicon.ico';
+                  return (
+                    <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px', borderBottom: BORDER }}>
+                      <div style={{ position: 'relative' }}>
+                        <img src={avatar} alt={name} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: '1px solid #1f2937' }} />
+                        <span style={{ position: 'absolute', right: -2, bottom: -2, width: 10, height: 10, borderRadius: 999, background: statusColor(status), border: '2px solid #0b1222' }} />
+                      </div>
+                      <button onClick={() => { setProfileUser(name); setProfileContext('Viewing Haven Profile'); }} className="btn-ghost" style={{ padding: 0, color: COLOR_TEXT, textAlign: 'left', display: 'grid', gap: 2 }}>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>@{name}</span>
+                        <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>{presence || statusLabel(status)}</span>
+                      </button>
+                    </div>
+                  );
+                });
               })()}
             </div>
           </aside>
@@ -6542,7 +6894,24 @@ export default function Main({ username }: { username: string }) {
               : 'Direct Message';
             return (
               <>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Incoming call</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 10,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(59,130,246,0.18)',
+                      color: '#60a5fa',
+                      border: '1px solid rgba(59,130,246,0.35)',
+                    }}
+                  >
+                    <FontAwesomeIcon icon={faPhone} />
+                  </span>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>Incoming call</div>
+                </div>
                 <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
                   {incomingCall.from} is calling you in <span style={{ color: COLOR_TEXT }}>{label}</span>.
                 </div>
@@ -6553,8 +6922,9 @@ export default function Main({ username }: { username: string }) {
                     onClick={() => {
                       declineCall(incomingCall.room);
                     }}
-                    style={{ padding: '4px 8px', fontSize: 12 }}
+                    style={{ padding: '4px 8px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}
                   >
+                    <FontAwesomeIcon icon={faXmark} />
                     Decline
                   </button>
                   <button
@@ -6579,6 +6949,12 @@ export default function Main({ username }: { username: string }) {
                           }
                         } catch {}
                         ringAudioRef.current = null;
+                        const micOk = await ensureMicAvailable();
+                        if (!micOk) {
+                          setCallState('idle');
+                          setCallError('No microphone detected.');
+                          return;
+                        }
                         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                         localStreamRef.current = stream;
                         markJoined(true);
@@ -6611,8 +6987,9 @@ export default function Main({ username }: { username: string }) {
                         setCallState('idle');
                       }
                     }}
-                    style={{ padding: '4px 8px', fontSize: 12, borderRadius: 999, border: '1px solid #16a34a', color: '#bbf7d0' }}
+                    style={{ padding: '4px 8px', fontSize: 12, borderRadius: 999, border: '1px solid #16a34a', color: '#bbf7d0', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                   >
+                    <FontAwesomeIcon icon={faPhone} />
                     Accept
                   </button>
                 </div>
@@ -7620,52 +7997,63 @@ export default function Main({ username }: { username: string }) {
       )}
       {ctxMenu?.open && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setCtxMenu(null)}>
-          <div
-            style={{ position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, background: COLOR_PANEL, border: BORDER, borderRadius: 8, minWidth: 200, color: COLOR_TEXT, boxShadow: '0 8px 24px rgba(0,0,0,0.35)' }}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div ref={ctxMenuRef} style={ctxMenuStyles.shell} onClick={(e) => e.stopPropagation()}>
             {ctxMenu.target.type === 'message' && (
               <>
-                <button className="btn-ghost" onClick={() => handleCtxAction('reply')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
-                  <FontAwesomeIcon icon={faReply} /> Reply
+                <button className="btn-ghost" onClick={() => handleCtxAction('reply')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faReply} /></span>
+                  Reply
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('react')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
-                  <FontAwesomeIcon icon={faFaceSmile} /> Add Reaction
+                <button className="btn-ghost" onClick={() => handleCtxAction('react')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faFaceSmile} /></span>
+                  Add Reaction
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('pin')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
-                  <FontAwesomeIcon icon={faThumbtack} /> Pin/Unpin
+                <button className="btn-ghost" onClick={() => handleCtxAction('pin')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faThumbtack} /></span>
+                  Pin/Unpin
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_text')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                <div style={ctxMenuStyles.divider} />
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_text')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
                   Copy Text
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_id')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_id')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faHashtag} /></span>
                   Copy Message ID
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_link')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_link')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faLink} /></span>
                   Copy Link
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_user')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_user')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faUser} /></span>
                   Copy Username
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_time')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_time')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faClockRotateLeft} /></span>
                   Copy Timestamp
                 </button>
                 {ctxMenu.target.debug && (
                   <>
-                    <button className="btn-ghost" onClick={() => handleCtxAction('copy_raw')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12 }}>
+                    <div style={ctxMenuStyles.divider} />
+                    <button className="btn-ghost" onClick={() => handleCtxAction('copy_raw')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.itemSubtle }}>
+                      <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
                       Copy Raw JSON
                     </button>
-                    <button className="btn-ghost" onClick={() => handleCtxAction('copy_room')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12 }}>
+                    <button className="btn-ghost" onClick={() => handleCtxAction('copy_room')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.itemSubtle }}>
+                      <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
                       Copy Room Key
                     </button>
                   </>
                 )}
-                <div style={{ borderTop: BORDER, margin: '4px 0' }} />
-                <button className="btn-ghost" onClick={() => handleCtxAction('edit')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
-                  <FontAwesomeIcon icon={faEdit} /> Edit
+                <div style={ctxMenuStyles.divider} />
+                <button className="btn-ghost" onClick={() => handleCtxAction('edit')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faEdit} /></span>
+                  Edit
                 </button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('delete')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>
-                  <FontAwesomeIcon icon={faTrash} /> Delete
+                <button className="btn-ghost" onClick={() => handleCtxAction('delete')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.danger }}>
+                  <span style={{ ...ctxMenuStyles.iconWrap, color: '#f87171' }}><FontAwesomeIcon icon={faTrash} /></span>
+                  Delete
                 </button>
               </>
             )}
@@ -7676,8 +8064,14 @@ export default function Main({ username }: { username: string }) {
                 <>
                   {isImg ? (
                     <>
-                      <button className="btn-ghost" onClick={() => handleCtxAction('set_avatar')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Set as Avatar</button>
-                      <button className="btn-ghost" onClick={() => handleCtxAction('set_banner')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Set as Banner</button>
+                      <button className="btn-ghost" onClick={() => handleCtxAction('set_avatar')} style={ctxMenuStyles.item}>
+                        <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faUser} /></span>
+                        Set as Avatar
+                      </button>
+                      <button className="btn-ghost" onClick={() => handleCtxAction('set_banner')} style={ctxMenuStyles.item}>
+                        <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faImage} /></span>
+                        Set as Banner
+                      </button>
                     </>
                   ) : (
                     <div style={{ padding: '8px 12px', color: '#9ca3af' }}>Not an image</div>
@@ -7687,9 +8081,18 @@ export default function Main({ username }: { username: string }) {
             })()}
             {ctxMenu.target.type === 'channel' && (
               <>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Name</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('rename')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Rename</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('delete')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Delete</button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
+                  Copy Name
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('rename')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faEdit} /></span>
+                  Rename
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('delete')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.danger }}>
+                  <span style={{ ...ctxMenuStyles.iconWrap, color: '#f87171' }}><FontAwesomeIcon icon={faTrash} /></span>
+                  Delete
+                </button>
               </>
             )}
             {ctxMenu.target.type === 'dm' && (() => {
@@ -7697,32 +8100,58 @@ export default function Main({ username }: { username: string }) {
               const canManage = dm && isGroupDMThread(dm) && canManageGroupDM(dm);
               return (
                 <>
-                  <button className="btn-ghost" onClick={() => handleCtxAction('copy_users')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Users</button>
+                  <button className="btn-ghost" onClick={() => handleCtxAction('copy_users')} style={ctxMenuStyles.item}>
+                    <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faUsers} /></span>
+                    Copy Users
+                  </button>
                   {canManage && (
-                    <button className="btn-ghost" onClick={() => handleCtxAction('group_settings')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>
+                    <button className="btn-ghost" onClick={() => handleCtxAction('group_settings')} style={ctxMenuStyles.item}>
+                      <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faGear} /></span>
                       Group Settings
                     </button>
                   )}
-                  <button className="btn-ghost" onClick={() => handleCtxAction('close')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Close DM</button>
+                  <button className="btn-ghost" onClick={() => handleCtxAction('close')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.danger }}>
+                    <span style={{ ...ctxMenuStyles.iconWrap, color: '#f87171' }}><FontAwesomeIcon icon={faXmark} /></span>
+                    Close DM
+                  </button>
                 </>
               );
             })()}
             {ctxMenu.target.type === 'call' && (
               <>
-                <button className="btn-ghost" onClick={() => handleCtxAction('open_dm')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Open Call Screen</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_call_id')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Call ID</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_link')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Call Link</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('copy_participants')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Copy Participants</button>
-                <button className="btn-ghost" onClick={() => handleCtxAction('hangup')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', color: '#f87171' }}>Hang Up</button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('open_dm')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faPhone} /></span>
+                  Open Call Screen
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_call_id')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
+                  Copy Call ID
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_link')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faLink} /></span>
+                  Copy Call Link
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('copy_participants')} style={ctxMenuStyles.item}>
+                  <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faUsers} /></span>
+                  Copy Participants
+                </button>
+                <button className="btn-ghost" onClick={() => handleCtxAction('hangup')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.danger }}>
+                  <span style={{ ...ctxMenuStyles.iconWrap, color: '#f87171' }}><FontAwesomeIcon icon={faXmark} /></span>
+                  Hang Up
+                </button>
               </>
             )}
             {ctxMenu.target.type === 'blank' && (
               <>
                 {permState.canManageServer && (
-                  <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px' }}>Server Settings</button>
+                  <button className="btn-ghost" onClick={() => setShowServerSettings(true)} style={ctxMenuStyles.item}>
+                    <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faGear} /></span>
+                    Server Settings
+                  </button>
                 )}
                 {ctxMenu.target.debug && (
-                  <button className="btn-ghost" onClick={() => handleCtxAction('copy_debug')} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px', fontSize: 12 }}>
+                  <button className="btn-ghost" onClick={() => handleCtxAction('copy_debug')} style={{ ...ctxMenuStyles.item, ...ctxMenuStyles.itemSubtle }}>
+                    <span style={ctxMenuStyles.iconWrap}><FontAwesomeIcon icon={faCopy} /></span>
                     Copy Debug Info
                   </button>
                 )}

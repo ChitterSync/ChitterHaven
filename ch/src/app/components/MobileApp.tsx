@@ -589,10 +589,10 @@ export default function MobileApp(props: Props) {
   }, [selectedHaven]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minWidth: 0, overflowX: 'hidden' }}>
       {/* Mobile header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: `1px solid ${COLOR_PANEL_ALT}`, background: `linear-gradient(180deg, ${COLOR_CARD}, ${COLOR_CARD_ALT})` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: `1px solid ${COLOR_PANEL_ALT}`, background: `linear-gradient(180deg, ${COLOR_CARD}, ${COLOR_CARD_ALT})`, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
           {(activeNav === "channels" || (activeNav === "activity" && selectedDM) || activeNav === "profile") ? (
             <button className="btn-ghost" onClick={handleBackNav} style={{ padding: 10, minWidth: 44, minHeight: 44 }} aria-label="Back">
               <FontAwesomeIcon icon={faChevronLeft} /> <span style={{ marginLeft: 6, fontSize: 12 }}>Back</span>
@@ -602,7 +602,7 @@ export default function MobileApp(props: Props) {
               <FontAwesomeIcon icon={faBars} />
             </button>
           )}
-          <div style={{ fontWeight: 700, fontSize: 16 }}>{headerTitle}</div>
+          <div style={{ fontWeight: 700, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{headerTitle}</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn-ghost" onClick={() => setShowUserSettings && setShowUserSettings(true)} aria-label="User settings" style={{ padding: 10, minWidth: 44, minHeight: 44 }}>
@@ -639,7 +639,7 @@ export default function MobileApp(props: Props) {
 
       {/* Main content area */}
       {/* adjust bottom padding so fixed nav / FAB don't overlap content on mobile */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12, paddingBottom: bottomInset }}>
+      <div style={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: 12, paddingBottom: bottomInset, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
         {activeNav === 'home' && (
           <div>
             <div style={{ padding: 12, borderRadius: 12, background: COLOR_CARD, marginBottom: 12 }}>

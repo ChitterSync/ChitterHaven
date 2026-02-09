@@ -4,6 +4,8 @@ import path from "path";
 import crypto from "crypto";
 import { verifyJWT } from "./jwt";
 import { getAuthCookie } from "./_lib/authCookie";
+import { readSessionFromRequest } from "@/lib/auth/session";
+import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -80,9 +82,20 @@ function readDMs(): DMData {
   const buf = fs.readFileSync(DMS_PATH);
   if (buf.length <= 16) return { dms: [] };
   const iv = buf.slice(0, 16);
-  const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-  const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-  try { return JSON.parse(json); } catch { return { dms: [] }; }
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
+    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
+    return JSON.parse(json);
+  } catch {
+    try {
+      const plaintext = buf.toString("utf8");
+      const parsed = JSON.parse(plaintext);
+      writeDMs(parsed);
+      return parsed;
+    } catch {
+      return { dms: [] };
+    }
+  }
 }
 
 function writeDMs(data: DMData) {
@@ -136,9 +149,10 @@ function ensureGroupDM(me: string, others: string[], title?: string, avatarUrl?:
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  const session = readSessionFromRequest(req);
   const token = getAuthCookie(req);
   const payload: any = token ? verifyJWT(token) : null;
-  const me = payload?.username;
+  const me = session?.user?.username || payload?.username;
   if (!me) return res.status(401).json({ error: "Unauthorized" });
 
   if (req.method === "GET") {
@@ -150,6 +164,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
+    if (!isExemptUsername(me)) {
+      const ip = getClientIp(req);
+      const limit = rateLimit(`dms:${me || ip}`, 20, 60_000);
+      if (!limit.allowed) {
+        return res.status(429).json({ error: "Too many DM actions. Try again later." });
+      }
+    }
     const { action, target } = req.body || {};
     if (action === "ensure") {
       if (!target || target === me) return res.status(400).json({ error: "Invalid target" });

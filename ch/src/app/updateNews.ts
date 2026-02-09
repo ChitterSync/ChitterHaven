@@ -19,6 +19,42 @@ export const UPDATE_LAST_SEEN_KEY = "update_last_seen_version";
 
 export const UPDATE_FEED: UpdateEntry[] = [
   {
+    version: "0.2.2-beta",
+    releasedAt: "2026-02-08",
+    highlights: [
+      {
+        text: "User Settings redesign with reliable scrolling, clearer categories, and mobile-safe layouts.",
+        severity: "major",
+        audience: "all",
+      },
+      {
+        text: "New Connections experience with lock overlay when unlinked and additional account options.",
+        severity: "major",
+        audience: "all",
+      },
+      {
+        text: "Call UI polish with icons, safer join flow, and microphone availability warnings.",
+        severity: "minor",
+        audience: "all",
+      },
+      {
+        text: "Context menu refresh for better positioning and readability.",
+        severity: "minor",
+        audience: "all",
+      },
+    ],
+    fullNotesMarkdown: [
+      "## 0.2.2-beta",
+      "",
+      "- Settings modal now stays within the viewport, with independent scrolling for categories and content.",
+      "- New connections gating: unlinked accounts show a lock overlay and a clear prompt.",
+      "- Added a Browser settings section to surface permissions and device info.",
+      "- Refined global UI styling for checkmarks, sliders, scrollbars, and color pickers.",
+      "- Call popups now include icons and a microphone check before joining.",
+      "- Context menu updated with improved placement and styling.",
+    ].join("\n"),
+  },
+  {
     version: "0.2.1.1hotfix-beta",
     releasedAt: "2026-01-08",
     highlights: [
