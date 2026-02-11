@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { clearSessionCookie } from "@/lib/auth/session";
-import { clearAuthCookie } from "../_lib/authCookie";
+import { clearAuthCookie } from "@/server/api-lib/authCookie";
 
 const AUTH_SERVICE_BASE_RAW =
   process.env.AUTH_BASE_URL ||

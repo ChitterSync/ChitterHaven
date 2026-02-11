@@ -2,8 +2,8 @@ import fs from "fs";
 import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
-import { prisma } from "./prismaClient";
-import { requireUser } from "./auth";
+import { prisma } from "@/server/api-lib/prismaClient";
+import { requireUser } from "@/server/api-lib/auth";
 
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/server-settings.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";

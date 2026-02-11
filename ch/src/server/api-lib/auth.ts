@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { verifyJWT } from "./jwt";
-import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 
 const AUTH_SERVICE_BASE_RAW =
   process.env.AUTH_BASE_URL ||
@@ -28,7 +28,7 @@ const fetchAuthServiceUser = async (req: NextApiRequest): Promise<AuthPayload | 
     if (!authRes.ok) return null;
     const data = await authRes.json();
     if (data?.authenticated && data.user?.username) {
-      return { username: data.user.username, ...data.user };
+      return { ...data.user, username: data.user.username };
     }
   } catch {
     // ignore auth service failures, fall back to legacy
@@ -42,7 +42,7 @@ export async function requireUser(req: NextApiRequest, res: NextApiResponse): Pr
   try {
     const session = readSessionFromRequest(req);
     if (session?.user?.username) {
-      return { username: session.user.username, ...session.user };
+      return { ...session.user, username: session.user.username };
     }
 
     const serviceUser = await fetchAuthServiceUser(req);

@@ -89,7 +89,6 @@ type Props = {
   activeNav: string;
   setActiveNav: (s: string) => void;
   isMobile: boolean;
-  setShowMobileNav: (b: boolean) => void;
   havens: Record<string, HavenRecord>;
   setSelectedHaven: (h: string) => void;
   selectedHaven: string;
@@ -450,7 +449,7 @@ export default function MobileApp(props: Props) {
   };
   const effectiveFriendsTab = friendsTab ?? localFriendsTab;
   const setEffectiveFriendsTab = setFriendsTab ?? setLocalFriendsTab;
-  const isGroupDMThread = (dm?: { id: string; users: string[]; group?: boolean }) => !!dm && (dm.group || (dm.users?.length || 0) > 2);
+  const isGroupDMThread = (dm?: { id?: string; users: string[]; group?: boolean }) => !!dm && (dm.group || (dm.users?.length || 0) > 2);
   const dmMembersWithoutSelf = (dm?: { users: string[] }) => (dm ? dm.users.filter((u) => u !== username) : []);
   const getDMTitle = (dm?: { users: string[]; title?: string; group?: boolean }) => {
     if (!dm) return 'Direct Message';
@@ -498,7 +497,7 @@ export default function MobileApp(props: Props) {
   const renderName = (user: string, revealKey: string) =>
     renderDisplayName ? renderDisplayName(user, { revealKey }) : user;
   const renderNameWithPrefix = (user: string, prefix: string, revealKey: string) =>
-    renderDisplayName ? renderDisplayName(user, { revealKey, prefix }) : `${prefix}${user}`;
+    renderDisplayName ? renderDisplayName(user, { revealKey, labelOverride: `${prefix}${user}` }) : `${prefix}${user}`;
   const formatRichPresence = (presence?: RichPresence) => {
     if (!presence || !presence.title) return null;
     const prefix = presence.type === "music" ? "Listening to" : presence.type === "game" ? "Playing" : "Activity";
@@ -1519,7 +1518,7 @@ export default function MobileApp(props: Props) {
                 const inviteHaven = invitePreview?.haven || inviteCode || "";
                 const inviteAlreadyJoined = inviteHaven ? !!havens[inviteHaven] : false;
                 const swipeId = m.id || messageKey;
-                const swipeOffset = swipeState?.id === swipeId ? swipeState.offset : 0;
+                const swipeOffset = swipeState?.id === swipeId ? (swipeState?.offset ?? 0) : 0;
                 const canSwipeActions = ownMessage && !!handleEdit && !!handleDelete;
                 const handleTouchStart = (e: React.TouchEvent) => {
                   if (isSystemMessage) return;
@@ -2174,7 +2173,7 @@ export default function MobileApp(props: Props) {
                   </button>
                 </div>
                 <div style={{ maxHeight: '40vh', overflow: 'auto' }}>
-                  <EmojiPicker onPick={(char) => { setInput((prev) => `${prev}${char}`); setEmojiSheetOpen(false); }} onClose={() => setEmojiSheetOpen(false)} />
+                  <EmojiPicker onPick={(char) => { setInput(`${input}${char}`); setEmojiSheetOpen(false); }} onClose={() => setEmojiSheetOpen(false)} />
                 </div>
               </div>
             </div>

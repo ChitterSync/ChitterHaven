@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { createSessionPayload, readSessionFromRequest, setSessionCookie } from "@/lib/auth/session";
-import { getAuthCookie } from "../_lib/authCookie";
-import { verifyJWT } from "../jwt";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
 
 const AUTH_SERVICE_BASE_RAW =
   process.env.AUTH_BASE_URL ||

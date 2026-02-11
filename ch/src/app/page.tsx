@@ -2,13 +2,21 @@
 
 
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Login from "./Login";
 import Main from "./Main";
 import { useAuth } from "./useAuth";
 
 export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex flex-col items-center justify-center p-6 text-gray-400">Loading...</div>}>
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
   const { authenticated, user, loading, refresh } = useAuth();
   const searchParams = useSearchParams();
   const authError = searchParams?.get("authError");

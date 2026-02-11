@@ -860,7 +860,7 @@ export default function Main({ username }: { username: string }) {
       video.play?.().catch(() => {});
     });
   }, []);
-  const requestRenegotiationRef = useRef<() => void>(() => {});
+  const requestRenegotiationRef = useRef<(opts?: { iceRestart?: boolean }) => void>(() => {});
   const triggerRenegotiation = useCallback(() => {
     try {
       requestRenegotiationRef.current?.();
@@ -4371,11 +4371,12 @@ export default function Main({ username }: { username: string }) {
         const data = await res.json();
         if (!ignore) {
           const results = Array.isArray(data.results) ? data.results : [];
-          const normalized = results.filter((entry: any): entry is { username: string; displayName: string; avatarUrl: string } =>
-            entry &&
-            typeof entry.username === "string" &&
-            typeof entry.displayName === "string" &&
-            typeof entry.avatarUrl === "string",
+          type MentionEntry = { username: string; displayName: string; avatarUrl: string };
+          const normalized: MentionEntry[] = results.filter((entry: unknown): entry is MentionEntry =>
+            !!entry &&
+            typeof (entry as MentionEntry).username === "string" &&
+            typeof (entry as MentionEntry).displayName === "string" &&
+            typeof (entry as MentionEntry).avatarUrl === "string",
           );
           setMentionList(normalized.filter((entry) => !blockedUsers.has(entry.username)));
         }

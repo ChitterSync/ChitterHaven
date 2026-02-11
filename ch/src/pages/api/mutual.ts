@@ -2,8 +2,8 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { verifyJWT } from './jwt';
-import { getAuthCookie } from './_lib/authCookie';
+import { verifyJWT } from '@/server/api-lib/jwt';
+import { getAuthCookie } from '@/server/api-lib/authCookie';
 
 const HISTORY_PATH = path.join(process.cwd(), 'src/pages/api/history.json');
 const SECRET = process.env.CHITTERHAVEN_SECRET || 'chitterhaven_secret';

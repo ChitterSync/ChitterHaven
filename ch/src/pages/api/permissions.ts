@@ -1,9 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { prisma } from './prismaClient';
+import { prisma } from '@/server/api-lib/prismaClient';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { requireUser } from './auth';
+import { requireUser } from '@/server/api-lib/auth';
 
 type RolesMap = Record<string, string[]>;
 type MembersMap = Record<string, string[]>;

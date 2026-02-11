@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { clearAuthCookie } from "./_lib/authCookie";
+import { clearAuthCookie } from "@/server/api-lib/authCookie";
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {

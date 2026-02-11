@@ -3,9 +3,9 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { getAuthCookie } from "./_lib/authCookie";
-import { verifyJWT } from "./jwt";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 export const config = {
   api: {

@@ -2,10 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "./jwt";
-import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -130,10 +130,10 @@ function sanitizeHavens(raw: any): HavenMap {
   for (const [id, value] of Object.entries(raw)) {
     if (typeof id !== "string") continue;
     if (Array.isArray(value)) {
-      const normalized = Array.from(
-        new Set(
+      const normalized: string[] = Array.from(
+        new Set<string>(
           value
-            .filter((ch): ch is string => typeof ch === "string")
+            .filter((ch: unknown): ch is string => typeof ch === "string")
             .map((ch) => ch.trim())
             .filter(Boolean),
         ),
@@ -145,11 +145,11 @@ function sanitizeHavens(raw: any): HavenMap {
       const name = typeof (value as any).name === "string" && (value as any).name.trim().length
         ? String((value as any).name).trim()
         : id;
-      const channelsRaw = Array.isArray((value as any).channels) ? (value as any).channels : [];
-      const normalized = Array.from(
-        new Set(
+      const channelsRaw: unknown[] = Array.isArray((value as any).channels) ? (value as any).channels : [];
+      const normalized: string[] = Array.from(
+        new Set<string>(
           channelsRaw
-            .filter((ch: any): ch is string => typeof ch === "string")
+            .filter((ch: unknown): ch is string => typeof ch === "string")
             .map((ch: string) => ch.trim())
             .filter(Boolean),
         ),

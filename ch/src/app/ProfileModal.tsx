@@ -144,10 +144,18 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
         try {
           const dmsRes = await fetch('/api/dms');
           const dmsJson = await dmsRes.json().catch(() => ({}));
-          const dms = Array.isArray(dmsJson?.dms) ? dmsJson.dms : [];
+          type DmEntry = { id: string; users: string[]; title?: string; group?: boolean };
+          const dms: DmEntry[] = Array.isArray(dmsJson?.dms)
+            ? dmsJson.dms.filter(
+                (dm: unknown): dm is DmEntry =>
+                  !!dm &&
+                  typeof (dm as DmEntry).id === "string" &&
+                  Array.isArray((dm as DmEntry).users),
+              )
+            : [];
           const groups = dms
-            .filter((dm) => dm?.group && Array.isArray(dm.users) && dm.users.includes(me))
-            .map((dm) => ({ id: dm.id, users: dm.users || [], title: dm.title }));
+            .filter((dm) => dm.group && dm.users.includes(me))
+            .map((dm) => ({ id: dm.id, users: dm.users, title: dm.title }));
           setSelfGroupDMs(groups);
         } catch {
           setSelfGroupDMs([]);

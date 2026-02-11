@@ -2,11 +2,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "./jwt";
+import { verifyJWT } from "@/server/api-lib/jwt";
 import { ensureDMForUsers } from "./dms";
-import { getAuthCookie } from "./_lib/authCookie";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();

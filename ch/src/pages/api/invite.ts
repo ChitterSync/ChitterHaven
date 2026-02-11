@@ -2,8 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { requireUser } from "./auth";
-import { prisma } from "./prismaClient";
+import { requireUser } from "@/server/api-lib/auth";
+import { prisma } from "@/server/api-lib/prismaClient";
 
 type Invite = {
   code: string;

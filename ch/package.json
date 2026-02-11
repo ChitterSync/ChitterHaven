@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test:a11y": "node ./scripts/check_dropdown_a11y.js",
     "test:call-summary": "node ./scripts/test_history_call_summary.js",
     "test:auth": "tsx --test tests/auth-*.test.ts",
@@ -20,28 +20,31 @@
     "@prisma/client": "^6.11.1",
     "cookie": "^1.0.2",
     "jsonwebtoken": "^9.0.2",
-    "next": "^16.1.4",
+    "next": "16.1.6",
     "node-fetch": "^3.3.2",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
     "scrypt-js": "^3.0.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20",
-    "@types/react": "19.1.8",
-    "@types/react-dom": "^19",
+    "@types/react": "19.2.13",
+    "@types/react-dom": "19.2.3",
     "eslint": "^9",
-    "eslint-config-next": "15.3.2",
+    "eslint-config-next": "16.1.6",
     "prettier": "^3.6.2",
     "prisma": "^6.11.1",
     "tailwindcss": "^4",
     "tsx": "^4.20.5",
     "typescript": "5.8.3"
+  },
+  "overrides": {
+    "@types/react": "19.2.13",
+    "@types/react-dom": "19.2.3"
   }
 }

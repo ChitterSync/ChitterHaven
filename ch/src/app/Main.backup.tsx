@@ -1,4 +1,4 @@
-ï»¿"use client";
+"use client";
 
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -1230,12 +1230,12 @@ export default function Main({ username }: { username: string }) {
   type QuickItem = { id: string; label: string; type: 'haven'|'channel'|'dm'|'dmhome'; haven?: string; channel?: string; dmId?: string };
   const getQuickItems = (): QuickItem[] => {
     const items: QuickItem[] = [];
-    items.push({ id: 'd:home', label: 'Friends â€” Direct Messages', type: 'dmhome' });
+    items.push({ id: 'd:home', label: 'Friends — Direct Messages', type: 'dmhome' });
     Object.keys(havens).forEach(h => {
-      items.push({ id: `h:${h}`, label: `Haven Â· ${h}`, type: 'haven', haven: h });
-      (havens[h] || []).forEach(ch => items.push({ id: `c:${h}:${ch}`, label: `#${ch} â€” ${h}`, type: 'channel', haven: h, channel: ch }));
+      items.push({ id: `h:${h}`, label: `Haven · ${h}`, type: 'haven', haven: h });
+      (havens[h] || []).forEach(ch => items.push({ id: `c:${h}:${ch}`, label: `#${ch} — ${h}`, type: 'channel', haven: h, channel: ch }));
     });
-    dms.forEach(dm => items.push({ id: `d:${dm.id}`, label: `DM Â· ${dm.users.filter(u => u !== username).join(', ')}`, type: 'dm', dmId: dm.id }));
+    dms.forEach(dm => items.push({ id: `d:${dm.id}`, label: `DM · ${dm.users.filter(u => u !== username).join(', ')}`, type: 'dm', dmId: dm.id }));
     return items;
   };
   const filterQuickItems = (items: QuickItem[], q: string) => {
@@ -1685,7 +1685,7 @@ export default function Main({ username }: { username: string }) {
           {Object.keys(havens)
             .filter(h => h.toLowerCase().includes(havenFilter.trim().toLowerCase()))
             .map(haven => (
-              <div key={haven} onClick={() => handleHavenChange(haven)} title={`${labelHaven} ${haven} Â· Code: ${havenCode(haven)}`} style={{ padding: '10px 10px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: selectedHaven === haven ? '#111a2e' : '#0b1222', color: selectedHaven === haven ? accent : '#e5e7eb', fontWeight: selectedHaven === haven ? 700 : 500, border: '1px solid #1f2937', borderLeft: selectedHaven === haven ? `3px solid ${accent}` : '3px solid transparent', borderRadius: 10 }}>
+              <div key={haven} onClick={() => handleHavenChange(haven)} title={`${labelHaven} ${haven} · Code: ${havenCode(haven)}`} style={{ padding: '10px 10px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: selectedHaven === haven ? '#111a2e' : '#0b1222', color: selectedHaven === haven ? accent : '#e5e7eb', fontWeight: selectedHaven === haven ? 700 : 500, border: '1px solid #1f2937', borderLeft: selectedHaven === haven ? `3px solid ${accent}` : '3px solid transparent', borderRadius: 10 }}>
                 <FontAwesomeIcon icon={faServer} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{haven}</span>
               </div>
             ))}
@@ -1789,7 +1789,7 @@ export default function Main({ username }: { username: string }) {
                 disabled={creatingInvite}
                 style={{ padding: '4px 8px', fontSize: 12, color: accent, opacity: creatingInvite ? 0.7 : 1 }}
               >
-                {creatingInvite ? 'Creatingâ€¦' : 'Generate Invite'}
+                {creatingInvite ? 'Creating…' : 'Generate Invite'}
               </button>
               {inviteCode && (
                 <div style={{ marginTop: 6, color: '#9ca3af' }}>Last invite: <span style={{ color: '#e5e7eb' }}>{inviteCode}</span></div>
@@ -2004,7 +2004,7 @@ export default function Main({ username }: { username: string }) {
           {selectedHaven === "__dms__" && selectedDM && activeCallDM === selectedDM && callState !== 'idle' && (() => {
             const dm = dms.find(d => d.id === selectedDM);
             const list = Array.from(new Set(callParticipants.length ? callParticipants : (dm ? dm.users : [])));
-            const label = callState === 'calling' ? 'Callingâ€¦' : 'In call';
+            const label = callState === 'calling' ? 'Calling…' : 'In call';
             return (
               <div
                 onContextMenu={(e) => openCtx(e, { type: 'call', data: { room: activeCallDM } })}
@@ -2550,7 +2550,7 @@ export default function Main({ username }: { username: string }) {
             <div style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 12, right: 12, background: '#0b1222', border: '1px solid #1f2937', borderRadius: 10, zIndex: 11, padding: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
               <FontAwesomeIcon icon={faReply} />
               <div style={{ color: '#e5e7eb', fontSize: 13 }}>
-                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: '#94a3b8' }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? 'â€¦' : ''}</span>
+                Replying to <strong>@{replyTo.user}</strong>: <span style={{ color: '#94a3b8' }}>{replyTo.text.slice(0, 80)}{replyTo.text.length > 80 ? '…' : ''}</span>
               </div>
               <button type="button" className="btn-ghost" onClick={() => setReplyTo(null)} style={{ marginLeft: 'auto', padding: '4px 8px' }}>
                 <FontAwesomeIcon icon={faXmark} />
@@ -2778,7 +2778,7 @@ export default function Main({ username }: { username: string }) {
         <div style={{ position: 'fixed', bottom: isMobile ? 76 : 16, left: isMobile ? 8 : 16, zIndex: 80, padding: 10, borderRadius: 10, border: '1px solid #1f2937', background: 'rgba(15,23,42,0.92)', color: '#e5e7eb', display: 'flex', alignItems: 'center', gap: 10, maxWidth: isMobile ? 'calc(100vw - 16px)' : 320 }}>
           <div>
             <div style={{ fontWeight: 600, fontSize: 13 }}>
-              {callState === 'calling' ? 'Callingâ€¦' : 'In call'}
+              {callState === 'calling' ? 'Calling…' : 'In call'}
             </div>
             {callError && <div style={{ fontSize: 11, color: '#f97373' }}>{callError}</div>}
             {!callError && <div style={{ fontSize: 11, color: '#9ca3af' }}>Your microphone will be used for this DM call.</div>}

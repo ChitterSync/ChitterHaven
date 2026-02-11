@@ -19,6 +19,36 @@ export const UPDATE_LAST_SEEN_KEY = "update_last_seen_version";
 
 export const UPDATE_FEED: UpdateEntry[] = [
   {
+    version: "0.2.2.1hotfix-beta",
+    releasedAt: "2026-02-11",
+    highlights: [
+      {
+        text: "Hotfix for build and release stability issues across web and API routes.",
+        severity: "major",
+        audience: "all",
+      },
+      {
+        text: "Improved type-safety in key UI and API paths to prevent deployment-time failures.",
+        severity: "minor",
+        audience: "all",
+      },
+      {
+        text: "Release notes and update surfaces now render more reliably in production builds.",
+        severity: "minor",
+        audience: "all",
+      },
+    ],
+    fullNotesMarkdown: [
+      "## Beta Hotfix: 0.2.2.1",
+      "",
+      "- Fixed route validation issues by moving non-route API helpers out of `pages/api`.",
+      "- Patched strict TypeScript errors across mobile UI, profile, settings, and auth token validation paths.",
+      "- Updated home page search-param handling to satisfy Next.js suspense requirements during prerender.",
+      "- Removed stale type directives and tightened a few weakly-typed filters that caused build breaks.",
+      "- Overall result: production builds complete successfully and release notes continue to render correctly.",
+    ].join("\n"),
+  },
+  {
     version: "0.2.2-beta",
     releasedAt: "2026-02-08",
     highlights: [

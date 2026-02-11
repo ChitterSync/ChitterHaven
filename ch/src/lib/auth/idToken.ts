@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import jwt, { JwtPayload } from "jsonwebtoken";
+import jwt, { type Algorithm, JwtPayload } from "jsonwebtoken";
 import { getJwks } from "./jwks";
 
 type VerifyOptions = {
@@ -24,8 +24,9 @@ export const verifyIdToken = async (idToken: string, options: VerifyOptions) => 
 
     const key = crypto.createPublicKey({ key: jwk, format: "jwk" });
     const pem = key.export({ format: "pem", type: "spki" }).toString();
+    const algorithm = (header.alg || "RS256") as Algorithm;
     const payload = jwt.verify(idToken, pem, {
-      algorithms: [header.alg || "RS256"],
+      algorithms: [algorithm],
       issuer: options.issuer,
       audience: options.audience,
     }) as JwtPayload;

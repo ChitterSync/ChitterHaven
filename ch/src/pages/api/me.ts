@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { requireUser } from "./auth";
+import { requireUser } from "@/server/api-lib/auth";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";

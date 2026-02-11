@@ -2,10 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "./jwt";
-import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -226,11 +226,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(403).json({ error: "Only the owner can manage moderators." });
           }
           const rawMods = Array.isArray((req.body as any).moderators) ? (req.body as any).moderators : [];
-          const cleanMods = Array.from(
-            new Set(
+          const cleanMods: string[] = Array.from(
+            new Set<string>(
               rawMods
-                .filter((user): user is string => typeof user === "string")
-                .filter((user) => user !== owner && dm.users.includes(user)),
+                .filter((user: unknown): user is string => typeof user === "string")
+                .filter((user: string) => user !== owner && dm.users.includes(user)),
             ),
           ).sort((a, b) => a.localeCompare(b));
           if (!arraysEqual(cleanMods, sortStrings(dm.moderators || []))) {

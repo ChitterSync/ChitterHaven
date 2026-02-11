@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createChannel, getChannel, listUserChannels } from "./channels";
-import { prisma } from "./prismaClient";
-import { requireUser } from "./auth";
+import { createChannel, getChannel, listUserChannels } from "@/server/api-lib/channels";
+import { prisma } from "@/server/api-lib/prismaClient";
+import { requireUser } from "@/server/api-lib/auth";
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

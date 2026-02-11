@@ -1,9 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { signJWT } from "./jwt";
-import { readUsers, writeUsers } from "./_lib/usersStore";
-import { generateSalt, hashPasswordScrypt } from "./_lib/passwords";
-import { setAuthCookie } from "./_lib/authCookie";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { signJWT } from "@/server/api-lib/jwt";
+import { readUsers, writeUsers } from "@/server/api-lib/usersStore";
+import { generateSalt, hashPasswordScrypt } from "@/server/api-lib/passwords";
+import { setAuthCookie } from "@/server/api-lib/authCookie";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {

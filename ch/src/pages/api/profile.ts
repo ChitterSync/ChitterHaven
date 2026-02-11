@@ -1,9 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { verifyJWT } from './jwt';
-import { readUsers, writeUsers } from './_lib/usersStore';
-import { getAuthCookie } from './_lib/authCookie';
+import { verifyJWT } from '@/server/api-lib/jwt';
+import { readUsers, writeUsers } from '@/server/api-lib/usersStore';
+import { getAuthCookie } from '@/server/api-lib/authCookie';
 import { readSessionFromRequest } from "@/lib/auth/session";
-import { getClientIp, isExemptUsername, rateLimit } from "./_lib/rateLimit";
+import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

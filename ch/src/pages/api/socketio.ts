@@ -4,8 +4,8 @@ import type { Server as HTTPServer } from "http";
 import type { Socket as NetSocket } from "net";
 import fetch from "node-fetch";
 import cookie from "cookie";
-import { verifyJWT } from "./jwt";
-import { AUTH_COOKIE_NAME } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { AUTH_COOKIE_NAME } from "@/server/api-lib/authCookie";
 
 export const config = {
   api: {

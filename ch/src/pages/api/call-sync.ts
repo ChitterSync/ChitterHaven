@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { verifyJWT } from "./jwt";
-import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 
 type CallSyncBody = {
   room?: string;

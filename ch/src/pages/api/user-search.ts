@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { verifyJWT } from "./jwt";
-import { readUsers } from "./_lib/usersStore";
-import { getAuthCookie } from "./_lib/authCookie";
+import { verifyJWT } from "@/server/api-lib/jwt";
+import { readUsers } from "@/server/api-lib/usersStore";
+import { getAuthCookie } from "@/server/api-lib/authCookie";
 
 // --- handler (the main event).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {

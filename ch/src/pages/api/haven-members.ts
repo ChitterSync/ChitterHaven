@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { requireUser } from './auth';
+import { requireUser } from '@/server/api-lib/auth';
 
 const HISTORY_PATH = path.join(process.cwd(), 'src/pages/api/history.json');
 const SECRET = process.env.CHITTERHAVEN_SECRET || 'chitterhaven_secret';
