@@ -33,6 +33,11 @@ type UserSettings = {
   chatStyle?: string;
   messageFontSize?: string;
   appearance?: {
+    userNameOverflow?: "shorten" | "scroll" | "both";
+    channelNameOverflow?: "shorten" | "scroll" | "both";
+    serverNameOverflow?: "shorten" | "scroll" | "both";
+    nameOverflowScrollSpeed?: number;
+    nameOverflowFade?: boolean;
     messageGrouping?: "none" | "compact" | "aggressive";
     messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
     timeFormat?: "12h" | "24h";
@@ -237,6 +242,21 @@ const sanitizeVoice = (raw: any): UserSettings["voice"] | undefined => {
 const sanitizeAppearancePatch = (raw: any): UserSettings["appearance"] | undefined => {
   if (!raw || typeof raw !== "object") return undefined;
   const patch: NonNullable<UserSettings["appearance"]> = {};
+  if (raw.userNameOverflow === "shorten" || raw.userNameOverflow === "scroll" || raw.userNameOverflow === "both") {
+    patch.userNameOverflow = raw.userNameOverflow;
+  }
+  if (raw.channelNameOverflow === "shorten" || raw.channelNameOverflow === "scroll" || raw.channelNameOverflow === "both") {
+    patch.channelNameOverflow = raw.channelNameOverflow;
+  }
+  if (raw.serverNameOverflow === "shorten" || raw.serverNameOverflow === "scroll" || raw.serverNameOverflow === "both") {
+    patch.serverNameOverflow = raw.serverNameOverflow;
+  }
+  if (typeof raw.nameOverflowScrollSpeed === "number") {
+    patch.nameOverflowScrollSpeed = Math.max(20, Math.min(180, Math.round(raw.nameOverflowScrollSpeed)));
+  }
+  if (typeof raw.nameOverflowFade !== "undefined") {
+    patch.nameOverflowFade = raw.nameOverflowFade === true;
+  }
   if (raw.messageGrouping === "none" || raw.messageGrouping === "compact" || raw.messageGrouping === "aggressive") {
     patch.messageGrouping = raw.messageGrouping;
   }

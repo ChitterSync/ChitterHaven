@@ -19,6 +19,45 @@ export const UPDATE_LAST_SEEN_KEY = "update_last_seen_version";
 
 export const UPDATE_FEED: UpdateEntry[] = [
   {
+    version: APP_VERSION,
+    releasedAt: "2026-02-13",
+    highlights: [
+      {
+        text: "New Poll System: create interactive polls in chat and vote live.",
+        severity: "major",
+        audience: "all",
+      },
+      {
+        text: "Poll voting now updates across clients in real time, including mobile.",
+        severity: "major",
+        audience: "all",
+      },
+      {
+        text: "Added advanced poll types: dropdown, text input, star rating, and user-select with creator-configurable rules.",
+        severity: "minor",
+        audience: "all",
+      },
+      {
+        text: "Poll privacy controls added: anonymous voting and optional demographics visibility.",
+        severity: "minor",
+        audience: "all",
+      },
+    ],
+    fullNotesMarkdown: [
+      `## ${APP_VERSION}`,
+      "",
+      "- Added first-class polls to chat messages.",
+      "- Create a poll from the desktop composer with question, options, and optional close time.",
+      "- Users can vote directly from the message card and see live result bars.",
+      "- Supports single-choice and multi-choice poll modes.",
+      "- Added advanced poll modes: dropdown choice, text response, star rating, and user-select.",
+      "- User-select polls can target haven or DM members with creator filters like online-only and max selections.",
+      "- Poll creators can choose whether vote changes are allowed.",
+      "- Added privacy controls for polls: anonymous voting and a toggle to hide demographics percentages.",
+      "- Poll messages and votes are persisted via the existing message history API.",
+    ].join("\n"),
+  },
+  {
     version: "0.2.2.1hotfix-beta",
     releasedAt: "2026-02-11",
     highlights: [

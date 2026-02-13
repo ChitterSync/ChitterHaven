@@ -67,6 +67,12 @@ import HomePanel from "./components/HomePanel";
 import ProfilePanel from "./components/ProfilePanel";
 import MobileApp from "./components/MobileApp";
 import Oneko from "./components/Oneko";
+import ChoiceSlider from "./components/ChoiceSlider";
+import Dropdown, { type DropdownOption } from "./components/Dropdown";
+import TextBar from "./components/TextBar";
+import DateTimeField from "./components/DateTimeField";
+import Switch from "./components/Switch";
+import NumberField from "./components/NumberField";
 const EmojiPicker = dynamic(() => import("./components/EmojiPicker"), { ssr: false });
 import InviteCard, { type InvitePreview } from "./components/InviteCard";
 
@@ -98,12 +104,24 @@ const INVITE_CODE_RE = /(CHINV-[A-Z0-9]{4,})/i;
 const LOCAL_DESKTOP_NOTIF_KEY = "desktop_notifications_enabled";
 const CALL_REJOIN_KEY = "ch_last_call";
 const MEMBERS_SIDEBAR_WIDTH = 260;
-const MAX_RENDER_MESSAGES = 250;
-const MAX_STORE_MESSAGES = 1000;
+const MAX_RENDER_MESSAGES = 150;
+const MAX_STORE_MESSAGES = 400;
+const MAX_PROFILE_CACHE = 800;
+const MAX_PRESENCE_CACHE = 800;
+const MAX_STATUS_CACHE = 600;
+const MAX_RICH_PRESENCE_CACHE = 600;
+const MAX_INVITE_CACHE = 250;
+const NAV_SIDEBAR_MAX_WIDTH = 320;
+const CHANNEL_SIDEBAR_MAX_WIDTH = 420;
 
 // --- theme + appearance helpers (boring, but necessary).
 type ThemeStop = { color: string; position: number };
 type AppearanceSettings = {
+  userNameOverflow?: "shorten" | "scroll" | "both";
+  channelNameOverflow?: "shorten" | "scroll" | "both";
+  serverNameOverflow?: "shorten" | "scroll" | "both";
+  nameOverflowScrollSpeed?: number;
+  nameOverflowFade?: boolean;
   messageGrouping?: "none" | "compact" | "aggressive";
   messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
   timeFormat?: "12h" | "24h";
@@ -205,6 +223,125 @@ const sanitizeRichPresence = (raw?: { type?: string; title?: string; details?: s
 const trimMessageList = (list: Message[]) =>
   list.length > MAX_STORE_MESSAGES ? list.slice(-MAX_STORE_MESSAGES) : list;
 
+const mergeRecordWithLimit = <T,>(
+  prev: Record<string, T>,
+  incoming: Record<string, T>,
+  limit: number
+): Record<string, T> => {
+  if (!incoming || typeof incoming !== "object") return prev;
+  const next = { ...prev };
+  Object.entries(incoming).forEach(([key, value]) => {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      delete next[key];
+    }
+    next[key] = value;
+  });
+  const keys = Object.keys(next);
+  if (keys.length <= limit) return next;
+  const trimmed = { ...next };
+  const overflow = keys.length - limit;
+  for (let i = 0; i < overflow; i += 1) {
+    delete trimmed[keys[i]];
+  }
+  return trimmed;
+};
+
+const setRecordEntryWithLimit = <T,>(
+  prev: Record<string, T>,
+  key: string,
+  value: T,
+  limit: number
+): Record<string, T> => mergeRecordWithLimit(prev, { [key]: value }, limit);
+
+const NameOverflowLabel = ({
+  text,
+  mode,
+  title,
+  scrollSpeed = 60,
+  fadeEnabled = true,
+}: {
+  text: string;
+  mode: "shorten" | "scroll" | "both";
+  title?: string;
+  scrollSpeed?: number;
+  fadeEnabled?: boolean;
+}) => {
+  const containerRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const [distance, setDistance] = useState(0);
+
+  useLayoutEffect(() => {
+    const compute = () => {
+      const container = containerRef.current;
+      const measure = measureRef.current;
+      if (!container || !measure) return;
+      const containerWidth = container.clientWidth;
+      const textWidth = measure.scrollWidth;
+      setDistance(Math.max(0, Math.ceil(textWidth - containerWidth)));
+    };
+    compute();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(compute) : null;
+    if (ro) {
+      if (containerRef.current) ro.observe(containerRef.current);
+      if (measureRef.current) ro.observe(measureRef.current);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", compute);
+    }
+    return () => {
+      ro?.disconnect();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("resize", compute);
+      }
+    };
+  }, [text]);
+
+  const pxPerSecond = Math.max(20, Math.min(180, Number(scrollSpeed) || 60));
+  const duration = distance > 0 ? Math.max(4, Number((distance / pxPerSecond + 2.4).toFixed(2))) : 0;
+  const hasOverflow = distance > 0;
+  const classes = [
+    "ch-name-overflow",
+    `ch-name-overflow--${mode}`,
+    hasOverflow ? "is-scrollable" : "",
+    fadeEnabled && hasOverflow && mode !== "shorten" ? "is-fade" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const style = {
+    ["--ch-overflow-shift" as any]: `-${distance}px`,
+    ["--ch-overflow-duration" as any]: `${duration}s`,
+  } as React.CSSProperties;
+
+  if (mode === "shorten") {
+    return (
+      <span className={classes} title={title || text} ref={containerRef}>
+        <span className="ch-name-overflow-short">{text}</span>
+      </span>
+    );
+  }
+
+  if (mode === "scroll") {
+    return (
+      <span className={classes} title={title || text} ref={containerRef} style={style}>
+        <span className="ch-name-overflow-scroll-wrap">
+          <span className="ch-name-overflow-scroll">{text}</span>
+        </span>
+        <span className="ch-name-overflow-measure" ref={measureRef} aria-hidden>{text}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className={classes} title={title || text} ref={containerRef} style={style}>
+      <span className="ch-name-overflow-short">{text}</span>
+      <span className="ch-name-overflow-scroll-wrap">
+        <span className="ch-name-overflow-scroll">{text}</span>
+      </span>
+      <span className="ch-name-overflow-measure" ref={measureRef} aria-hidden>{text}</span>
+    </span>
+  );
+};
+
 const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
   try {
     const resolved = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions();
@@ -212,6 +349,13 @@ const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
     if (cycle === "h23" || cycle === "h24") return "24h";
   } catch {}
   return "12h";
+};
+
+const normalizeNameOverflowMode = (
+  value?: AppearanceSettings["userNameOverflow"],
+): "shorten" | "scroll" | "both" => {
+  if (value === "scroll" || value === "both") return value;
+  return "shorten";
 };
 
 const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistingSettings = false): AppearanceSettings => {
@@ -245,7 +389,14 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
   const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
   const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
   const fillScreen = typeof base.fillScreen === "boolean" ? base.fillScreen : true;
+  const rawScrollSpeed = Number(base.nameOverflowScrollSpeed);
+  const nameOverflowScrollSpeed = Number.isFinite(rawScrollSpeed) ? clampNumber(rawScrollSpeed, 20, 180) : 60;
   return {
+    userNameOverflow: normalizeNameOverflowMode(base.userNameOverflow),
+    channelNameOverflow: normalizeNameOverflowMode(base.channelNameOverflow),
+    serverNameOverflow: normalizeNameOverflowMode(base.serverNameOverflow),
+    nameOverflowScrollSpeed,
+    nameOverflowFade: base.nameOverflowFade !== false,
     messageGrouping,
     messageStyle,
     timeFormat,
@@ -373,6 +524,10 @@ const normalizeUserSettings = (raw: any) => {
   base.sidebarHavenIconOnly = base.sidebarHavenIconOnly === true;
   const columns = Number(base.havenColumns);
   base.havenColumns = Number.isFinite(columns) ? Math.min(5, Math.max(1, Math.round(columns))) : 1;
+  const navWidth = Number(base.sidebarNavWidth);
+  base.sidebarNavWidth = Number.isFinite(navWidth) ? Math.min(NAV_SIDEBAR_MAX_WIDTH, Math.max(84, Math.round(navWidth))) : undefined;
+  const channelWidth = Number(base.sidebarChannelWidth);
+  base.sidebarChannelWidth = Number.isFinite(channelWidth) ? Math.min(CHANNEL_SIDEBAR_MAX_WIDTH, Math.max(170, Math.round(channelWidth))) : undefined;
   const gradientString =
     typeof base.customThemeGradient === 'string' && base.customThemeGradient.trim().length
       ? base.customThemeGradient.trim()
@@ -491,6 +646,41 @@ function AttachmentViewer({ attachment }: { attachment: Attachment }) {
 }
 
 type ReactionMap = { [emoji: string]: string[] };
+type PollOption = { id: string; text: string; votes: string[]; voteCount?: number };
+type PollResponseText = { user: string; text: string; timestamp: number };
+type PollRating = { user: string; value: number; timestamp: number };
+type PollData = {
+  type?: "choice" | "dropdown" | "slider" | "text" | "star" | "user_select";
+  question: string;
+  options: PollOption[];
+  multiple?: boolean;
+  maxSelections?: number;
+  allowVoteChange?: boolean;
+  showDemographics?: boolean;
+  anonymous?: boolean;
+  closesAt?: number | null;
+  createdBy?: string;
+  textMaxLength?: number;
+  textResponses?: PollResponseText[];
+  starScale?: number;
+  ratings?: PollRating[];
+  viewerSelection?: string[];
+  viewerRating?: number;
+  viewerTextSubmitted?: boolean;
+  ratingAverage?: number;
+  ratingCount?: number;
+  textResponseCount?: number;
+  userSelectArgs?: {
+    onlineOnly?: boolean;
+    includeSelf?: boolean;
+    maxSelections?: number;
+    source?: "haven" | "dm";
+  };
+  sliderArgs?: {
+    layout?: "single" | "wrap";
+    compact?: boolean;
+  };
+};
 type Message = {
   id: string;
   user: string;
@@ -502,6 +692,7 @@ type Message = {
   pinned?: boolean;
   attachments?: Attachment[];
   editHistory?: { text: string; timestamp: number }[];
+  poll?: PollData;
 };
 
 type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
@@ -518,6 +709,15 @@ type CallParticipant = {
   screenSharing?: boolean;
 };
 type DMThread = { id: string; users: string[]; title?: string; group?: boolean; owner?: string; moderators?: string[]; avatarUrl?: string };
+
+const POLL_TYPE_OPTIONS: DropdownOption[] = [
+  { value: "choice", label: "Choice Buttons", description: "Tap option buttons directly." },
+  { value: "dropdown", label: "Multiple Choice Dropdown", description: "Pick one option from a dropdown." },
+  { value: "slider", label: "Choice Slider", description: "Choose one option with a segmented slider bar." },
+  { value: "text", label: "Text Input", description: "Users submit a short written response." },
+  { value: "star", label: "Star Rating", description: "Users rate with stars." },
+  { value: "user_select", label: "User Select", description: "Pick users from current haven/DM context." },
+];
 
 const mergeParticipantLists = (base: CallParticipant[], updates: CallParticipant[]) => {
   const map = new Map<string, CallParticipant>();
@@ -592,12 +792,51 @@ export default function Main({ username }: { username: string }) {
   };
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [showPollComposer, setShowPollComposer] = useState(false);
+  const [pollTypeDraft, setPollTypeDraft] = useState<PollData["type"]>("choice");
+  const [pollQuestionDraft, setPollQuestionDraft] = useState("");
+  const [pollNoteDraft, setPollNoteDraft] = useState("");
+  const [pollOptionsDraft, setPollOptionsDraft] = useState<string[]>(["", ""]);
+  const [pollMultipleDraft, setPollMultipleDraft] = useState(false);
+  const [pollMaxSelectionsDraft, setPollMaxSelectionsDraft] = useState(2);
+  const [pollTextMaxLengthDraft, setPollTextMaxLengthDraft] = useState(280);
+  const [pollStarScaleDraft, setPollStarScaleDraft] = useState(5);
+  const [pollUserOnlineOnlyDraft, setPollUserOnlineOnlyDraft] = useState(false);
+  const [pollUserIncludeSelfDraft, setPollUserIncludeSelfDraft] = useState(false);
+  const [pollUserMaxSelectionsDraft, setPollUserMaxSelectionsDraft] = useState(1);
+  const [pollSliderLayoutDraft, setPollSliderLayoutDraft] = useState<"single" | "wrap">("single");
+  const [pollSliderCompactDraft, setPollSliderCompactDraft] = useState(false);
+  const [pollAllowChangeDraft, setPollAllowChangeDraft] = useState(true);
+  const [pollShowDemographicsDraft, setPollShowDemographicsDraft] = useState(true);
+  const [pollAnonymousDraft, setPollAnonymousDraft] = useState(false);
+  const [pollClosesAtDraft, setPollClosesAtDraft] = useState("");
+  const [pollDraftError, setPollDraftError] = useState("");
+  const [pollChoiceDrafts, setPollChoiceDrafts] = useState<Record<string, string>>({});
+  const [pollTextDrafts, setPollTextDrafts] = useState<Record<string, string>>({});
   const [newChannel, setNewChannel] = useState("");
   const [newChannelType, setNewChannelType] = useState<'text'|'voice'>('text');
   const [newHaven, setNewHaven] = useState("");
   const [newHavenType, setNewHavenType] = useState<'standard'|'community'>('standard');
   const [havenAction, setHavenAction] = useState<'create'|'join'>('join');
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const resetPollComposer = useCallback(() => {
+    setPollTypeDraft("choice");
+    setPollQuestionDraft("");
+    setPollNoteDraft("");
+    setPollOptionsDraft(["", ""]);
+    setPollMultipleDraft(false);
+    setPollMaxSelectionsDraft(2);
+    setPollTextMaxLengthDraft(280);
+    setPollStarScaleDraft(5);
+    setPollUserOnlineOnlyDraft(false);
+    setPollUserIncludeSelfDraft(false);
+    setPollUserMaxSelectionsDraft(1);
+    setPollAllowChangeDraft(true);
+    setPollShowDemographicsDraft(true);
+    setPollAnonymousDraft(false);
+    setPollClosesAtDraft("");
+    setPollDraftError("");
+  }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -625,13 +864,13 @@ export default function Main({ username }: { username: string }) {
   const applyUserStatusPayload = (payload: any) => {
     if (!payload || typeof payload !== "object") return;
     if (payload.statuses) {
-      setPresenceMap((prev) => ({ ...prev, ...payload.statuses }));
+      setPresenceMap((prev) => mergeRecordWithLimit(prev, payload.statuses, MAX_PRESENCE_CACHE));
     }
     if (payload.statusMessages) {
-      setStatusMessageMap((prev) => ({ ...prev, ...payload.statusMessages }));
+      setStatusMessageMap((prev) => mergeRecordWithLimit(prev, payload.statusMessages, MAX_STATUS_CACHE));
     }
     if (payload.richPresence) {
-      setRichPresenceMap((prev) => ({ ...prev, ...payload.richPresence }));
+      setRichPresenceMap((prev) => mergeRecordWithLimit(prev, payload.richPresence, MAX_RICH_PRESENCE_CACHE));
     }
   };
   const [showPinned, setShowPinned] = useState(false);
@@ -1374,6 +1613,11 @@ export default function Main({ username }: { username: string }) {
   const pinColor = userSettings.pinColorHex || '#facc15';
   const mentionColor = userSettings.mentionColorHex || '#f97316';
   const appearance: AppearanceSettings = userSettings.appearance || normalizeAppearanceSettings(undefined, true);
+  const userNameOverflowMode = normalizeNameOverflowMode(appearance.userNameOverflow);
+  const channelNameOverflowMode = normalizeNameOverflowMode(appearance.channelNameOverflow);
+  const serverNameOverflowMode = normalizeNameOverflowMode(appearance.serverNameOverflow);
+  const nameOverflowScrollSpeed = clampNumber(Number(appearance.nameOverflowScrollSpeed || 60), 20, 180);
+  const nameOverflowFade = appearance.nameOverflowFade !== false;
   const messageGrouping = appearance.messageGrouping || 'compact';
   const timeFormat = appearance.timeFormat || resolveDefaultTimeFormat();
   const timeDisplay = appearance.timeDisplay || 'absolute';
@@ -1540,8 +1784,37 @@ export default function Main({ username }: { username: string }) {
   const codeColor = (userSettings as any).codeColorHex || '#a5b4fc';
   // default to compact sidebar unless explicitly disabled
   const compactSidebar = (userSettings as any).compactSidebar !== false;
-  const navSidebarWidth = compactSidebar ? "var(--ch-sidebar-width-compact)" : "var(--ch-sidebar-width)";
-  const channelSidebarWidth = compactSidebar ? "var(--ch-channel-width-compact)" : "var(--ch-channel-width)";
+  const navSidebarVar = compactSidebar ? "--ch-sidebar-width-compact" : "--ch-sidebar-width";
+  const channelSidebarVar = compactSidebar ? "--ch-channel-width-compact" : "--ch-channel-width";
+  const navSidebarFallback = compactSidebar ? 120 : 160;
+  const channelSidebarFallback = compactSidebar ? 180 : 220;
+  const getCssVarWidth = useCallback((name: string, fallback: number) => {
+    if (typeof window === "undefined") return fallback;
+    const raw = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const parsed = Number.parseFloat(raw.replace("px", ""));
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }, []);
+  const clampNavSidebarWidth = useCallback((value: number) => {
+    const min = showHavenIconsOnly ? 84 : 120;
+    return Math.min(NAV_SIDEBAR_MAX_WIDTH, Math.max(min, Math.round(value)));
+  }, [showHavenIconsOnly]);
+  const clampChannelSidebarWidth = useCallback((value: number) => {
+    const min = 170;
+    return Math.min(CHANNEL_SIDEBAR_MAX_WIDTH, Math.max(min, Math.round(value)));
+  }, []);
+  const storedNavSidebarWidthRaw = Number((userSettings as any).sidebarNavWidth);
+  const storedChannelSidebarWidthRaw = Number((userSettings as any).sidebarChannelWidth);
+  const storedNavSidebarWidth = Number.isFinite(storedNavSidebarWidthRaw) ? storedNavSidebarWidthRaw : null;
+  const storedChannelSidebarWidth = Number.isFinite(storedChannelSidebarWidthRaw) ? storedChannelSidebarWidthRaw : null;
+  const [sidebarWidths, setSidebarWidths] = useState<{ nav: number; channel: number }>({
+    nav: navSidebarFallback,
+    channel: channelSidebarFallback,
+  });
+  const sidebarWidthsRef = useRef(sidebarWidths);
+  const [activeSidebarResize, setActiveSidebarResize] = useState<null | "nav" | "channel">(null);
+  const sidebarResizeStartRef = useRef<null | { kind: "nav" | "channel"; startX: number; startWidth: number }>(null);
+  const resolvedNavSidebarWidth = clampNavSidebarWidth(sidebarWidths.nav);
+  const resolvedChannelSidebarWidth = clampChannelSidebarWidth(sidebarWidths.channel);
   const monospaceMessages = !!(userSettings as any).monospaceMessages;
   const quickButtonsOwn: string[] = Array.isArray((userSettings as any).quickButtonsOwn) ? (userSettings as any).quickButtonsOwn : ['reply','react','copy','more'];
   const quickButtonsOthers: string[] = Array.isArray((userSettings as any).quickButtonsOthers) ? (userSettings as any).quickButtonsOthers : ['reply','react','copy','more'];
@@ -1706,7 +1979,7 @@ export default function Main({ username }: { username: string }) {
   };
   const renderHavenLabel = (havenId: string, revealKey: string) => {
     const name = getHavenName(havenId);
-    return renderDisplayName(`haven:${havenId}`, { labelOverride: name, revealKey });
+    return renderDisplayName(`haven:${havenId}`, { labelOverride: name, revealKey, overflowMode: serverNameOverflowMode });
   };
   const renderFriendRow = (
     user: string,
@@ -1909,15 +2182,41 @@ export default function Main({ username }: { username: string }) {
     if (trimmed.length <= 4) return `${trimmed.slice(0, 2)}...`;
     return `${trimmed.slice(0, 1)}...${trimmed.slice(-1)}`;
   };
+  const renderOverflowLabel = (
+    text: string,
+    mode: "shorten" | "scroll" | "both",
+    opts?: { title?: string },
+  ) => (
+    <NameOverflowLabel
+      text={text}
+      mode={mode}
+      title={opts?.title || text}
+      scrollSpeed={nameOverflowScrollSpeed}
+      fadeEnabled={nameOverflowFade}
+    />
+  );
   const renderDisplayName = (
     user: string,
-    opts?: { prefix?: string; revealKey?: string; labelOverride?: string; haven?: string | null; allowFriend?: boolean },
+    opts?: { prefix?: string; revealKey?: string; labelOverride?: string; haven?: string | null; allowFriend?: boolean; overflowMode?: "shorten" | "scroll" | "both" },
   ): React.ReactNode => {
     const raw = opts?.labelOverride ?? displayNameFor(user, { haven: opts?.haven, allowFriend: opts?.allowFriend });
     const prefix = opts?.prefix || '';
-    if (!streamerMode) return `${prefix}${raw}`;
+    const overflowMode = opts?.overflowMode || userNameOverflowMode;
+    if (!streamerMode) {
+      return (
+        <>
+          {prefix}
+          {renderOverflowLabel(raw, overflowMode)}
+        </>
+      );
+    }
     if (streamerModeStyle === 'shorten') {
-      return `${prefix}${shortenName(raw)}`;
+      return (
+        <>
+          {prefix}
+          {renderOverflowLabel(shortenName(raw), "shorten", { title: raw })}
+        </>
+      );
     }
     const revealKey = opts?.revealKey;
     const canReveal = !!revealKey && streamerModeHoverReveal && streamerRevealKey === revealKey;
@@ -2284,13 +2583,17 @@ export default function Main({ username }: { username: string }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data) return;
-        setUserProfileCache((prev) => ({
-          ...prev,
-          [user]: {
-            displayName: data.displayName || user,
-            avatarUrl: data.avatarUrl || "",
-          },
-        }));
+        setUserProfileCache((prev) =>
+          setRecordEntryWithLimit(
+            prev,
+            user,
+            {
+              displayName: data.displayName || user,
+              avatarUrl: data.avatarUrl || "",
+            },
+            MAX_PROFILE_CACHE
+          )
+        );
       })
       .catch(() => {})
       .finally(() => {
@@ -2482,6 +2785,111 @@ export default function Main({ username }: { username: string }) {
       });
     } catch {}
   }, [userSettings]);
+  useEffect(() => {
+    sidebarWidthsRef.current = sidebarWidths;
+  }, [sidebarWidths]);
+  useEffect(() => {
+    if (activeSidebarResize) return;
+    const nextNav = clampNavSidebarWidth(
+      storedNavSidebarWidth ?? getCssVarWidth(navSidebarVar, navSidebarFallback),
+    );
+    const nextChannel = clampChannelSidebarWidth(
+      storedChannelSidebarWidth ?? getCssVarWidth(channelSidebarVar, channelSidebarFallback),
+    );
+    setSidebarWidths((prev) => {
+      if (prev.nav === nextNav && prev.channel === nextChannel) return prev;
+      return { nav: nextNav, channel: nextChannel };
+    });
+  }, [
+    activeSidebarResize,
+    storedNavSidebarWidth,
+    storedChannelSidebarWidth,
+    navSidebarVar,
+    channelSidebarVar,
+    navSidebarFallback,
+    channelSidebarFallback,
+    getCssVarWidth,
+    clampNavSidebarWidth,
+    clampChannelSidebarWidth,
+  ]);
+  useEffect(() => {
+    if (!activeSidebarResize) return;
+    const handleMove = (event: MouseEvent) => {
+      const start = sidebarResizeStartRef.current;
+      if (!start) return;
+      const delta = event.clientX - start.startX;
+      const nextWidth = start.startWidth + delta;
+      if (start.kind === "nav") {
+        setSidebarWidths((prev) => ({ ...prev, nav: clampNavSidebarWidth(nextWidth) }));
+      } else {
+        setSidebarWidths((prev) => ({ ...prev, channel: clampChannelSidebarWidth(nextWidth) }));
+      }
+    };
+    const handleUp = () => {
+      const finalWidths = sidebarWidthsRef.current;
+      setActiveSidebarResize(null);
+      sidebarResizeStartRef.current = null;
+      if (typeof document !== "undefined") {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+      void updateUserSettings({
+        sidebarNavWidth: clampNavSidebarWidth(finalWidths.nav),
+        sidebarChannelWidth: clampChannelSidebarWidth(finalWidths.channel),
+      });
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      if (typeof document !== "undefined") {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    };
+  }, [activeSidebarResize, updateUserSettings, clampNavSidebarWidth, clampChannelSidebarWidth]);
+  const startSidebarResize = useCallback(
+    (kind: "nav" | "channel") => (event: React.MouseEvent<HTMLDivElement>) => {
+      if (isMobile) return;
+      event.preventDefault();
+      const startWidth = kind === "nav" ? resolvedNavSidebarWidth : resolvedChannelSidebarWidth;
+      sidebarResizeStartRef.current = { kind, startX: event.clientX, startWidth };
+      setActiveSidebarResize(kind);
+      if (typeof document !== "undefined") {
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+      }
+    },
+    [isMobile, resolvedNavSidebarWidth, resolvedChannelSidebarWidth],
+  );
+  const resetSidebarWidth = useCallback(
+    async (kind: "nav" | "channel") => {
+      const nextNav =
+        kind === "nav"
+          ? clampNavSidebarWidth(getCssVarWidth(navSidebarVar, navSidebarFallback))
+          : sidebarWidthsRef.current.nav;
+      const nextChannel =
+        kind === "channel"
+          ? clampChannelSidebarWidth(getCssVarWidth(channelSidebarVar, channelSidebarFallback))
+          : sidebarWidthsRef.current.channel;
+      setSidebarWidths({ nav: nextNav, channel: nextChannel });
+      await updateUserSettings({
+        sidebarNavWidth: nextNav,
+        sidebarChannelWidth: nextChannel,
+      });
+    },
+    [
+      updateUserSettings,
+      getCssVarWidth,
+      navSidebarVar,
+      navSidebarFallback,
+      channelSidebarVar,
+      channelSidebarFallback,
+      clampNavSidebarWidth,
+      clampChannelSidebarWidth,
+    ],
+  );
   const toggleBlockUser = useCallback(async (target: string, nextBlocked: boolean) => {
     if (!target) return;
     const current = Array.isArray((userSettings as any).blockedUsers) ? (userSettings as any).blockedUsers : [];
@@ -3032,7 +3440,7 @@ export default function Main({ username }: { username: string }) {
     });
     codes.forEach((code) => {
       if (invitePreviews[code] || invitePreviewStatus[code]) return;
-      setInvitePreviewStatus((prev) => ({ ...prev, [code]: "loading" }));
+      setInvitePreviewStatus((prev) => setRecordEntryWithLimit(prev, code, "loading", MAX_INVITE_CACHE));
       fetch("/api/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3053,8 +3461,8 @@ export default function Main({ username }: { username: string }) {
             uses: data?.invite?.uses ?? null,
             expiresAt: data?.invite?.expiresAt ?? null,
           };
-          setInvitePreviews((prev) => ({ ...prev, [code]: preview }));
-          setInvitePreviewStatus((prev) => ({ ...prev, [code]: "ready" }));
+          setInvitePreviews((prev) => setRecordEntryWithLimit(prev, code, preview, MAX_INVITE_CACHE));
+          setInvitePreviewStatus((prev) => setRecordEntryWithLimit(prev, code, "ready", MAX_INVITE_CACHE));
           setInviteErrors((prev) => {
             const next = { ...prev };
             delete next[code];
@@ -3062,8 +3470,8 @@ export default function Main({ username }: { username: string }) {
           });
         })
         .catch((err: any) => {
-          setInvitePreviewStatus((prev) => ({ ...prev, [code]: "error" }));
-          setInviteErrors((prev) => ({ ...prev, [code]: err?.message || "Invite unavailable" }));
+          setInvitePreviewStatus((prev) => setRecordEntryWithLimit(prev, code, "error", MAX_INVITE_CACHE));
+          setInviteErrors((prev) => setRecordEntryWithLimit(prev, code, err?.message || "Invite unavailable", MAX_INVITE_CACHE));
         });
     });
   }, [messages, invitePreviews, invitePreviewStatus]);
@@ -3179,7 +3587,7 @@ export default function Main({ username }: { username: string }) {
     if (!socketRef.current) {
       socketRef.current = io({ path: "/api/socketio" });
     }
-    const handler = (data: { user: string; status: string }) => setPresenceMap(prev => ({ ...prev, [data.user]: data.status }));
+    const handler = (data: { user: string; status: string }) => setPresenceMap((prev) => setRecordEntryWithLimit(prev, data.user, data.status, MAX_PRESENCE_CACHE));
     const countHandler = (data: { count: number }) => { if (typeof data?.count === 'number') setOnlineCount(data.count); };
     socketRef.current.on('presence', handler);
     socketRef.current.on('online-count', countHandler);
@@ -3409,7 +3817,7 @@ export default function Main({ username }: { username: string }) {
     if (!socketRef.current) return;
     try {
       socketRef.current.emit('presence', { user: username, status: effectiveStatus });
-      setPresenceMap(prev => ({ ...prev, [username]: effectiveStatus }));
+      setPresenceMap((prev) => setRecordEntryWithLimit(prev, username, effectiveStatus, MAX_PRESENCE_CACHE));
     } catch {}
   }, [effectiveStatus, username]);
 
@@ -3948,6 +4356,128 @@ export default function Main({ username }: { username: string }) {
     }
   };
 
+  const createPollMessage = async () => {
+    if (!isOnline) {
+      notify({ title: "Offline", body: "Polls are blocked while offline.", type: "warn" });
+      return;
+    }
+    const question = pollQuestionDraft.trim().slice(0, 240);
+    const optionDrafts = pollOptionsDraft
+      .map((entry) => entry.trim().slice(0, 80))
+      .filter((entry) => entry.length > 0)
+      .filter((entry, idx, arr) => arr.findIndex((value) => value.toLowerCase() === entry.toLowerCase()) === idx)
+      .slice(0, 50);
+    if (!question) {
+      setPollDraftError("Enter a poll question.");
+      return;
+    }
+    const type = pollTypeDraft || "choice";
+    let options = optionDrafts;
+    if (type === "user_select") {
+      const rawUsers =
+        selectedHaven !== "__dms__"
+          ? havenMembers
+          : (() => {
+              const dm = dms.find((entry) => entry.id === selectedDM);
+              return Array.isArray(dm?.users) ? dm.users : [];
+            })();
+      options = Array.from(new Set(rawUsers))
+        .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+        .filter((entry) => (pollUserIncludeSelfDraft ? true : entry !== username))
+        .filter((entry) => (pollUserOnlineOnlyDraft ? isUserOnline(entry) : true))
+        .slice(0, 50);
+      if (options.length < 2) {
+        setPollDraftError("User select polls need at least 2 candidate users with current filters.");
+        return;
+      }
+    } else if (type === "choice" || type === "dropdown" || type === "slider") {
+      if (options.length < 2) {
+        setPollDraftError("Add at least 2 poll options.");
+        return;
+      }
+    }
+    const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
+    const closeTimeMs = pollClosesAtDraft ? Date.parse(pollClosesAtDraft) : NaN;
+    const closesAt = Number.isFinite(closeTimeMs) && closeTimeMs > Date.now() ? closeTimeMs : null;
+    const allowMultiple = (type === "choice" || type === "user_select") ? pollMultipleDraft : false;
+    const maxSelections = type === "user_select"
+      ? Math.max(1, Math.min(10, Math.floor(Number(pollUserMaxSelectionsDraft) || 1)))
+      : Math.max(1, Math.min(10, Math.floor(Number(pollMaxSelectionsDraft) || 1)));
+    const payload = {
+      room,
+      action: "create_poll",
+      msg: {
+        text: pollNoteDraft.trim().slice(0, 500),
+        poll: {
+          type,
+          question,
+          options,
+          multiple: allowMultiple,
+          maxSelections,
+          allowVoteChange: pollAllowChangeDraft,
+          showDemographics: pollShowDemographicsDraft,
+          anonymous: pollAnonymousDraft,
+          closesAt,
+          textMaxLength: Math.max(20, Math.min(500, Math.floor(Number(pollTextMaxLengthDraft) || 280))),
+          starScale: Math.max(3, Math.min(10, Math.floor(Number(pollStarScaleDraft) || 5))),
+          userSelectArgs: {
+            onlineOnly: pollUserOnlineOnlyDraft,
+            includeSelf: pollUserIncludeSelfDraft,
+            maxSelections,
+            source: selectedHaven === "__dms__" ? "dm" : "haven",
+          },
+          sliderArgs: {
+            layout: pollSliderLayoutDraft,
+            compact: pollSliderCompactDraft,
+          },
+        },
+      },
+    };
+    try {
+      const res = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.message) {
+        setPollDraftError((data?.error as string) || "Could not create poll.");
+        return;
+      }
+      setMessages((prev) => trimMessageList([...prev, data.message as Message]));
+      socketRef.current?.emit("message", { room, msg: data.message });
+      setShowPollComposer(false);
+      resetPollComposer();
+    } catch {
+      setPollDraftError("Could not create poll.");
+    }
+  };
+
+  const votePoll = (messageId: string, payload: { optionId?: string; optionIds?: string[]; text?: string; rating?: number }) => {
+    const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
+    fetch("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room, action: "poll_vote", messageId, ...payload }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, data };
+      })
+      .then(({ ok, data }) => {
+        if (!ok || !data?.message) {
+          const errorText = (data?.error as string) || "Vote failed.";
+          notify({ title: "Poll vote failed", body: errorText, type: "warn" });
+          return;
+        }
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? (data.message as Message) : m)));
+        socketRef.current?.emit("edit", { room, message: data.message });
+      })
+      .catch(() => {
+        notify({ title: "Poll vote failed", body: "Network error.", type: "warn" });
+      });
+  };
+
   const handleDelete = (id: string) => {
     const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
     fetch("/api/history", {
@@ -4100,7 +4630,7 @@ export default function Main({ username }: { username: string }) {
   const joinInvite = async (code: string) => {
     const normalized = code.trim().toUpperCase();
     if (!normalized) return;
-    setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "joining" }));
+    setInviteJoinStatus((prev) => setRecordEntryWithLimit(prev, normalized, "joining", MAX_INVITE_CACHE));
     try {
       let preview = invitePreviews[normalized];
       if (!preview) {
@@ -4122,8 +4652,8 @@ export default function Main({ username }: { username: string }) {
               uses: previewData?.invite?.uses ?? null,
               expiresAt: previewData?.invite?.expiresAt ?? null,
             } as InvitePreview;
-            setInvitePreviews((prev) => ({ ...prev, [normalized]: preview! }));
-            setInvitePreviewStatus((prev) => ({ ...prev, [normalized]: "ready" }));
+            setInvitePreviews((prev) => setRecordEntryWithLimit(prev, normalized, preview!, MAX_INVITE_CACHE));
+            setInvitePreviewStatus((prev) => setRecordEntryWithLimit(prev, normalized, "ready", MAX_INVITE_CACHE));
             setInviteErrors((prev) => {
               const next = { ...prev };
               delete next[normalized];
@@ -4137,7 +4667,7 @@ export default function Main({ username }: { username: string }) {
         setSelectedHaven(previewHaven);
         setSelectedChannel(orderedChannelsFor(previewHaven)[0] || "general");
         setSelectedDM(null);
-        setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "success" }));
+        setInviteJoinStatus((prev) => setRecordEntryWithLimit(prev, normalized, "success", MAX_INVITE_CACHE));
         notify({ title: "Opened server", body: preview?.name || getHavenName(previewHaven), type: "success" });
         return;
       }
@@ -4169,10 +4699,10 @@ export default function Main({ username }: { username: string }) {
         body: havenDisplay,
         type: "success",
       });
-      setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "success" }));
+      setInviteJoinStatus((prev) => setRecordEntryWithLimit(prev, normalized, "success", MAX_INVITE_CACHE));
     } catch (err: any) {
       notify({ title: "Invite error", body: err?.message || "Invite invalid", type: "error" });
-      setInviteJoinStatus((prev) => ({ ...prev, [normalized]: "error" }));
+      setInviteJoinStatus((prev) => setRecordEntryWithLimit(prev, normalized, "error", MAX_INVITE_CACHE));
     }
   };
 
@@ -4423,10 +4953,8 @@ export default function Main({ username }: { username: string }) {
     };
   }, [mentionOpen]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const nextValue = e.target.value;
+  const handleInputChange = (nextValue: string, cursor: number) => {
     setInput(nextValue);
-    const cursor = e.target.selectionStart ?? nextValue.length;
     const ctx = getMentionContext(nextValue, cursor);
     if (ctx) {
       setMentionOpen(true);
@@ -4659,6 +5187,22 @@ export default function Main({ username }: { username: string }) {
     </div>
   );
 
+  const havenIconBaseStyle: React.CSSProperties = {
+    width: havenIconSize,
+    minWidth: havenIconSize,
+    maxWidth: havenIconSize,
+    height: havenIconSize,
+    minHeight: havenIconSize,
+    maxHeight: havenIconSize,
+    aspectRatio: "1 / 1",
+    flex: `0 0 ${havenIconSize}px`,
+    borderRadius: "50%",
+    overflow: "hidden",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
   if (isMobile) {
     return (
       <>
@@ -4721,6 +5265,7 @@ export default function Main({ username }: { username: string }) {
             handleEditSubmit={handleEditSubmit}
             cancelEdit={() => { setEditId(null); setEditText(''); }}
             toggleReaction={toggleReaction}
+            votePoll={votePoll}
             username={username}
             invitePreviews={invitePreviews}
             invitePreviewStatus={invitePreviewStatus}
@@ -4827,7 +5372,7 @@ export default function Main({ username }: { username: string }) {
         setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
       />
       {/* Havens sidebar */}
-      <aside style={{ width: navSidebarWidth, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+      <aside style={{ width: resolvedNavSidebarWidth, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><FontAwesomeIcon icon={faServer} /> {labelHavens}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -4900,13 +5445,8 @@ export default function Main({ username }: { username: string }) {
           >
             <div
               style={{
-                width: havenIconSize,
-                height: havenIconSize,
-                borderRadius: '50%',
+                ...havenIconBaseStyle,
                 background: '#111c32',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
                 color: COLOR_TEXT,
                 border: selectedHaven === '__dms__' ? `2px solid ${accent}` : BORDER,
                 transition: 'transform 140ms ease, box-shadow 140ms ease',
@@ -4952,16 +5492,11 @@ export default function Main({ username }: { username: string }) {
                   >
                     <div
                       style={{
-                        width: havenIconSize,
-                        height: havenIconSize,
-                        borderRadius: '50%',
+                        ...havenIconBaseStyle,
                         background: badge.background,
                         color: '#f8fafc',
                         fontWeight: 700,
                         fontSize: havenIconFontSize,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
                         border: active ? `2px solid ${accent}` : '1px solid rgba(255,255,255,0.1)',
                         transition: 'transform 140ms ease, box-shadow 140ms ease',
                       }}
@@ -4971,7 +5506,7 @@ export default function Main({ username }: { username: string }) {
                       {iconSrc ? (
                         <img
                           src={iconSrc}
-                          alt={`${renderHavenLabel(haven, revealKey)} icon`}
+                          alt={`${getHavenName(haven)} icon`}
                           style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover', display: 'block' }}
                         />
                       ) : (
@@ -4979,7 +5514,7 @@ export default function Main({ username }: { username: string }) {
                       )}
                     </div>
                     {!showHavenIconsOnly && (
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <span style={{ minWidth: 0, flex: 1 }}>
                         {renderHavenLabel(haven, revealKey)}
                       </span>
                     )}
@@ -5000,6 +5535,22 @@ export default function Main({ username }: { username: string }) {
           </button>
         </div>
       </aside>
+      <div
+        role="separator"
+        aria-label="Resize server list"
+        title="Drag to resize server list. Double-click to reset."
+        onMouseDown={startSidebarResize("nav")}
+        onDoubleClick={() => { void resetSidebarWidth("nav"); }}
+        style={{
+          width: 6,
+          cursor: "col-resize",
+          background: activeSidebarResize === "nav" ? "rgba(96,165,250,0.35)" : "transparent",
+          borderRight: BORDER,
+          borderLeft: "1px solid rgba(148,163,184,0.16)",
+          transition: "background 120ms ease",
+          flex: "0 0 auto",
+        }}
+      />
       {activeNav === 'home' && <HomePanel isMobile={isMobile} />}
       {activeNav === 'profile' && <ProfilePanel isMobile={isMobile} />}
 
@@ -5073,7 +5624,7 @@ export default function Main({ username }: { username: string }) {
         </div>
       )}
       {/* Channels / DMs sidebar */}
-      <aside style={{ width: channelSidebarWidth, background: COLOR_PANEL_ALT, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+      <aside style={{ width: resolvedChannelSidebarWidth, background: COLOR_PANEL_ALT, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={selectedHaven === "__dms__" ? faEnvelope : faHashtag} />
@@ -5321,7 +5872,12 @@ export default function Main({ username }: { username: string }) {
               .filter(ch => ch.toLowerCase().includes(channelFilter.trim().toLowerCase()))
               .map((ch) => (
                 <div key={ch} onClick={() => { setSelectedDM(null); handleChannelChange(ch); }} onContextMenu={(e) => openCtx(e, { type: 'channel', data: ch })} style={{ padding: '10px 12px', cursor: 'pointer', background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? accent : COLOR_TEXT, fontWeight: selectedChannel === ch ? 700 : 500, borderRadius: 10, border: selectedChannel === ch ? BORDER : '1px solid transparent', marginBottom: 6 }}>
-                  <FontAwesomeIcon icon={faHashtag} /> #{ch}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                    <FontAwesomeIcon icon={faHashtag} />
+                    <span style={{ minWidth: 0, flex: 1 }}>
+                      {renderOverflowLabel(`#${ch}`, channelNameOverflowMode)}
+                    </span>
+                  </div>
                 </div>
               ))
           )}
@@ -5354,6 +5910,22 @@ export default function Main({ username }: { username: string }) {
           )
         )}
       </aside>
+      <div
+        role="separator"
+        aria-label="Resize channel list"
+        title="Drag to resize channel list. Double-click to reset."
+        onMouseDown={startSidebarResize("channel")}
+        onDoubleClick={() => { void resetSidebarWidth("channel"); }}
+        style={{
+          width: 6,
+          cursor: "col-resize",
+          background: activeSidebarResize === "channel" ? "rgba(96,165,250,0.35)" : "transparent",
+          borderRight: BORDER,
+          borderLeft: "1px solid rgba(148,163,184,0.16)",
+          transition: "background 120ms ease",
+          flex: "0 0 auto",
+        }}
+      />
       {/* Main chat area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", position: 'relative', paddingRight: membersSidebarOffset }}>
         <div style={{ padding: 16, borderBottom: "1px solid #333", color: "#fff", fontWeight: 600, fontSize: 18, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -6299,6 +6871,32 @@ export default function Main({ username }: { username: string }) {
             const inviteJoin = inviteCode ? inviteJoinStatus[inviteCode] : "idle";
             const inviteHaven = invitePreview?.haven || inviteCode || "";
             const inviteAlreadyJoined = inviteHaven ? !!havens[inviteHaven] : false;
+            const poll = msg.poll && typeof msg.poll.question === "string" ? msg.poll : null;
+            const pollType = poll?.type || "choice";
+            const pollOptions = poll?.options || [];
+            const pollSliderLayout: "single" | "wrap" = poll?.sliderArgs?.layout === "wrap" ? "wrap" : "single";
+            const pollSliderCompact = poll?.sliderArgs?.compact === true;
+            const pollClosed = !!(poll?.closesAt && Date.now() > poll.closesAt);
+            const pollShowDemographics = poll?.showDemographics !== false;
+            const pollViewerSelection = poll?.viewerSelection || [];
+            const pollUniqueVoters = poll ? (() => {
+              if (pollType === "text") {
+                const count = Number(poll.textResponseCount || (poll.textResponses || []).length);
+                return Array.from({ length: count }, (_, idx) => `res-${idx}`);
+              }
+              if (pollType === "star") {
+                const count = Number(poll.ratingCount || (poll.ratings || []).length);
+                return Array.from({ length: count }, (_, idx) => `rate-${idx}`);
+              }
+              return Array.from(new Set(pollOptions.flatMap((option) => (Array.isArray(option.votes) ? option.votes : []))));
+            })() : [];
+            const pollTotalSelections = poll ? (() => {
+              if (pollType === "text") return Number(poll.textResponseCount || (poll.textResponses || []).length);
+              if (pollType === "star") return Number(poll.ratingCount || (poll.ratings || []).length);
+              return pollOptions.reduce((total, option) => total + Number((option as any).voteCount ?? (Array.isArray(option.votes) ? option.votes.length : 0)), 0);
+            })() : 0;
+            const pollTextValue = pollTextDrafts[msg.id] || "";
+            const pollChoiceValue = pollChoiceDrafts[msg.id] || "";
             return (
             <Fragment key={messageKey}>
               {showDateDivider && (
@@ -6454,8 +7052,189 @@ export default function Main({ username }: { username: string }) {
                           />
                         </div>
                       )}
+                      {poll && (
+                        <div style={{ marginBottom: 8, border: BORDER, borderRadius: 10, background: "rgba(2,6,23,0.45)", padding: 10 }}>
+                          <div style={{ fontWeight: 600, marginBottom: 6 }}>{poll.question}</div>
+                          {(pollType === "choice" || pollType === "dropdown" || pollType === "slider" || pollType === "user_select") && (
+                            <>
+                              {pollType === "dropdown" ? (
+                                <div style={{ display: "flex", gap: 8 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <Dropdown
+                                      options={pollOptions.map((option) => ({
+                                        value: option.id,
+                                        label: option.text,
+                                        description: `Votes: ${Number((option as any).voteCount ?? (Array.isArray(option.votes) ? option.votes.length : 0))}`,
+                                      }))}
+                                      value={pollChoiceValue || null}
+                                      placeholder="Select option..."
+                                      disabled={!permState.canReact || pollClosed}
+                                      onChange={(option) => setPollChoiceDrafts((prev) => ({ ...prev, [msg.id]: option.value }))}
+                                    />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="btn-ghost"
+                                    disabled={!permState.canReact || pollClosed || !pollChoiceValue}
+                                    onClick={() => votePoll(msg.id, { optionId: pollChoiceValue })}
+                                    style={{ padding: "8px 10px" }}
+                                  >
+                                    Vote
+                                  </button>
+                                </div>
+                              ) : pollType === "slider" ? (
+                                <div style={{ display: "grid", gap: 8 }}>
+                                  <ChoiceSlider
+                                    ariaLabel="Poll slider options"
+                                    options={pollOptions.map((option) => ({
+                                      value: option.id,
+                                      label: option.text,
+                                      description: `Votes: ${Number((option as any).voteCount ?? (Array.isArray(option.votes) ? option.votes.length : 0))}`,
+                                    }))}
+                                    value={pollChoiceValue || pollViewerSelection[0] || pollOptions[0]?.id || ""}
+                                    onChange={(nextValue) => setPollChoiceDrafts((prev) => ({ ...prev, [msg.id]: nextValue }))}
+                                    disabled={!permState.canReact || pollClosed}
+                                    layout={pollSliderLayout}
+                                    compact={pollSliderCompact}
+                                  />
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                                      {pollChoiceValue ? `Selected: ${pollOptions.find((option) => option.id === pollChoiceValue)?.text || "Option"}` : "Choose an option above"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="btn-ghost"
+                                      disabled={!permState.canReact || pollClosed || !pollChoiceValue}
+                                      onClick={() => votePoll(msg.id, { optionId: pollChoiceValue })}
+                                      style={{ padding: "8px 10px" }}
+                                    >
+                                      Vote
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ display: "grid", gap: 6 }}>
+                                  {pollOptions.map((option) => {
+                                    const votes = Array.isArray(option.votes) ? option.votes : [];
+                                    const count = Number((option as any).voteCount ?? votes.length);
+                                    const voted = poll?.anonymous ? pollViewerSelection.includes(option.id) : votes.includes(username);
+                                    const percent = pollTotalSelections > 0 ? Math.round((count / pollTotalSelections) * 100) : 0;
+                                    return (
+                                      <button
+                                        key={option.id}
+                                        type="button"
+                                        onClick={() => votePoll(msg.id, { optionId: option.id })}
+                                        disabled={!permState.canReact || pollClosed}
+                                        style={{
+                                          display: "grid",
+                                          gap: 4,
+                                          textAlign: "left",
+                                          borderRadius: 8,
+                                          border: voted ? "1px solid rgba(96,165,250,0.75)" : BORDER,
+                                          background: voted ? "rgba(30,64,175,0.3)" : COLOR_PANEL,
+                                          color: COLOR_TEXT,
+                                          padding: "8px 10px",
+                                          cursor: !permState.canReact || pollClosed ? "not-allowed" : "pointer",
+                                          opacity: !permState.canReact ? 0.6 : 1,
+                                        }}
+                                      >
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                          <span>{option.text}</span>
+                                          <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{count}</span>
+                                        </div>
+                                        {pollShowDemographics && (
+                                          <div style={{ height: 5, borderRadius: 999, background: "rgba(148,163,184,0.2)", overflow: "hidden" }}>
+                                            <div style={{ width: `${percent}%`, height: "100%", background: voted ? "#60a5fa" : "rgba(96,165,250,0.55)" }} />
+                                          </div>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {pollType === "text" && (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <textarea
+                                value={pollTextValue}
+                                onChange={(e) => setPollTextDrafts((prev) => ({ ...prev, [msg.id]: e.target.value.slice(0, Math.max(20, Math.min(500, Number(poll.textMaxLength || 280)))) }))}
+                                placeholder="Write your response"
+                                className="input-dark"
+                                style={{ minHeight: 70, padding: 8 }}
+                                disabled={pollClosed}
+                              />
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                                  {(poll.textResponses || []).length} response{(poll.textResponses || []).length === 1 ? "" : "s"}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  disabled={pollClosed || !pollTextValue.trim()}
+                                  onClick={() => votePoll(msg.id, { text: pollTextValue })}
+                                  style={{ padding: "6px 10px" }}
+                                >
+                                  Submit
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {pollType === "star" && (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {Array.from({ length: Math.max(3, Math.min(10, Number(poll.starScale || 5))) }).map((_, idx) => {
+                                  const value = idx + 1;
+                                  const mine = (poll.ratings || []).find((entry) => entry.user === username)?.value || 0;
+                                  const active = value <= mine;
+                                  return (
+                                    <button
+                                      key={`star-${msg.id}-${value}`}
+                                      type="button"
+                                      onClick={() => votePoll(msg.id, { rating: value })}
+                                      disabled={pollClosed}
+                                      className="btn-ghost"
+                                      style={{ padding: "4px 8px", color: active ? "#fbbf24" : COLOR_TEXT_MUTED }}
+                                    >
+                                      {active ? "★" : "☆"}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                                {(() => {
+                                  const ratings = poll.ratings || [];
+                                  if (!ratings.length) return "No ratings yet.";
+                                  const avg = ratings.reduce((sum, entry) => sum + (Number(entry.value) || 0), 0) / ratings.length;
+                                  return `Average ${avg.toFixed(1)} / ${Math.max(3, Math.min(10, Number(poll.starScale || 5)))} (${ratings.length} rating${ratings.length === 1 ? "" : "s"})`;
+                                })()}
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ marginTop: 8, fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                            {pollType === "text"
+                              ? "Text input"
+                              : pollType === "star"
+                                ? "Star rating"
+                                : pollType === "dropdown"
+                                  ? "Dropdown"
+                                  : pollType === "slider"
+                                    ? "Choice slider"
+                                  : pollType === "user_select"
+                                    ? "User select"
+                                    : (poll.multiple ? "Multiple choice" : "Single choice")}
+                            {" - "}
+                            {pollUniqueVoters.length} voter{pollUniqueVoters.length === 1 ? "" : "s"}
+                            {pollTotalSelections !== pollUniqueVoters.length ? `, ${pollTotalSelections} total votes` : ""}
+                            {pollClosed ? " - Poll closed" : ""}
+                            {!poll.allowVoteChange ? " - Vote changes locked" : ""}
+                            {poll.anonymous ? " - Anonymous voting" : ""}
+                          </div>
+                        </div>
+                      )}
                       {(() => {
                         const base = chResolved[msg.id] ?? msg.text ?? "";
+                        if (!base.trim()) return null;
                         const withMentions = base.replace(new RegExp(`@${username}\\b`, 'g'), `**[@${username}](mention://self)**`);
                         return (
                           <ReactMarkdown
@@ -6653,8 +7432,8 @@ export default function Main({ username }: { username: string }) {
         <form
           onSubmit={e => { e.preventDefault(); sendMessage(); }}
           style={{
-            display: "flex",
-            alignItems: "center",
+            display: "grid",
+            gap: 8,
             borderTop: BORDER,
             padding: 12,
             background: "rgba(17,24,39,0.6)",
@@ -6744,131 +7523,413 @@ export default function Main({ username }: { username: string }) {
               ))}
             </div>
           )}
-          <input
-            ref={inputRef}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={(e) => {
-              if (!permState.canSend) return;
-              if (mentionOpen) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  if (mentionList.length > 0) {
-                    setMentionActiveIndex((idx) => Math.min(mentionList.length - 1, idx + 1));
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <label title={uploading ? "Uploading..." : "Attach file (max 25MB)"} style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={async (e) => {
+                const inputEl = e.currentTarget as HTMLInputElement;
+                const files = Array.from(inputEl.files || []);
+                if (files.length === 0) return;
+                setUploading(true);
+                try {
+                  for (const f of files) {
+                    if (f.size > 25 * 1024 * 1024) { alert(`File ${f.name} exceeds 25MB limit`); continue; }
+                    await startUpload(f);
                   }
-                  return;
+                } finally {
+                  setUploading(false);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
                 }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  if (mentionList.length > 0) {
-                    setMentionActiveIndex((idx) => Math.max(0, idx - 1));
+              }} />
+              <button type="button" className="btn-ghost" style={{ padding: '8px 10px' }} onClick={() => fileInputRef.current?.click()}>
+                <FontAwesomeIcon icon={faPaperclip} />
+              </button>
+            </label>
+            {permState.canSend && (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  setShowPollComposer(true);
+                  setPollDraftError("");
+                }}
+                title="Create poll"
+                style={{ padding: "8px 10px" }}
+              >
+                Poll
+              </button>
+            )}
+            {permState.canSend && (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  const el = inputRef.current;
+                  if (!el) {
+                    setMentionOpen(true);
+                    return;
                   }
-                  return;
-                }
-                if (e.key === "Enter") {
-                  const target = mentionList[mentionActiveIndex];
-                  if (target) {
+                  const value = el.value;
+                  const pos = el.selectionStart ?? value.length;
+                  const before = value.slice(0, pos);
+                  const after = value.slice(pos);
+                  const next = `${before}@${after}`;
+                  setInput(next);
+                  requestAnimationFrame(() => {
+                    try {
+                      el.focus();
+                      const cursor = before.length + 1;
+                      el.setSelectionRange(cursor, cursor);
+                      const ctx = getMentionContext(next, cursor);
+                      if (ctx) {
+                        setMentionOpen(true);
+                        setMentionQuery(ctx.query);
+                        setMentionAnchor({ start: ctx.start, end: ctx.end });
+                      }
+                    } catch {}
+                  });
+                }}
+                title="Mention someone (@)"
+                style={{ padding: "8px 10px" }}
+              >
+                <FontAwesomeIcon icon={faAt} />
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <TextBar
+              inputRef={inputRef as React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>}
+              value={input}
+              onValueChange={handleInputChange}
+              onKeyDown={(e) => {
+                if (!permState.canSend) return;
+                if (mentionOpen) {
+                  if (e.key === "ArrowDown") {
                     e.preventDefault();
-                    applyMentionSelection(target.username);
+                    if (mentionList.length > 0) {
+                      setMentionActiveIndex((idx) => Math.min(mentionList.length - 1, idx + 1));
+                    }
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (mentionList.length > 0) {
+                      setMentionActiveIndex((idx) => Math.max(0, idx - 1));
+                    }
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    const target = mentionList[mentionActiveIndex];
+                    if (target) {
+                      e.preventDefault();
+                      applyMentionSelection(target.username);
+                      return;
+                    }
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMentionOpen(false);
+                    setMentionQuery("");
+                    setMentionAnchor(null);
                     return;
                   }
                 }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setMentionOpen(false);
-                  setMentionQuery("");
-                  setMentionAnchor(null);
-                  return;
+                if (e.key === "Enter" && (e.ctrlKey || !e.shiftKey)) { e.preventDefault(); sendMessage(); }
+                if (e.key === 'ArrowUp' && !input) {
+                  const mine = [...messages].filter(m => m.user === username).pop();
+                  if (mine) { e.preventDefault(); handleEdit(mine.id, mine.text); }
                 }
-              }
-              if (e.key === "Enter" && (e.ctrlKey || !e.shiftKey)) { e.preventDefault(); sendMessage(); }
-              if (e.key === 'ArrowUp' && !input) {
-                const mine = [...messages].filter(m => m.user === username).pop();
-                if (mine) { e.preventDefault(); handleEdit(mine.id, mine.text); }
-              }
-            }}
-            placeholder={permState.canSend
-              ? (selectedDM ? `Message ${(() => { const dm = dms.find(d => d.id === selectedDM); return dm ? getDMTitle(dm) : 'DM'; })()}` : `Message #${selectedChannel}`)
-              : "You don\u2019t have permission to send messages in this channel"}
-            disabled={!permState.canSend}
-            style={{
-              flex: 1,
-              marginRight: 8,
-              background: "#18181b",
-              color: permState.canSend ? "#fff" : "#6b7280",
-              border: "1px solid #333",
-              borderRadius: 4,
-              padding: 8,
-              fontSize: 16,
-              opacity: permState.canSend ? 1 : 0.7
-            }}
-          />
-          <label title={uploading ? "Uploading..." : "Attach file (max 25MB)"} style={{ display: 'inline-flex', alignItems: 'center', marginRight: 8 }}>
-            <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={async (e) => {
-              const inputEl = e.currentTarget as HTMLInputElement;
-              const files = Array.from(inputEl.files || []);
-              if (files.length === 0) return;
-              setUploading(true);
-              try {
-                for (const f of files) {
-                  if (f.size > 25 * 1024 * 1024) { alert(`File ${f.name} exceeds 25MB limit`); continue; }
-                  await startUpload(f);
-                }
-              } finally {
-                setUploading(false);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-              }
-            }} />
-            <button type="button" className="btn-ghost" style={{ padding: '8px 10px' }} onClick={() => fileInputRef.current?.click()}>
-              <FontAwesomeIcon icon={faPaperclip} />
-            </button>
-          </label>
-          {permState.canSend && (
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => {
-                const el = inputRef.current;
-                if (!el) {
-                  setMentionOpen(true);
-                  return;
-                }
-                const value = el.value;
-                const pos = el.selectionStart ?? value.length;
-                const before = value.slice(0, pos);
-                const after = value.slice(pos);
-                const next = `${before}@${after}`;
-                setInput(next);
-                requestAnimationFrame(() => {
-                  try {
-                    el.focus();
-                    const cursor = before.length + 1;
-                    el.setSelectionRange(cursor, cursor);
-                    const ctx = getMentionContext(next, cursor);
-                    if (ctx) {
-                      setMentionOpen(true);
-                      setMentionQuery(ctx.query);
-                      setMentionAnchor({ start: ctx.start, end: ctx.end });
-                    }
-                  } catch {}
-                });
               }}
-              title="Mention someone (@)"
-              style={{ marginRight: 8, padding: "8px 10px" }}
+              placeholder={permState.canSend
+                ? (selectedDM ? `Message ${(() => { const dm = dms.find(d => d.id === selectedDM); return dm ? getDMTitle(dm) : 'DM'; })()}` : `Message #${selectedChannel}`)
+                : "You don\u2019t have permission to send messages in this channel"}
+              disabled={!permState.canSend}
+              clearable
+              style={{
+                flex: 1,
+                background: "#18181b",
+                color: permState.canSend ? "#fff" : "#6b7280",
+                border: "1px solid #333",
+                borderRadius: 4,
+                padding: 8,
+                fontSize: 16,
+                opacity: permState.canSend ? 1 : 0.7
+              }}
+            />
+            <button
+              type="submit"
+              className="btn-ghost"
+              title="Send"
+              disabled={!permState.canSend}
+              style={{ padding: '8px 10px', opacity: permState.canSend ? 1 : 0.4 }}
             >
-              <FontAwesomeIcon icon={faAt} />
+              <FontAwesomeIcon icon={faPaperPlane} />
             </button>
-          )}
-          <button
-            type="submit"
-            className="btn-ghost"
-            title="Send"
-            disabled={!permState.canSend}
-            style={{ padding: '8px 10px', opacity: permState.canSend ? 1 : 0.4 }}
-          >
-            <FontAwesomeIcon icon={faPaperPlane} />
-          </button>
+          </div>
         </form>
+        )}
+        {showPollComposer && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 120,
+              background: "rgba(0,0,0,0.65)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 16,
+            }}
+            onClick={() => {
+              setShowPollComposer(false);
+              setPollDraftError("");
+            }}
+          >
+            <div
+              className="glass"
+              onClick={(e) => e.stopPropagation()}
+              style={{ width: "min(560px, 96vw)", borderRadius: 14, padding: 14, color: COLOR_TEXT, display: "grid", gap: 10 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ fontWeight: 700 }}>Create Poll</div>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ padding: "4px 8px" }}
+                  onClick={() => {
+                    setShowPollComposer(false);
+                    setPollDraftError("");
+                  }}
+                >
+                  <FontAwesomeIcon icon={faXmark} />
+                </button>
+              </div>
+              <input
+                value={pollQuestionDraft}
+                onChange={(e) => setPollQuestionDraft(e.target.value)}
+                placeholder="Poll question"
+                className="input-dark"
+                style={{ padding: 8 }}
+              />
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ color: COLOR_TEXT_MUTED, fontSize: 12 }}>Poll type</span>
+                <Dropdown
+                  options={POLL_TYPE_OPTIONS}
+                  value={(pollTypeDraft || "choice") as string}
+                  onChange={(option) => {
+                    const next = option.value as PollData["type"];
+                    setPollTypeDraft(next);
+                    if (next === "dropdown" || next === "slider" || next === "text" || next === "star") {
+                      setPollMultipleDraft(false);
+                      setPollMaxSelectionsDraft(1);
+                    }
+                    if (next === "user_select") {
+                      setPollMultipleDraft(false);
+                      setPollUserMaxSelectionsDraft(1);
+                    }
+                  }}
+                  className=""
+                />
+              </label>
+              <input
+                value={pollNoteDraft}
+                onChange={(e) => setPollNoteDraft(e.target.value)}
+                placeholder="Optional note"
+                className="input-dark"
+                style={{ padding: 8 }}
+              />
+              {(pollTypeDraft === "choice" || pollTypeDraft === "dropdown" || pollTypeDraft === "slider") && (
+                <>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {pollOptionsDraft.map((option, idx) => (
+                      <div key={`poll-opt-${idx}`} style={{ display: "flex", gap: 8 }}>
+                        <input
+                          value={option}
+                          onChange={(e) => setPollOptionsDraft((prev) => prev.map((item, itemIdx) => (itemIdx === idx ? e.target.value : item)))}
+                          placeholder={`Option ${idx + 1}`}
+                          className="input-dark"
+                          style={{ padding: 8, flex: 1 }}
+                        />
+                        {pollOptionsDraft.length > 2 && (
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{ padding: "4px 10px" }}
+                            onClick={() => setPollOptionsDraft((prev) => prev.filter((_, itemIdx) => itemIdx !== idx))}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      style={{ padding: "6px 10px" }}
+                      onClick={() => setPollOptionsDraft((prev) => (prev.length >= 50 ? prev : [...prev, ""]))}
+                    >
+                      Add option
+                    </button>
+                    {pollTypeDraft === "choice" && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setPollMultipleDraft((prev) => !prev)}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}
+                        >
+                          <Switch checked={pollMultipleDraft} />
+                          <span>Allow multiple choices</span>
+                        </button>
+                        {pollMultipleDraft && (
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                            Max selections
+                            <NumberField
+                              min={1}
+                              max={10}
+                              value={pollMaxSelectionsDraft}
+                              onChange={(nextValue) => setPollMaxSelectionsDraft(Math.max(1, Math.min(10, Number(nextValue) || 1)))}
+                              className="input-dark"
+                              style={{ width: 70, padding: 6 }}
+                            />
+                          </label>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+              {pollTypeDraft === "slider" && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <label style={{ display: "grid", gap: 6 }}>
+                    <span style={{ color: COLOR_TEXT_MUTED, fontSize: 12 }}>Slider layout</span>
+                    <ChoiceSlider
+                      ariaLabel="Slider layout"
+                      value={pollSliderLayoutDraft}
+                      options={[
+                        { value: "single", label: "Single row", description: "Strict one-row segmented slider." },
+                        { value: "wrap", label: "Wrapped", description: "Allow options to flow into two+ rows." },
+                      ]}
+                      onChange={(nextValue) => setPollSliderLayoutDraft(nextValue === "wrap" ? "wrap" : "single")}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setPollSliderCompactDraft((prev) => !prev)}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderRadius: 8, background: "#020617", border: "1px solid #1f2937", cursor: "pointer" }}
+                  >
+                    <div style={{ textAlign: "left" }}>
+                      <div>Compact slider mode</div>
+                      <div style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>Tighter labels for long option sets.</div>
+                    </div>
+                    <span style={{ color: pollSliderCompactDraft ? "#60a5fa" : COLOR_TEXT_MUTED, fontSize: 12, fontWeight: 600 }}>
+                      {pollSliderCompactDraft ? "On" : "Off"}
+                    </span>
+                  </button>
+                </div>
+              )}
+              {pollTypeDraft === "text" && (
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                  Max text length
+                  <NumberField
+                    min={20}
+                    max={500}
+                    value={pollTextMaxLengthDraft}
+                    onChange={(nextValue) => setPollTextMaxLengthDraft(Math.max(20, Math.min(500, Number(nextValue) || 280)))}
+                    className="input-dark"
+                    style={{ width: 90, padding: 6 }}
+                  />
+                </label>
+              )}
+              {pollTypeDraft === "star" && (
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                  Star scale
+                  <NumberField
+                    min={3}
+                    max={10}
+                    value={pollStarScaleDraft}
+                    onChange={(nextValue) => setPollStarScaleDraft(Math.max(3, Math.min(10, Number(nextValue) || 5)))}
+                    className="input-dark"
+                    style={{ width: 80, padding: 6 }}
+                  />
+                </label>
+              )}
+              {pollTypeDraft === "user_select" && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                    Source: {selectedHaven === "__dms__" ? "Current DM users" : `Members in ${getHavenName(selectedHaven)}`}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => setPollUserOnlineOnlyDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                      <Switch checked={pollUserOnlineOnlyDraft} />
+                      <span>Online only</span>
+                    </button>
+                    <button type="button" onClick={() => setPollUserIncludeSelfDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                      <Switch checked={pollUserIncludeSelfDraft} />
+                      <span>Include yourself</span>
+                    </button>
+                    <button type="button" onClick={() => setPollMultipleDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                      <Switch checked={pollMultipleDraft} />
+                      <span>Allow multiple users</span>
+                    </button>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: COLOR_TEXT_MUTED }}>
+                      Max selections
+                      <NumberField
+                        min={1}
+                        max={10}
+                        value={pollUserMaxSelectionsDraft}
+                        onChange={(nextValue) => setPollUserMaxSelectionsDraft(Math.max(1, Math.min(10, Number(nextValue) || 1)))}
+                        className="input-dark"
+                        style={{ width: 70, padding: 6 }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => setPollAllowChangeDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                  <Switch checked={pollAllowChangeDraft} />
+                  <span>Allow vote changes</span>
+                </button>
+                <button type="button" onClick={() => setPollShowDemographicsDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                  <Switch checked={pollShowDemographicsDraft} />
+                  <span>Show demographics (percent bars)</span>
+                </button>
+                <button type="button" onClick={() => setPollAnonymousDraft((prev) => !prev)} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: COLOR_TEXT_MUTED, padding: "6px 8px", borderRadius: 8, border: "1px solid #1f2937", background: "#020617" }}>
+                  <Switch checked={pollAnonymousDraft} />
+                  <span>Anonymous voting</span>
+                </button>
+              </div>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ color: COLOR_TEXT_MUTED, fontSize: 12 }}>Close at (optional)</span>
+                <DateTimeField
+                  mode="datetime-local"
+                  value={pollClosesAtDraft}
+                  onChange={setPollClosesAtDraft}
+                  className="input-dark"
+                  clearable
+                  inputStyle={{ padding: 8, maxWidth: 280 }}
+                />
+              </label>
+              {pollDraftError && <div style={{ color: "#f87171", fontSize: 13 }}>{pollDraftError}</div>}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ padding: "8px 12px" }}
+                  onClick={() => {
+                    setShowPollComposer(false);
+                    setPollDraftError("");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="btn-primary" style={{ padding: "8px 12px" }} onClick={createPollMessage}>
+                  Post poll
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
       {/* Incoming call popup when not in DM */}
@@ -7335,6 +8396,7 @@ export default function Main({ username }: { username: string }) {
                       return (
                         <label
                           key={`gdm-${user}`}
+                          onClick={() => { if (!disabled) toggleGroupDMUser(user); }}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -7347,13 +8409,7 @@ export default function Main({ username }: { username: string }) {
                             opacity: disabled ? 0.45 : 1,
                           }}
                         >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() => toggleGroupDMUser(user)}
-                            disabled={disabled}
-                            style={{ accentColor: accent }}
-                          />
+                          <Switch checked={selected} />
                           <div style={{ position: 'relative' }}>
                             <img src={avatar} alt={user} {...avatarLoadProps} style={{ width: 32, height: 32, borderRadius: '50%', border: BORDER, objectFit: 'cover' }} />
                             <span style={{ position: 'absolute', bottom: -1, right: -1, width: 10, height: 10, borderRadius: '50%', border: '2px solid #0f172a', background: statusColor(status) }} />
@@ -7505,15 +8561,15 @@ export default function Main({ username }: { username: string }) {
                           </div>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <label style={{ fontSize: 11, color: '#9ca3af', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            <input
-                              type="checkbox"
-                              disabled={!allowModToggle}
-                              checked={allowModToggle ? checked : isMemberModerator}
-                              onChange={() => allowModToggle && toggleDraftModerator(member)}
-                            />
-                            Mod
-                          </label>
+                          <button
+                            type="button"
+                            disabled={!allowModToggle}
+                            onClick={() => allowModToggle && toggleDraftModerator(member)}
+                            style={{ fontSize: 11, color: '#9ca3af', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: allowModToggle ? 1 : 0.6, background: 'transparent', border: 'none', padding: 0 }}
+                          >
+                            <Switch checked={allowModToggle ? checked : isMemberModerator} />
+                            <span>Mod</span>
+                          </button>
                           <button
                             className="btn-ghost"
                             disabled={!removable || groupSettingsSaving}
@@ -7558,6 +8614,7 @@ export default function Main({ username }: { username: string }) {
                           return (
                             <label
                               key={`add-${friend}`}
+                              onClick={() => { if (!disabled) toggleGroupAddUser(friend); }}
                               style={{
                                 display: 'flex',
                                 alignItems: 'center',
@@ -7576,12 +8633,7 @@ export default function Main({ username }: { username: string }) {
                                   <span style={{ fontSize: 11, color: COLOR_TEXT_MUTED }}>@{friend}</span>
                                 </div>
                               </div>
-                              <input
-                                type="checkbox"
-                                checked={groupAddSelection.includes(friend)}
-                                onChange={() => toggleGroupAddUser(friend)}
-                                disabled={disabled}
-                              />
+                              <Switch checked={groupAddSelection.includes(friend)} />
                             </label>
                           );
                         })
@@ -7641,7 +8693,7 @@ export default function Main({ username }: { username: string }) {
           username={username}
           onStatusChangeAction={(status: string) => {
             try { socketRef.current?.emit('presence', { user: username, status }); } catch {}
-            setPresenceMap((prev) => ({ ...prev, [username]: status }));
+            setPresenceMap((prev) => setRecordEntryWithLimit(prev, username, status, MAX_PRESENCE_CACHE));
           }}
           onSavedAction={(s: any) => setUserSettings(normalizeUserSettings(s))}
         />

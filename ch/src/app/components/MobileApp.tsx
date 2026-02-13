@@ -25,6 +25,9 @@ import {
 import NavController from "./NavController";
 import EmojiPicker from "./EmojiPicker";
 import InviteCard, { type InvitePreview } from "./InviteCard";
+import Dropdown from "./Dropdown";
+import ChoiceSlider from "./ChoiceSlider";
+import TextBar from "./TextBar";
 
 const COLOR_PANEL = "var(--ch-panel)";
 const COLOR_PANEL_ALT = "var(--ch-panel-alt)";
@@ -129,6 +132,7 @@ type Props = {
   handleEditSubmit?: (id: string) => void;
   cancelEdit?: () => void;
   toggleReaction?: (messageId: string, emoji: string) => void;
+  votePoll?: (messageId: string, payload: { optionId?: string; optionIds?: string[]; text?: string; rating?: number }) => void;
   callsEnabled?: boolean;
   callState?: "idle" | "calling" | "in-call";
   startCall?: () => void;
@@ -198,6 +202,7 @@ export default function MobileApp(props: Props) {
     handleEditSubmit,
     cancelEdit,
     toggleReaction,
+    votePoll,
     callsEnabled,
     callState = "idle",
     startCall,
@@ -253,6 +258,8 @@ export default function MobileApp(props: Props) {
   const swipeStartRef = useRef<{ id: string; startX: number; startY: number; offset: number } | null>(null);
   const [actionSheetMessage, setActionSheetMessage] = useState<any | null>(null);
   const [emojiSheetOpen, setEmojiSheetOpen] = useState(false);
+  const [pollChoiceDrafts, setPollChoiceDrafts] = useState<Record<string, string>>({});
+  const [pollTextDrafts, setPollTextDrafts] = useState<Record<string, string>>({});
   const [keyboardOffset, setKeyboardOffset] = useState(0);
   const [composerHeight, setComposerHeight] = useState(0);
   const longPressTimerRef = useRef<number | null>(null);
@@ -1517,6 +1524,29 @@ export default function MobileApp(props: Props) {
                 const inviteJoin = inviteCode ? inviteJoinStatus[inviteCode] : "idle";
                 const inviteHaven = invitePreview?.haven || inviteCode || "";
                 const inviteAlreadyJoined = inviteHaven ? !!havens[inviteHaven] : false;
+                const poll = (m as any).poll && typeof (m as any).poll?.question === "string" ? ((m as any).poll as any) : null;
+                const pollType = poll?.type || "choice";
+                const pollOptions = Array.isArray(poll?.options) ? poll.options : [];
+                const pollSliderLayout: "single" | "wrap" = poll?.sliderArgs?.layout === "wrap" ? "wrap" : "single";
+                const pollSliderCompact = poll?.sliderArgs?.compact === true;
+                const pollClosed = !!(poll?.closesAt && Date.now() > poll.closesAt);
+                const pollShowDemographics = poll?.showDemographics !== false;
+                const pollViewerSelection = Array.isArray(poll?.viewerSelection) ? poll.viewerSelection : [];
+                const pollTotalSelections = poll ? (() => {
+                  if (pollType === "text") return Number(poll?.textResponseCount || (Array.isArray(poll?.textResponses) ? poll.textResponses.length : 0));
+                  if (pollType === "star") return Number(poll?.ratingCount || (Array.isArray(poll?.ratings) ? poll.ratings.length : 0));
+                  return pollOptions.reduce((sum: number, option: any) => {
+                    const votes = Number(option?.voteCount ?? (Array.isArray(option?.votes) ? option.votes.length : 0));
+                    return sum + votes;
+                  }, 0);
+                })() : 0;
+                const pollUniqueVoters = poll ? (() => {
+                  if (pollType === "text") return Array.from({ length: Number(poll?.textResponseCount || 0) }, (_, idx) => `res-${idx}`);
+                  if (pollType === "star") return Array.from({ length: Number(poll?.ratingCount || 0) }, (_, idx) => `rate-${idx}`);
+                  return Array.from(new Set(pollOptions.flatMap((option: any) => (Array.isArray(option?.votes) ? option.votes : []))));
+                })() : [];
+                const pollChoiceValue = pollChoiceDrafts[m.id] || "";
+                const pollTextValue = pollTextDrafts[m.id] || "";
                 const swipeId = m.id || messageKey;
                 const swipeOffset = swipeState?.id === swipeId ? (swipeState?.offset ?? 0) : 0;
                 const canSwipeActions = ownMessage && !!handleEdit && !!handleDelete;
@@ -1730,6 +1760,167 @@ export default function MobileApp(props: Props) {
                                   isBusy={inviteJoin === "joining"}
                                   onJoin={() => inviteCode && joinInvite && joinInvite(inviteCode)}
                                 />
+                              </div>
+                            )}
+                            {poll && (
+                              <div style={{ marginBottom: 8, border: BORDER, borderRadius: 10, background: COLOR_CARD_ALT, padding: 10 }}>
+                                <div style={{ fontWeight: 600, marginBottom: 6 }}>{poll.question}</div>
+                                {(pollType === "choice" || pollType === "dropdown" || pollType === "slider" || pollType === "user_select") && (
+                                  <>
+                                    {pollType === "dropdown" ? (
+                                      <div style={{ display: "flex", gap: 8 }}>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <Dropdown
+                                            options={pollOptions.map((option: any) => ({
+                                              value: option.id,
+                                              label: option.text,
+                                              description: `Votes: ${Number(option?.voteCount ?? (Array.isArray(option?.votes) ? option.votes.length : 0))}`,
+                                            }))}
+                                            value={pollChoiceValue || null}
+                                            placeholder="Select option..."
+                                            disabled={!votePoll || pollClosed}
+                                            onChange={(option) => setPollChoiceDrafts((prev) => ({ ...prev, [m.id]: option.value }))}
+                                          />
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="btn-ghost"
+                                          disabled={!votePoll || pollClosed || !pollChoiceValue}
+                                          onClick={() => votePoll && m.id && votePoll(m.id, { optionId: pollChoiceValue })}
+                                          style={{ padding: "8px 10px" }}
+                                        >
+                                          Vote
+                                        </button>
+                                      </div>
+                                    ) : pollType === "slider" ? (
+                                      <div style={{ display: "grid", gap: 8 }}>
+                                        <ChoiceSlider
+                                          ariaLabel="Poll slider options"
+                                          options={pollOptions.map((option: any) => ({
+                                            value: option.id,
+                                            label: option.text,
+                                            description: `Votes: ${Number(option?.voteCount ?? (Array.isArray(option?.votes) ? option.votes.length : 0))}`,
+                                          }))}
+                                          value={pollChoiceValue || pollViewerSelection[0] || pollOptions[0]?.id || ""}
+                                          disabled={!votePoll || pollClosed}
+                                          onChange={(nextValue) => setPollChoiceDrafts((prev) => ({ ...prev, [m.id]: nextValue }))}
+                                          layout={pollSliderLayout}
+                                          compact={pollSliderCompact}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="btn-ghost"
+                                          disabled={!votePoll || pollClosed || !pollChoiceValue}
+                                          onClick={() => votePoll && m.id && votePoll(m.id, { optionId: pollChoiceValue })}
+                                          style={{ padding: "8px 10px" }}
+                                        >
+                                          Vote
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div style={{ display: "grid", gap: 6 }}>
+                                        {pollOptions.map((option: any) => {
+                                          const votes = Array.isArray(option?.votes) ? option.votes : [];
+                                          const count = Number(option?.voteCount ?? votes.length);
+                                          const voted = poll?.anonymous ? pollViewerSelection.includes(option.id) : votes.includes(username);
+                                          const percent = pollTotalSelections > 0 ? Math.round((count / pollTotalSelections) * 100) : 0;
+                                          return (
+                                            <button
+                                              key={option.id || option.text}
+                                              type="button"
+                                              className="btn-ghost"
+                                              onClick={() => {
+                                                if (!votePoll || !m.id || !option?.id || pollClosed) return;
+                                                votePoll(m.id, { optionId: option.id });
+                                              }}
+                                              disabled={!votePoll || pollClosed}
+                                              style={{
+                                                border: voted ? "1px solid rgba(96,165,250,0.75)" : `1px solid ${COLOR_PANEL_ALT}`,
+                                                borderRadius: 8,
+                                                background: voted ? "rgba(30,64,175,0.3)" : COLOR_PANEL,
+                                                color: COLOR_TEXT,
+                                                padding: "8px 10px",
+                                                textAlign: "left",
+                                                opacity: !votePoll ? 0.6 : 1,
+                                              }}
+                                            >
+                                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                                <span>{option.text}</span>
+                                                <span style={{ fontSize: 12, color: COLOR_TEXT_MUTED }}>{count}</span>
+                                              </div>
+                                              {pollShowDemographics && (
+                                                <div style={{ marginTop: 4, height: 5, borderRadius: 999, background: "rgba(148,163,184,0.2)", overflow: "hidden" }}>
+                                                  <div style={{ width: `${percent}%`, height: "100%", background: voted ? "#60a5fa" : "rgba(96,165,250,0.55)" }} />
+                                                </div>
+                                              )}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                                {pollType === "text" && (
+                                  <div style={{ display: "grid", gap: 8 }}>
+                                    <textarea
+                                      value={pollTextValue}
+                                      onChange={(e) => setPollTextDrafts((prev) => ({ ...prev, [m.id]: e.target.value.slice(0, Math.max(20, Math.min(500, Number(poll.textMaxLength || 280)))) }))}
+                                      className="input-dark"
+                                      style={{ minHeight: 72, padding: 8 }}
+                                      placeholder="Write your response"
+                                      disabled={pollClosed}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="btn-ghost"
+                                      disabled={!votePoll || pollClosed || !pollTextValue.trim()}
+                                      onClick={() => votePoll && m.id && votePoll(m.id, { text: pollTextValue })}
+                                      style={{ padding: "8px 10px" }}
+                                    >
+                                      Submit
+                                    </button>
+                                  </div>
+                                )}
+                                {pollType === "star" && (
+                                  <div style={{ display: "grid", gap: 8 }}>
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                      {Array.from({ length: Math.max(3, Math.min(10, Number(poll.starScale || 5))) }).map((_, idx) => {
+                                        const value = idx + 1;
+                                        const mine = Number(poll.viewerRating || (poll.ratings || []).find((entry: any) => entry?.user === username)?.value || 0);
+                                        const active = value <= mine;
+                                        return (
+                                          <button
+                                            key={`star-mobile-${m.id}-${value}`}
+                                            type="button"
+                                            className="btn-ghost"
+                                            disabled={!votePoll || pollClosed}
+                                            onClick={() => votePoll && m.id && votePoll(m.id, { rating: value })}
+                                            style={{ padding: "4px 8px", color: active ? "#fbbf24" : COLOR_TEXT_MUTED }}
+                                          >
+                                            {active ? "*" : "o"}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                                <div style={{ marginTop: 8, fontSize: 11, color: COLOR_TEXT_MUTED }}>
+                                  {pollType === "text"
+                                    ? "Text input"
+                                    : pollType === "star"
+                                      ? "Star rating"
+                                    : pollType === "dropdown"
+                                      ? "Dropdown"
+                                      : pollType === "slider"
+                                        ? "Choice slider"
+                                        : pollType === "user_select"
+                                          ? "User select"
+                                          : (poll.multiple ? "Multiple choice" : "Single choice")} - {pollUniqueVoters.length} voter{pollUniqueVoters.length === 1 ? "" : "s"}
+                                  {pollTotalSelections !== pollUniqueVoters.length ? `, ${pollTotalSelections} total votes` : ""}
+                                  {pollClosed ? " - Poll closed" : ""}
+                                  {poll.allowVoteChange === false ? " - Vote changes locked" : ""}
+                                  {poll.anonymous ? " - Anonymous voting" : ""}
+                                </div>
                               </div>
                             )}
                             {m.text}
@@ -2178,101 +2369,107 @@ export default function MobileApp(props: Props) {
               </div>
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => setEmojiSheetOpen(true)}
-              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
-              aria-label="Emoji"
-            >
-              <FontAwesomeIcon icon={faFaceSmile} />
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => {
-                const el = inputRef.current;
-                if (!el) return;
-                const cursor = el.selectionStart ?? input.length;
-                const next = `${input.slice(0, cursor)}@${input.slice(cursor)}`;
-                setInput(next);
-                setMentionOpen(true);
-                setMentionQuery("");
-                setMentionAnchor({ start: cursor, end: cursor + 1 });
-                setMentionActiveIndex(0);
-                requestAnimationFrame(() => {
-                  try { el.focus(); el.setSelectionRange(cursor + 1, cursor + 1); } catch {}
-                });
-              }}
-              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
-              aria-label="Mention"
-            >
-              <FontAwesomeIcon icon={faAt} />
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => uploadInputRef.current?.click()}
-              disabled={!onUploadFiles}
-              style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12, opacity: onUploadFiles ? 1 : 0.5 }}
-              aria-label="Attach file"
-            >
-              <FontAwesomeIcon icon={faPaperclip} />
-            </button>
-            <textarea
-              ref={inputRef}
-              value={input}
-              rows={1}
-              onChange={(e) => {
-                const nextValue = e.target.value;
-                setInput(nextValue);
-                resizeComposerInput();
-                const cursor = e.target.selectionStart ?? nextValue.length;
-                const ctx = getMentionContext(nextValue, cursor);
-                if (ctx) {
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setEmojiSheetOpen(true)}
+                style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
+                aria-label="Emoji"
+              >
+                <FontAwesomeIcon icon={faFaceSmile} />
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  const el = inputRef.current;
+                  if (!el) return;
+                  const cursor = el.selectionStart ?? input.length;
+                  const next = `${input.slice(0, cursor)}@${input.slice(cursor)}`;
+                  setInput(next);
                   setMentionOpen(true);
-                  setMentionQuery(ctx.query);
-                  setMentionAnchor({ start: ctx.start, end: cursor });
-                  setMentionActiveIndex(0);
-                } else {
-                  setMentionOpen(false);
                   setMentionQuery("");
-                  setMentionAnchor(null);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (mentionOpen && (e.key === "Enter" || e.key === "Tab")) {
-                  const target = mentionList[mentionActiveIndex];
-                  if (target) {
-                    e.preventDefault();
-                    applyMentionSelection(target.username);
-                    return;
+                  setMentionAnchor({ start: cursor, end: cursor + 1 });
+                  setMentionActiveIndex(0);
+                  requestAnimationFrame(() => {
+                    try { el.focus(); el.setSelectionRange(cursor + 1, cursor + 1); } catch {}
+                  });
+                }}
+                style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12 }}
+                aria-label="Mention"
+              >
+                <FontAwesomeIcon icon={faAt} />
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={!onUploadFiles}
+                style={{ padding: 10, minWidth: 44, minHeight: 44, borderRadius: 12, opacity: onUploadFiles ? 1 : 0.5 }}
+                aria-label="Attach file"
+              >
+                <FontAwesomeIcon icon={faPaperclip} />
+              </button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+              <TextBar
+                inputRef={inputRef as React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>}
+                value={input}
+                multiline
+                rows={1}
+                autoResize
+                minHeight={44}
+                maxHeight={160}
+                clearable
+                onValueChange={(nextValue, cursor) => {
+                  setInput(nextValue);
+                  const ctx = getMentionContext(nextValue, cursor);
+                  if (ctx) {
+                    setMentionOpen(true);
+                    setMentionQuery(ctx.query);
+                    setMentionAnchor({ start: ctx.start, end: cursor });
+                    setMentionActiveIndex(0);
+                  } else {
+                    setMentionOpen(false);
+                    setMentionQuery("");
+                    setMentionAnchor(null);
                   }
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              placeholder="Message #channel or DM"
-              style={{
-                flex: 1,
-                padding: '10px 12px',
-                borderRadius: 14,
-                background: COLOR_CARD_ALT,
-                border: `1px solid ${COLOR_PANEL_ALT}`,
-                color: COLOR_TEXT,
-                fontSize: 15,
-                lineHeight: 1.5,
-                minHeight: 44,
-                maxHeight: 160,
-                resize: 'none',
-              }}
-            />
-            <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '10px 14px', borderRadius: 12, minHeight: 44 }}>
-              Send
-            </button>
+                }}
+                onKeyDown={(e) => {
+                  if (mentionOpen && (e.key === "Enter" || e.key === "Tab")) {
+                    const target = mentionList[mentionActiveIndex];
+                    if (target) {
+                      e.preventDefault();
+                      applyMentionSelection(target.username);
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
+                placeholder="Message #channel or DM"
+                style={{
+                  flex: 1,
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  background: COLOR_CARD_ALT,
+                  border: `1px solid ${COLOR_PANEL_ALT}`,
+                  color: COLOR_TEXT,
+                  fontSize: 15,
+                  lineHeight: 1.5,
+                  minHeight: 44,
+                  maxHeight: 160,
+                  resize: "none",
+                }}
+              />
+              <button className="btn-primary" onClick={() => sendMessage()} style={{ padding: '10px 14px', borderRadius: 12, minHeight: 44 }}>
+                Send
+              </button>
+            </div>
             <input
               ref={uploadInputRef}
               type="file"

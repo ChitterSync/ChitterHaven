@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { APP_VERSION, UPDATE_FEED, filterHighlightsForAudience } from "../updateNews";
 
@@ -19,6 +19,9 @@ const getVersionAliases = (version: string) => {
 };
 
 export default function ReleaseNotesPage() {
+  const [flashTargetId, setFlashTargetId] = useState<string | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [popupMode, setPopupMode] = useState(false);
   const isMobile = typeof window !== "undefined" ? window.innerWidth < 768 : false;
   const audience = {
     isMobile,
@@ -27,6 +30,37 @@ export default function ReleaseNotesPage() {
   };
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPopupMode(new URLSearchParams(window.location.search).get("popup") === "1");
+  }, []);
+
+  useEffect(() => {
+    if (!popupMode || typeof window === "undefined") return;
+    const baseState = { chReleaseNotesPopup: "base" };
+    const guardState = { chReleaseNotesPopup: "guard" };
+    window.history.replaceState(baseState, "", window.location.href);
+    window.history.pushState(guardState, "", window.location.href);
+    const onPopState = () => {
+      window.close();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [popupMode]);
+
+  useEffect(() => {
+    const triggerFlash = (targetId: string) => {
+      if (flashTimerRef.current) {
+        clearTimeout(flashTimerRef.current);
+      }
+      setFlashTargetId(targetId);
+      flashTimerRef.current = setTimeout(() => {
+        setFlashTargetId(null);
+        flashTimerRef.current = null;
+      }, 2200);
+    };
+
     const jumpToHash = () => {
       if (typeof window === "undefined") return;
       const raw = window.location.hash;
@@ -39,6 +73,7 @@ export default function ReleaseNotesPage() {
         document.getElementById(`release-${hash}`);
       if (directTarget) {
         directTarget.scrollIntoView({ behavior: "smooth", block: "start" });
+        triggerFlash(directTarget.id);
         return;
       }
 
@@ -50,12 +85,18 @@ export default function ReleaseNotesPage() {
       });
       if (matched) {
         matched.scrollIntoView({ behavior: "smooth", block: "start" });
+        triggerFlash(matched.id);
       }
     };
 
     jumpToHash();
     window.addEventListener("hashchange", jumpToHash);
-    return () => window.removeEventListener("hashchange", jumpToHash);
+    return () => {
+      window.removeEventListener("hashchange", jumpToHash);
+      if (flashTimerRef.current) {
+        clearTimeout(flashTimerRef.current);
+      }
+    };
   }, []);
 
   return (
@@ -68,7 +109,12 @@ export default function ReleaseNotesPage() {
             <div style={{ fontSize: 13, color: "#94a3b8" }}>Current version: {APP_VERSION}</div>
           </div>
           <Link
-            href="/"
+            href={popupMode ? "#" : "/"}
+            onClick={(event) => {
+              if (!popupMode) return;
+              event.preventDefault();
+              window.close();
+            }}
             style={{
               padding: "8px 12px",
               borderRadius: 999,
@@ -78,7 +124,7 @@ export default function ReleaseNotesPage() {
               fontSize: 13,
             }}
           >
-            Back to chat
+            {popupMode ? "Close" : "Back to chat"}
           </Link>
         </header>
 
@@ -87,17 +133,24 @@ export default function ReleaseNotesPage() {
             const visibleHighlights = filterHighlightsForAudience(entry, audience);
             const aliases = getVersionAliases(entry.version);
             const primaryAlias = aliases[0];
+            const sectionId = `release-${primaryAlias}`;
+            const isFlashing = flashTargetId === sectionId;
             return (
               <section
                 key={entry.version}
-                id={`release-${primaryAlias}`}
+                id={sectionId}
                 data-release-aliases={aliases.join(",")}
                 style={{
                   borderRadius: 16,
-                  border: "1px solid rgba(148,163,184,0.15)",
+                  border: isFlashing
+                    ? "1px solid rgba(125,211,252,0.9)"
+                    : "1px solid rgba(148,163,184,0.15)",
                   padding: "18px 18px 16px",
                   background: "rgba(15,23,42,0.8)",
-                  boxShadow: "0 12px 32px rgba(0,0,0,0.25)",
+                  boxShadow: isFlashing
+                    ? "0 0 0 2px rgba(56,189,248,0.25), 0 12px 32px rgba(0,0,0,0.25)"
+                    : "0 12px 32px rgba(0,0,0,0.25)",
+                  animation: isFlashing ? "release-note-flash 2.2s ease-out 1" : undefined,
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
@@ -137,6 +190,30 @@ export default function ReleaseNotesPage() {
           })}
         </div>
       </div>
+      <style jsx global>{`
+        @keyframes release-note-flash {
+          0% {
+            transform: translateY(0);
+            filter: brightness(1);
+          }
+          18% {
+            transform: translateY(-2px);
+            filter: brightness(1.14);
+          }
+          38% {
+            transform: translateY(0);
+            filter: brightness(1);
+          }
+          56% {
+            transform: translateY(-1px);
+            filter: brightness(1.08);
+          }
+          100% {
+            transform: translateY(0);
+            filter: brightness(1);
+          }
+        }
+      `}</style>
     </div>
   );
 }

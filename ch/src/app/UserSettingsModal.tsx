@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
+import ChoiceSlider, { type ChoiceSliderOption } from "./components/ChoiceSlider";
+import Switch from "./components/Switch";
+import RangeField from "./components/RangeField";
+import NumberField from "./components/NumberField";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faBell,
@@ -11,12 +15,14 @@ import {
   faCirclePlay,
   faCode,
   faGlobe,
+  faHashtag,
   faInfoCircle,
   faKey,
   faLock,
   faLink,
   faMicrophone,
   faPalette,
+  faServer,
   faShield,
   faUser,
 } from "@fortawesome/free-solid-svg-icons";
@@ -24,6 +30,11 @@ import {
 type ThemeStop = { color: string; position: number };
 
 type AppearanceSettings = {
+  userNameOverflow?: "shorten" | "scroll" | "both";
+  channelNameOverflow?: "shorten" | "scroll" | "both";
+  serverNameOverflow?: "shorten" | "scroll" | "both";
+  nameOverflowScrollSpeed?: number;
+  nameOverflowFade?: boolean;
   messageGrouping?: "none" | "compact" | "aggressive";
   messageStyle?: "bubbles" | "classic" | "sleek" | "minimal_log" | "focus" | "thread_forward" | "retro";
   timeFormat?: "12h" | "24h";
@@ -214,6 +225,13 @@ const resolveDefaultTimeFormat = (): AppearanceSettings["timeFormat"] => {
   return "12h";
 };
 
+const normalizeNameOverflowMode = (
+  value?: AppearanceSettings["userNameOverflow"],
+): "shorten" | "scroll" | "both" => {
+  if (value === "scroll" || value === "both") return value;
+  return "shorten";
+};
+
 const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistingSettings = false): AppearanceSettings => {
   const base = raw && typeof raw === "object" ? { ...raw } : {};
   const messageStyle =
@@ -248,7 +266,14 @@ const normalizeAppearanceSettings = (raw?: AppearanceSettings | null, hasExistin
   const maxWidth = typeof base.maxContentWidth === "number" ? base.maxContentWidth : null;
   const maxContentWidth = maxWidth && APPEARANCE_WIDTHS.includes(maxWidth) ? maxWidth : null;
   const fillScreen = typeof base.fillScreen === "boolean" ? base.fillScreen : true;
+  const rawScrollSpeed = Number(base.nameOverflowScrollSpeed);
+  const nameOverflowScrollSpeed = Number.isFinite(rawScrollSpeed) ? clamp(rawScrollSpeed, 20, 180) : 60;
   return {
+    userNameOverflow: normalizeNameOverflowMode(base.userNameOverflow),
+    channelNameOverflow: normalizeNameOverflowMode(base.channelNameOverflow),
+    serverNameOverflow: normalizeNameOverflowMode(base.serverNameOverflow),
+    nameOverflowScrollSpeed,
+    nameOverflowFade: base.nameOverflowFade !== false,
     messageGrouping,
     messageStyle,
     timeFormat,
@@ -919,6 +944,97 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       onClick: () => previewRingtone(opt),
     },
   }));
+  const themeOptions: DropdownOption[] = [
+    { value: "system", label: "System", description: "Follow your device/browser setting.", icon: <FontAwesomeIcon icon={faGlobe} /> },
+    { value: "dark", label: "Dark", description: "Default high-contrast dark theme.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "light", label: "Light", description: "Bright neutral surfaces.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "midnight", label: "Midnight", description: "Deeper navy palette.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "sunset", label: "Sunset", description: "Warm red-orange accents.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "forest", label: "Forest", description: "Muted green palette.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "ocean", label: "Ocean", description: "Blue cyan palette.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "neon", label: "Neon", description: "High-energy accent colors.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "custom", label: "Custom", description: "Build your own gradient palette.", icon: <FontAwesomeIcon icon={faCode} /> },
+  ];
+  const messageFontSizeOptions: DropdownOption[] = [
+    { value: "small", label: "Small", description: "13px", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "medium", label: "Medium", description: "15px (recommended)", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "large", label: "Large", description: "17px", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "extraLarge", label: "Extra Large", description: "19px", icon: <FontAwesomeIcon icon={faUser} /> },
+  ];
+  const overflowModeOptions: DropdownOption[] = [
+    { value: "shorten", label: "Obfuscate (shorten)", description: "Clamp long names with ellipsis.", icon: <FontAwesomeIcon icon={faLock} /> },
+    { value: "scroll", label: "Scroll", description: "Auto-bounce long labels.", icon: <FontAwesomeIcon icon={faLink} /> },
+    { value: "both", label: "Both", description: "Shorten by default, scroll on hover.", icon: <FontAwesomeIcon icon={faCirclePlay} /> },
+  ];
+  const appearanceProfileOptions: DropdownOption[] = appearanceProfiles.length
+    ? appearanceProfiles.map((profile) => ({
+      value: profile.id,
+      label: profile.name,
+      icon: <FontAwesomeIcon icon={faPalette} />,
+    }))
+    : [{ value: "", label: "Default", description: "No saved profiles yet.", icon: <FontAwesomeIcon icon={faPalette} /> }];
+  const messageGroupingOptions: DropdownOption[] = [
+    { value: "none", label: "None", description: "Show header every message.", icon: <FontAwesomeIcon icon={faHashtag} /> },
+    { value: "compact", label: "Compact", description: "5 minute grouping window.", icon: <FontAwesomeIcon icon={faHashtag} /> },
+    { value: "aggressive", label: "Aggressive", description: "30 minute grouping window.", icon: <FontAwesomeIcon icon={faHashtag} /> },
+  ];
+  const timestampGranularityOptions: DropdownOption[] = [
+    { value: "perMessage", label: "Per message", description: "Timestamp every message.", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+    { value: "perGroup", label: "Only on group headers", description: "Timestamp grouped headers only.", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+  ];
+  const timeFormatOptions: DropdownOption[] = [
+    { value: "12h", label: "12-hour", description: "Example: 5:27 AM", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+    { value: "24h", label: "24-hour", description: "Example: 17:27", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+  ];
+  const timeDisplayOptions: DropdownOption[] = [
+    { value: "absolute", label: "Absolute", description: "5:27 AM", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+    { value: "relative", label: "Relative", description: "6m ago", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+    { value: "hybrid", label: "Hybrid", description: "Hover for relative time", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+  ];
+  const systemMessageEmphasisOptions: DropdownOption[] = [
+    { value: "prominent", label: "Prominent", description: "Highest contrast.", icon: <FontAwesomeIcon icon={faBell} /> },
+    { value: "normal", label: "Normal", description: "Balanced system rows.", icon: <FontAwesomeIcon icon={faBell} /> },
+    { value: "dimmed", label: "Dimmed", description: "Lower visual priority.", icon: <FontAwesomeIcon icon={faBell} /> },
+    { value: "collapsible", label: "Collapsible", description: "Fold less important notices.", icon: <FontAwesomeIcon icon={faBell} /> },
+  ];
+  const readingWidthOptions: DropdownOption[] = [
+    { value: "auto", label: "Auto", description: "Fit available space.", icon: <FontAwesomeIcon icon={faBook} /> },
+    ...APPEARANCE_WIDTHS.map((width) => ({
+      value: String(width),
+      label: `${width}px`,
+      description: "Fixed reading width.",
+      icon: <FontAwesomeIcon icon={faBook} />,
+    })),
+  ];
+  const accentIntensityOptions: DropdownOption[] = [
+    { value: "subtle", label: "Subtle", description: "Muted accents.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "normal", label: "Normal", description: "Balanced accents.", icon: <FontAwesomeIcon icon={faPalette} /> },
+    { value: "bold", label: "Bold", description: "High-saturation accents.", icon: <FontAwesomeIcon icon={faPalette} /> },
+  ];
+  const streamerModeOptions: DropdownOption[] = [
+    { value: "blur", label: "Blur names", description: "Hide names behind blur.", icon: <FontAwesomeIcon icon={faShield} /> },
+    { value: "shorten", label: "Shorten names", description: "Mask by truncation.", icon: <FontAwesomeIcon icon={faShield} /> },
+  ];
+  const statusOptions: DropdownOption[] = [
+    { value: "online", label: "Online", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "idle", label: "Idle", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "dnd", label: "Do Not Disturb", icon: <FontAwesomeIcon icon={faUser} /> },
+    { value: "offline", label: "Offline", icon: <FontAwesomeIcon icon={faUser} /> },
+  ];
+  const richPresenceTypeOptions: DropdownOption[] = [
+    { value: "none", label: "None", description: "Disable manual rich presence.", icon: <FontAwesomeIcon icon={faInfoCircle} /> },
+    { value: "game", label: "Playing a game", icon: <FontAwesomeIcon icon={faServer} /> },
+    { value: "music", label: "Listening to music", icon: <FontAwesomeIcon icon={faMicrophone} /> },
+    { value: "custom", label: "Custom activity", icon: <FontAwesomeIcon icon={faCode} /> },
+  ];
+  const asChoiceSliderOptions = useCallback((options: DropdownOption[]): ChoiceSliderOption[] => (
+    options.map((option) => ({
+      value: String(option.value),
+      label: option.label,
+      description: option.description,
+      icon: option.icon,
+    }))
+  ), []);
   useEffect(() => {
     if (!isOpen) {
       stopPreview();
@@ -1105,60 +1221,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     };
     reader.readAsDataURL(file);
   };
-  const Switch = ({ checked }: { checked: boolean }) => {
-    const knobOffset = checked ? 14 : 0;
-    return (
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          padding: 2,
-          borderRadius: 999,
-          border: `1px solid ${checked ? accent : '#4b5563'}`,
-          background: '#020617',
-          width: 32,
-          height: 18,
-          position: 'relative',
-          pointerEvents: 'none'
-        }}
-      >
-        <span
-          style={{
-            position: 'absolute',
-            left: 2,
-            top: 2,
-            width: 14,
-            height: 14,
-            borderRadius: 999,
-            background: checked ? '#16a34a' : '#4b5563',
-            color: '#0b1120',
-            fontSize: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transform: `translateX(${knobOffset}px)`,
-            transition: 'transform 140ms ease-out'
-          }}
-        >
-          {checked ? 'ON' : 'OFF'}
-        </span>
-      </span>
-    );
-  };
   const GuideSlider = ({ value, onChange }: { value: number; onChange: (v: number)=>void }) => (
-    <div className="range-row" style={{ width: 240 }}>
+    <div style={{ width: 240 }}>
       <div style={{ flex: 1, position: 'relative', height: 4, borderRadius: 999, background: '#111827' }}>
         <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${value}%`, background: accent, borderRadius: 999 }} />
       </div>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={value}
-        onChange={(e)=> onChange(Number(e.target.value))}
-        style={{ width: 120 }}
-      />
-      <span className="range-value">{value}%</span>
+      <RangeField min={0} max={100} value={value} onChange={onChange} formatValue={(v) => `${v}%`} inputStyle={{ width: 120 }} />
     </div>
   );
   return (
@@ -1330,21 +1398,25 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
             ) : (
               <>
                 {tab === 'appearance' && (
-                  <div style={{ display: 'grid', gap: 12 }}>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ display: 'grid', gap: 14 }}>
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div style={{ fontWeight: 700, letterSpacing: 0.2 }}>Appearance</div>
+                      <div style={{ color: '#9ca3af', fontSize: 12 }}>
+                        Visual style, layout density, overflow handling, and readability controls.
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617' }}>
+                      <div style={{ width: '100%', fontWeight: 600, marginBottom: 2 }}>Theme & Message Style</div>
+                      <div style={{ width: '100%', color: '#9ca3af', fontSize: 11, marginBottom: 4 }}>
+                        Configure theme colors, message rendering style, and preview your active look.
+                      </div>
                       <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Theme</span>
-                        <select value={settings.theme || 'dark'} onChange={(e)=> setSettings(s => ({ ...s, theme: e.target.value as Settings['theme'] }))} className="input-dark" style={{ padding: 8 }}>
-                          <option value="system">System</option>
-                          <option value="dark">Dark</option>
-                          <option value="light">Light</option>
-                          <option value="midnight">Midnight</option>
-                          <option value="sunset">Sunset</option>
-                          <option value="forest">Forest</option>
-                          <option value="ocean">Ocean</option>
-                          <option value="neon">Neon</option>
-                          <option value="custom">Custom</option>
-                        </select>
+                        <Dropdown
+                          options={themeOptions}
+                          value={settings.theme || "dark"}
+                          onChange={(opt) => setSettings((s) => ({ ...s, theme: opt.value as Settings["theme"] }))}
+                        />
                       </label>
                       {settings.theme === 'custom' && (
                         <div style={{ display: 'grid', gap: 10, minWidth: 260 }}>
@@ -1396,28 +1468,25 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                                     return next;
                                   })}
                                 />
-                                <div className="range-row" style={{ flex: 1, minWidth: 160 }}>
-                                  <input
-                                    type="range"
-                                    min={0}
-                                    max={100}
-                                    value={Math.round(stop.position)}
-                                    onChange={(e)=> updateThemeStops((stops) => {
-                                      const next = cloneStops(stops);
-                                      next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
-                                      return next;
-                                    })}
-                                  />
-                                  <span className="range-value">{Math.round(stop.position)}%</span>
-                                </div>
-                                <input
-                                  type="number"
+                                <RangeField
                                   min={0}
                                   max={100}
                                   value={Math.round(stop.position)}
-                                  onChange={(e)=> updateThemeStops((stops) => {
+                                  onChange={(nextPos)=> updateThemeStops((stops) => {
                                     const next = cloneStops(stops);
-                                    next[idx] = { ...next[idx], position: clamp(Number(e.target.value), 0, 100) };
+                                    next[idx] = { ...next[idx], position: clamp(nextPos, 0, 100) };
+                                    return next;
+                                  })}
+                                  formatValue={(v) => `${Math.round(v)}%`}
+                                  style={{ flex: 1, minWidth: 160 }}
+                                />
+                                <NumberField
+                                  min={0}
+                                  max={100}
+                                  value={Math.round(stop.position)}
+                                  onChange={(nextPos)=> updateThemeStops((stops) => {
+                                    const next = cloneStops(stops);
+                                    next[idx] = { ...next[idx], position: clamp(nextPos, 0, 100) };
                                     return next;
                                   })}
                                   style={{ width: 70, background: '#0b1222', color: '#e5e7eb', border: '1px solid #1f2937', borderRadius: 8, padding: '4px 6px' }}
@@ -1455,16 +1524,13 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           </div>
                           <div style={{ display: 'grid', gap: 6 }}>
                             <span style={{ color: '#9ca3af', fontSize: 12 }}>Angle ({themeAngle} deg)</span>
-                            <div className="range-row">
-                              <input
-                                type="range"
-                                min={0}
-                                max={360}
-                                value={themeAngle}
-                                onChange={(e)=> updateThemeAngle(Number(e.target.value))}
-                              />
-                              <span className="range-value">{themeAngle}°</span>
-                            </div>
+                            <RangeField
+                              min={0}
+                              max={360}
+                              value={themeAngle}
+                              onChange={updateThemeAngle}
+                              formatValue={(v) => `${v} deg`}
+                            />
                           </div>
                           <div style={{ display: 'grid', gap: 6 }}>
                             <span style={{ color: '#9ca3af', fontSize: 12 }}>Background image (optional)</span>
@@ -1546,7 +1612,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           })}
                         </div>
                       </div>
-                      <div style={{ padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617', display: 'grid', gap: 10 }}>
+                      <div style={{ padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617', display: 'grid', gap: 10, width: '100%' }}>
                         <div style={{ fontWeight: 600 }}>Style preview</div>
                         <div style={{ display: 'grid', gap: 8 }}>
                           <div style={{ display: 'grid', gap: 6 }}>
@@ -1570,12 +1636,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </div>
                       <label style={{ display: 'grid', gap: 6, minWidth: 160 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Font Size</span>
-                        <select value={settings.messageFontSize || 'medium'} onChange={(e)=> setSettings(s => ({ ...s, messageFontSize: e.target.value as any }))} className="input-dark" style={{ padding: 8 }}>
-                          <option value="small">Small (13px)</option>
-                          <option value="medium">Medium (15px)</option>
-                          <option value="large">Large (17px)</option>
-                          <option value="extraLarge">Extra Large (19px)</option>
-                        </select>
+                        <Dropdown
+                          options={messageFontSizeOptions}
+                          value={settings.messageFontSize || "medium"}
+                          onChange={(opt) => setSettings((s) => ({ ...s, messageFontSize: opt.value as any }))}
+                        />
                       </label>
                       <label style={{ display: 'grid', gap: 6, minWidth: 140 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Accent</span>
@@ -1601,17 +1666,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </div>
                       <label style={{ display: 'grid', gap: 6, maxWidth: 280 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Active profile</span>
-                        <select
+                        <Dropdown
+                          options={appearanceProfileOptions}
                           value={activeProfileId || ''}
-                          onChange={(e)=> handleSelectProfile(e.target.value)}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          {appearanceProfiles.map((profile) => (
-                            <option key={profile.id} value={profile.id}>{profile.name}</option>
-                          ))}
-                          {!appearanceProfiles.length && <option value="">Default</option>}
-                        </select>
+                          onChange={(option) => handleSelectProfile(option.value)}
+                          placeholder="Default"
+                        />
                       </label>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                         <button type="button" className="btn-ghost" onClick={handleCreateProfile} style={{ padding: '6px 10px' }}>New</button>
@@ -1652,13 +1712,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </button>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Haven columns (1-5)</span>
-                        <input
-                          type="number"
+                        <NumberField
                           min={1}
                           max={5}
                           value={Math.max(1, Math.min(5, Number(settings.havenColumns) || 1))}
-                          onChange={(e)=> {
-                            const value = Math.max(1, Math.min(5, parseInt(e.target.value || "1", 10) || 1));
+                          onChange={(nextValue)=> {
+                            const value = Math.max(1, Math.min(5, parseInt(String(nextValue || 1), 10) || 1));
                             setSettings(s => ({ ...s, havenColumns: value }));
                           }}
                           className="input-dark"
@@ -1673,88 +1732,109 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <Switch checked={settings.showTimestamps !== false} />
                       </button>
                       <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>User name overflow</span>
+                        <Dropdown
+                          options={overflowModeOptions.map((opt) => ({ ...opt, icon: <FontAwesomeIcon icon={faUser} /> }))}
+                          value={appearance.userNameOverflow || "shorten"}
+                          onChange={(opt) => setSettings((s) => ({ ...s, appearance: { ...s.appearance, userNameOverflow: opt.value as AppearanceSettings["userNameOverflow"] } }))}
+                        />
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Channel name overflow</span>
+                        <Dropdown
+                          options={overflowModeOptions.map((opt) => ({ ...opt, icon: <FontAwesomeIcon icon={faHashtag} /> }))}
+                          value={appearance.channelNameOverflow || "shorten"}
+                          onChange={(opt) => setSettings((s) => ({ ...s, appearance: { ...s.appearance, channelNameOverflow: opt.value as AppearanceSettings["channelNameOverflow"] } }))}
+                        />
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Server/Haven name overflow</span>
+                        <Dropdown
+                          options={overflowModeOptions.map((opt) => ({ ...opt, icon: <FontAwesomeIcon icon={faServer} /> }))}
+                          value={appearance.serverNameOverflow || "shorten"}
+                          onChange={(opt) => setSettings((s) => ({ ...s, appearance: { ...s.appearance, serverNameOverflow: opt.value as AppearanceSettings["serverNameOverflow"] } }))}
+                        />
+                      </label>
+                      <label style={{ display: 'grid', gap: 6 }}>
+                        <span style={{ color: '#9ca3af', fontSize: 12 }}>Name scroll speed</span>
+                        <RangeField
+                          min={20}
+                          max={180}
+                          step={1}
+                          value={Math.round(Number(appearance.nameOverflowScrollSpeed || 60))}
+                          onChange={(nextValue)=> {
+                            const value = Math.max(20, Math.min(180, Number(nextValue) || 60));
+                            setSettings(s => ({ ...s, appearance: { ...s.appearance, nameOverflowScrollSpeed: value } }));
+                          }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={()=> setSettings(s => ({ ...s, appearance: { ...s.appearance, nameOverflowFade: s.appearance?.nameOverflowFade === false ? true : false } }))}
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                      >
+                        <div style={{ textAlign: 'left' }}>
+                          <div>Fade edge effect on name scroll</div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>Adds soft fade at the ends while names scroll.</div>
+                        </div>
+                        <Switch checked={appearance.nameOverflowFade !== false} />
+                      </button>
+                      <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Message grouping</span>
-                        <select
+                        <ChoiceSlider
+                          ariaLabel="Message grouping"
+                          options={asChoiceSliderOptions(messageGroupingOptions)}
                           value={appearance.messageGrouping || 'compact'}
-                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, messageGrouping: e.target.value as AppearanceSettings['messageGrouping'] } }))}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          <option value="none">None (show header every message)</option>
-                          <option value="compact">Compact (5 min window)</option>
-                          <option value="aggressive">Aggressive (30 min window)</option>
-                        </select>
+                          onChange={(nextValue)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, messageGrouping: nextValue as AppearanceSettings['messageGrouping'] } }))}
+                        />
                       </label>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Timestamp granularity</span>
-                        <select
+                        <ChoiceSlider
+                          ariaLabel="Timestamp granularity"
+                          options={asChoiceSliderOptions(timestampGranularityOptions)}
                           value={appearance.timestampGranularity || 'perMessage'}
-                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timestampGranularity: e.target.value as AppearanceSettings['timestampGranularity'] } }))}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          <option value="perMessage">Per message</option>
-                          <option value="perGroup">Only on group headers</option>
-                        </select>
+                          onChange={(nextValue)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timestampGranularity: nextValue as AppearanceSettings['timestampGranularity'] } }))}
+                        />
                       </label>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <label style={{ display: 'grid', gap: 6, minWidth: 180 }}>
                           <span style={{ color: '#9ca3af', fontSize: 12 }}>Time format</span>
-                          <select
-                            value={appearance.timeFormat || resolveDefaultTimeFormat()}
-                            onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeFormat: e.target.value as AppearanceSettings['timeFormat'] } }))}
-                            className="input-dark"
-                            style={{ padding: 8 }}
-                          >
-                            <option value="12h">12-hour</option>
-                            <option value="24h">24-hour</option>
-                          </select>
+                          <ChoiceSlider
+                            ariaLabel="Time format"
+                            options={asChoiceSliderOptions(timeFormatOptions)}
+                            value={appearance.timeFormat === "24h" ? "24h" : "12h"}
+                            onChange={(nextValue)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeFormat: nextValue as AppearanceSettings['timeFormat'] } }))}
+                          />
                         </label>
                         <label style={{ display: 'grid', gap: 6, minWidth: 180 }}>
                           <span style={{ color: '#9ca3af', fontSize: 12 }}>Time display</span>
-                          <select
+                          <ChoiceSlider
+                            ariaLabel="Time display"
+                            options={asChoiceSliderOptions(timeDisplayOptions)}
                             value={appearance.timeDisplay || 'absolute'}
-                            onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeDisplay: e.target.value as AppearanceSettings['timeDisplay'] } }))}
-                            className="input-dark"
-                            style={{ padding: 8 }}
-                          >
-                            <option value="absolute">Absolute (5:27 AM)</option>
-                            <option value="relative">Relative (6m ago)</option>
-                            <option value="hybrid">Hybrid (hover for relative)</option>
-                          </select>
+                            onChange={(nextValue)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, timeDisplay: nextValue as AppearanceSettings['timeDisplay'] } }))}
+                          />
                         </label>
                       </div>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>System message emphasis</span>
-                        <select
+                        <Dropdown
+                          options={systemMessageEmphasisOptions}
                           value={appearance.systemMessageEmphasis || 'prominent'}
-                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, systemMessageEmphasis: e.target.value as AppearanceSettings['systemMessageEmphasis'] } }))}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          <option value="prominent">Prominent</option>
-                          <option value="normal">Normal</option>
-                          <option value="dimmed">Dimmed</option>
-                          <option value="collapsible">Collapsible</option>
-                        </select>
+                          onChange={(option)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, systemMessageEmphasis: option.value as AppearanceSettings['systemMessageEmphasis'] } }))}
+                        />
                       </label>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Reading width</span>
-                        <select
+                        <Dropdown
+                          options={readingWidthOptions}
                           value={appearance.maxContentWidth ? String(appearance.maxContentWidth) : 'auto'}
-                          onChange={(e)=> {
-                            const value = e.target.value === 'auto' ? null : Number(e.target.value);
+                          onChange={(option)=> {
+                            const value = option.value === 'auto' ? null : Number(option.value);
                             setSettings(s => ({ ...s, appearance: { ...s.appearance, maxContentWidth: Number.isFinite(value) ? value : null } }));
                           }}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          <option value="auto">Auto</option>
-                          <option value="720">720px</option>
-                          <option value="840">840px</option>
-                          <option value="960">960px</option>
-                          <option value="1080">1080px</option>
-                        </select>
+                        />
                       </label>
                       <button
                         type="button"
@@ -1769,16 +1849,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </button>
                       <label style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12 }}>Accent intensity</span>
-                        <select
+                        <Dropdown
+                          options={accentIntensityOptions}
                           value={appearance.accentIntensity || 'normal'}
-                          onChange={(e)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, accentIntensity: e.target.value as AppearanceSettings['accentIntensity'] } }))}
-                          className="input-dark"
-                          style={{ padding: 8 }}
-                        >
-                          <option value="subtle">Subtle</option>
-                          <option value="normal">Normal</option>
-                          <option value="bold">Bold</option>
-                        </select>
+                          onChange={(option)=> setSettings(s => ({ ...s, appearance: { ...s.appearance, accentIntensity: option.value as AppearanceSettings['accentIntensity'] } }))}
+                        />
                       </label>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, appearance: { ...s.appearance, readingMode: !s.appearance?.readingMode } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
@@ -1812,15 +1887,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 10px', borderRadius: 8, background: '#010914', border: '1px solid #1f2937' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             <div style={{ color: '#9ca3af', fontSize: 12 }}>Mask style</div>
-                            <select
+                            <Dropdown
+                              options={streamerModeOptions}
                               value={settings.streamerModeStyle || 'blur'}
-                              onChange={(e)=> setSettings(s => ({ ...s, streamerModeStyle: e.target.value as 'blur'|'shorten' }))}
-                              className="input-dark"
-                              style={{ padding: 6 }}
-                            >
-                              <option value="blur">Blur names</option>
-                              <option value="shorten">Shorten names</option>
-                            </select>
+                              onChange={(option)=> setSettings(s => ({ ...s, streamerModeStyle: option.value as 'blur'|'shorten' }))}
+                            />
                           </div>
                           {settings.streamerModeStyle === 'blur' && (
                             <button
@@ -1853,7 +1924,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                       </button>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, callHavensServers: !s.callHavensServers }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
                         <div style={{ textAlign: 'left' }}>
-                          <div>Call Havens 'Servers'</div>
+                          <div>Label Havens as "Servers"</div>
                           <div style={{ fontSize: 11, color: '#9ca3af' }}>Rename Haven labels across the UI.</div>
                         </div>
                         <Switch checked={!!settings.callHavensServers} />
@@ -1871,7 +1942,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           Choose which actions show on hover for your own messages and for others. Drag to reorder; double-click to remove a button.
                         </div>
                         {(() => {
-                          const allKeys = ['reply','react','pin','edit','delete','history','more'];
+                          const allKeys = ['reply','react','pin','edit','delete','history','copy','link','more'];
                           const labels: Record<string,string> = {
                             reply: 'Reply',
                             react: 'React',
@@ -1879,10 +1950,12 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             edit: 'Edit',
                             delete: 'Delete',
                             history: 'Edit history',
+                            copy: 'Copy text',
+                            link: 'Copy link',
                             more: 'More menu',
                           };
-                          const own = Array.isArray(settings.quickButtonsOwn) && settings.quickButtonsOwn.length ? settings.quickButtonsOwn : ['reply','react','more'];
-                          const others = Array.isArray(settings.quickButtonsOthers) && settings.quickButtonsOthers.length ? settings.quickButtonsOthers : ['reply','react','more'];
+                          const own = Array.isArray(settings.quickButtonsOwn) && settings.quickButtonsOwn.length ? settings.quickButtonsOwn : ['reply','react','copy','more'];
+                          const others = Array.isArray(settings.quickButtonsOthers) && settings.quickButtonsOthers.length ? settings.quickButtonsOthers : ['reply','react','copy','more'];
                           const applyOwn = (next: string[]) => setSettings(s => ({ ...s, quickButtonsOwn: next }));
                           const applyOthers = (next: string[]) => setSettings(s => ({ ...s, quickButtonsOthers: next }));
                           const renderRow = (title: string, list: string[], onChange: (next: string[]) => void) => (
@@ -1920,21 +1993,20 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             return (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                                 <span style={{ fontSize: 11, color: '#9ca3af' }}>{label}</span>
-                                <select
-                                  value=""
-                                  onChange={(e) => {
-                                    const v = e.target.value;
+                                <Dropdown
+                                  options={remaining.map((k) => ({
+                                    value: k,
+                                    label: labels[k] || k,
+                                    icon: <FontAwesomeIcon icon={faKey} />,
+                                  }))}
+                                  value={null}
+                                  placeholder="Add..."
+                                  onChange={(option) => {
+                                    const v = option.value;
                                     if (!v) return;
                                     if (!list.includes(v)) onChange([...list, v]);
                                   }}
-                                  className="input-dark"
-                                  style={{ padding: 4, fontSize: 11 }}
-                                >
-                                  <option value="">Add...</option>
-                                  {remaining.map(k => (
-                                    <option key={k} value={k}>{labels[k] || k}</option>
-                                  ))}
-                                </select>
+                                />
                               </div>
                             );
                           };
@@ -2045,16 +2117,15 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                           }}
                         />
                       </div>
-                      <div className="range-row">
+                      <div style={{ display: 'grid', gap: 6 }}>
                         <span style={{ color: '#9ca3af', fontSize: 12, minWidth: 60 }}>Volume</span>
-                        <input
-                          type="range"
+                        <RangeField
                           min={0}
                           max={100}
                           value={Math.round(((settings.notifications?.volume ?? 0.6) * 100))}
-                          onChange={(e)=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), volume: Math.max(0, Math.min(1, Number(e.target.value)/100)) } }))}
+                          onChange={(nextValue)=> setSettings(s => ({ ...s, notifications: { ...(s.notifications||{}), volume: Math.max(0, Math.min(1, Number(nextValue)/100)) } }))}
+                          formatValue={(v) => `${Math.round(v)}%`}
                         />
-                        <span className="range-value">{Math.round(((settings.notifications?.volume ?? 0.6) * 100))}%</span>
                       </div>
                     </div>
                   )}
@@ -2066,31 +2137,25 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     </div>
                     <label style={{ display: 'grid', gap: 6 }}>
                       <span style={{ color: '#9ca3af', fontSize: 12 }}>Input volume</span>
-                      <div className="range-row">
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={settings.voice?.inputVolume ?? 0.85}
-                          onChange={(e)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), inputVolume: Number(e.target.value) } }))}
-                        />
-                        <span className="range-value">{Math.round((settings.voice?.inputVolume ?? 0.85) * 100)}%</span>
-                      </div>
+                      <RangeField
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={settings.voice?.inputVolume ?? 0.85}
+                        onChange={(nextValue)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), inputVolume: Number(nextValue) } }))}
+                        formatValue={(v) => `${Math.round(v * 100)}%`}
+                      />
                     </label>
                     <label style={{ display: 'grid', gap: 6 }}>
                       <span style={{ color: '#9ca3af', fontSize: 12 }}>Output volume</span>
-                      <div className="range-row">
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={settings.voice?.outputVolume ?? 0.9}
-                          onChange={(e)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), outputVolume: Number(e.target.value) } }))}
-                        />
-                        <span className="range-value">{Math.round((settings.voice?.outputVolume ?? 0.9) * 100)}%</span>
-                      </div>
+                      <RangeField
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={settings.voice?.outputVolume ?? 0.9}
+                        onChange={(nextValue)=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), outputVolume: Number(nextValue) } }))}
+                        formatValue={(v) => `${Math.round(v * 100)}%`}
+                      />
                     </label>
                     <div style={{ display: 'grid', gap: 8 }}>
                       <button type="button" onClick={()=> setSettings(s => ({ ...s, voice: { ...(s.voice || {}), noiseSuppression: !(s.voice?.noiseSuppression !== false) } }))} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}>
@@ -2190,12 +2255,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                   <div style={{ display: 'grid', gap: 12 }}>
                     <label style={{ display: 'grid', gap: 6, maxWidth: 240 }}>
                       <span style={{ color: '#9ca3af', fontSize: 12 }}>Status</span>
-                      <select value={settings.status || 'online'} onChange={(e)=> setSettings(s => ({ ...s, status: e.target.value as any }))} className="input-dark" style={{ padding: 8 }}>
-                        <option value="online">Online</option>
-                        <option value="idle">Idle</option>
-                        <option value="dnd">Do Not Disturb</option>
-                        <option value="offline">Offline</option>
-                      </select>
+                      <Dropdown
+                        options={statusOptions}
+                        value={settings.status || 'online'}
+                        onChange={(option)=> setSettings(s => ({ ...s, status: option.value as Settings["status"] }))}
+                      />
                     </label>
                     
                     <div style={{ display: 'grid', gap: 8, border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, padding: 10 }}>
@@ -2239,34 +2303,32 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         {Math.max(0, MAX_STATUS_MESSAGE - (settings.statusMessage || '').length)} characters left.
                       </span>
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={settings.dndIsCosmetic === true}
-                        onChange={(e) => setSettings(s => ({ ...s, dndIsCosmetic: e.target.checked }))}
-                      />
-                      <div style={{ display: 'grid', gap: 2 }}>
+                    <button
+                      type="button"
+                      onClick={() => setSettings(s => ({ ...s, dndIsCosmetic: !(s.dndIsCosmetic === true) }))}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                    >
+                      <div style={{ display: 'grid', gap: 2, textAlign: 'left' }}>
                         <span style={{ fontWeight: 600 }}>DND is cosmetic only</span>
                         <span style={{ fontSize: 12, color: '#9ca3af' }}>Keep notifications and sounds even when DND is enabled.</span>
                       </div>
-                    </label>
-                    <div style={{ display: 'grid', gap: 8 }}>
+                      <Switch checked={settings.dndIsCosmetic === true} />
+                    </button>
+                    <div style={{ display: 'grid', gap: 8, padding: 12, borderRadius: 10, border: '1px solid #1f2937', background: '#020617' }}>
+                      <div style={{ fontWeight: 600 }}>Layout & Behavior</div>
+                      <div style={{ color: '#9ca3af', fontSize: 11 }}>
+                        Tune spacing, timestamps, overflow behavior, motion, and quick action defaults.
+                      </div>
                       <div style={{ color: '#9ca3af', fontSize: 12 }}>Rich presence (manual)</div>
-                      <select
+                      <Dropdown
+                        options={richPresenceTypeOptions}
                         value={settings.richPresence?.type || 'none'}
-                        onChange={(e)=> setSettings(s => {
-                          const next = e.target.value;
+                        onChange={(option)=> setSettings(s => {
+                          const next = option.value;
                           if (next === 'none') return { ...s, richPresence: undefined };
                           return { ...s, richPresence: { ...(s.richPresence || {}), type: next as any } };
                         })}
-                        className="input-dark"
-                        style={{ padding: 8, maxWidth: 240 }}
-                      >
-                        <option value="none">None</option>
-                        <option value="game">Playing a game</option>
-                        <option value="music">Listening to music</option>
-                        <option value="custom">Custom activity</option>
-                      </select>
+                      />
                       {settings.richPresence?.type && (
                         <div style={{ display: 'grid', gap: 8 }}>
                           <input
@@ -2289,17 +2351,17 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         </div>
                       )}
                     </div>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={settings.autoIdleEnabled !== false}
-                        onChange={(e) => setSettings(s => ({ ...s, autoIdleEnabled: e.target.checked }))}
-                      />
-                      <div style={{ display: 'grid', gap: 2 }}>
+                    <button
+                      type="button"
+                      onClick={() => setSettings(s => ({ ...s, autoIdleEnabled: !(s.autoIdleEnabled !== false) }))}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderRadius: 8, background: '#020617', border: '1px solid #1f2937', cursor: 'pointer' }}
+                    >
+                      <div style={{ display: 'grid', gap: 2, textAlign: 'left' }}>
                         <span style={{ fontWeight: 600 }}>Auto-idle</span>
                         <span style={{ fontSize: 12, color: '#9ca3af' }}>Set status to Idle after 5 minutes of inactivity (desktop and mobile).</span>
                       </div>
-                    </label>
+                      <Switch checked={settings.autoIdleEnabled !== false} />
+                    </button>
                   </div>
                 )}
                 {tab === 'account' && (
@@ -3075,3 +3137,4 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     </div>
   );
 }
+

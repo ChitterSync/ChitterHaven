@@ -7,6 +7,7 @@ export type DropdownOption = {
   value: string;
   label: string;
   description?: string;
+  icon?: React.ReactNode;
   iconUrl?: string;
   action?: {
     label?: string;
@@ -65,6 +66,16 @@ export default function Dropdown({
       const next = (prev + delta + normalizedOptions.length) % normalizedOptions.length;
       return isNaN(next) ? 0 : next;
     });
+  };
+
+  const renderOptionIcon = (opt: DropdownOption) => {
+    if (opt.icon) {
+      return <span className="ch-dropdown__icon-node" aria-hidden>{opt.icon}</span>;
+    }
+    if (opt.iconUrl) {
+      return <img src={opt.iconUrl} alt="" className="ch-dropdown__icon" />;
+    }
+    return null;
   };
 
   const commitHighlight = () => {
@@ -133,10 +144,11 @@ export default function Dropdown({
         <div className="ch-dropdown__value">
           {selected ? (
             <>
-              {selected.iconUrl && (
-                <img src={selected.iconUrl} alt="" className="ch-dropdown__icon" />
-              )}
-              <span>{selected.label}</span>
+              {renderOptionIcon(selected)}
+              <span className="ch-dropdown__value-text">
+                <span>{selected.label}</span>
+                {selected.description && <span className="ch-dropdown__value-desc">{selected.description}</span>}
+              </span>
             </>
           ) : (
             <span className="ch-dropdown__placeholder">{placeholder}</span>
@@ -171,9 +183,7 @@ export default function Dropdown({
                   }
                 }}
               >
-                {opt.iconUrl && (
-                  <img src={opt.iconUrl} alt="" className="ch-dropdown__icon" />
-                )}
+                {renderOptionIcon(opt)}
                 <div className="ch-dropdown__option-body">
                   <div className="ch-dropdown__option-label">{opt.label}</div>
                   {opt.description && (
@@ -236,7 +246,11 @@ export default function Dropdown({
           justify-content: space-between;
           gap: 10px;
           cursor: pointer;
-          transition: border-color 120ms ease, box-shadow 120ms ease;
+          transition: border-color 140ms ease, box-shadow 140ms ease, transform 120ms ease, background 140ms ease;
+        }
+        .ch-dropdown__control:hover {
+          border-color: rgba(148, 163, 184, 0.42);
+          transform: translateY(-1px);
         }
         .ch-dropdown__control:focus-visible {
           outline: none;
@@ -251,6 +265,24 @@ export default function Dropdown({
           align-items: center;
           gap: 8px;
           font-size: 14px;
+          min-width: 0;
+        }
+        .ch-dropdown__value-text {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 1px;
+        }
+        .ch-dropdown__value-text > span:first-child {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 100%;
+        }
+        .ch-dropdown__value-desc {
+          font-size: 11px;
+          color: #94a3b8;
         }
         .ch-dropdown__placeholder {
           color: #64748b;
@@ -261,9 +293,27 @@ export default function Dropdown({
           border-radius: 999px;
           object-fit: cover;
         }
+        .ch-dropdown__icon-node {
+          width: 20px;
+          height: 20px;
+          border-radius: 999px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(15, 23, 42, 0.75);
+          border: 1px solid rgba(148, 163, 184, 0.25);
+          color: #cbd5e1;
+          font-size: 11px;
+          flex: 0 0 auto;
+        }
         .ch-dropdown__chevron {
           font-size: 13px;
           color: #94a3b8;
+          transition: transform 180ms ease, color 140ms ease;
+        }
+        .ch-dropdown[data-open="true"] .ch-dropdown__chevron {
+          transform: rotate(180deg);
+          color: #cbd5f5;
         }
         .ch-dropdown__menu {
           position: absolute;
@@ -278,6 +328,8 @@ export default function Dropdown({
           max-height: 260px;
           overflow-y: auto;
           z-index: 30;
+          transform-origin: top center;
+          animation: ch-dropdown-enter 170ms cubic-bezier(0.22, 1, 0.36, 1) both;
         }
         .ch-dropdown__option {
           width: 100%;
@@ -291,7 +343,7 @@ export default function Dropdown({
           color: inherit;
           text-align: left;
           cursor: pointer;
-          transition: background 100ms ease, border-color 100ms ease;
+          transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
         }
         .ch-dropdown__option-body {
           display: flex;
@@ -309,6 +361,7 @@ export default function Dropdown({
         .ch-dropdown__option.is-highlighted {
           background: rgba(96, 165, 250, 0.12);
           border-color: rgba(96, 165, 250, 0.35);
+          transform: translateY(-1px);
         }
         .ch-dropdown__option.is-active {
           border-color: var(--ch-accent, #60a5fa);
@@ -327,6 +380,16 @@ export default function Dropdown({
           border-color: var(--ch-accent, #60a5fa);
           color: #fff;
         }
+        @keyframes ch-dropdown-enter {
+          from {
+            opacity: 0;
+            transform: translateY(6px) scale(0.985);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
         @media (max-width: 640px) {
           .ch-dropdown {
             max-width: 100%;
@@ -335,6 +398,16 @@ export default function Dropdown({
           .ch-dropdown__option { padding: 14px; }
           .ch-dropdown__option-action { padding: 10px 12px; font-size: 14px; }
           .ch-dropdown__menu { padding: 8px; max-height: 56vh; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ch-dropdown__control,
+          .ch-dropdown__chevron,
+          .ch-dropdown__menu,
+          .ch-dropdown__option {
+            animation: none !important;
+            transition: none !important;
+            transform: none !important;
+          }
         }
       `}</style>
     </div>
