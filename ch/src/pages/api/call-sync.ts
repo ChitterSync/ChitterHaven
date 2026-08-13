@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { verifyJWT } from "@/server/api-lib/jwt";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
+import { requireUser } from "@/server/api-lib/auth";
+import { publishCallState } from "@/pages/api/socketio";
 
 type CallSyncBody = {
   room?: string;
@@ -10,36 +10,24 @@ type CallSyncBody = {
   from?: string;
 };
 
-const getUsernameFromRequest = (req: NextApiRequest): string | null => {
-  try {
-    const token = getAuthCookie(req);
-    const payload: any = token ? verifyJWT(token) : null;
-    if (payload?.username) return String(payload.username);
-  } catch {}
-  return null;
-};
-
 // --- handler (the main event).
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
-  const { room, state, participants, startedAt, from }: CallSyncBody = req.body || {};
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const { room, state, participants, startedAt }: CallSyncBody = req.body || {};
   if (!room || !state) {
     return res.status(400).json({ error: "Missing room or state" });
   }
-  const username = getUsernameFromRequest(req) || (typeof from === "string" ? from : null);
+  const username = user.username;
   const io = (res.socket as any)?.server?.io;
   if (!io) {
     return res.status(503).json({ error: "Socket server not initialized" });
   }
-  io.to(room).emit("call-state", {
-    room,
-    state,
-    from: username || undefined,
-    startedAt,
-    participants,
-  });
+  const snapshot = publishCallState(io, room, username, state, Array.isArray(participants) ? participants : [], startedAt);
+  if (!snapshot) return res.status(403).json({ error: "Not authorized for this call" });
   return res.status(200).json({ ok: true });
 }

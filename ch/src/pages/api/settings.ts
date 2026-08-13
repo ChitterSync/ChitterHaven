@@ -2,10 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "@/server/api-lib/jwt";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { requireUser } from "@/server/api-lib/auth";
 import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -100,31 +100,11 @@ type GlobalSettingsResult =
 
 function readSettings(): SettingsData {
   if (!fs.existsSync(SETTINGS_PATH)) return { users: {} };
-  const buf = fs.readFileSync(SETTINGS_PATH);
-  if (buf.length <= 16) return { users: {} };
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    // Fallback: file might be plaintext JSON or encrypted with an old key.
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      writeSettings(parsed);
-      return parsed;
-    } catch {
-      return { users: {} };
-    }
-  }
+  return readEncryptedJson({filePath:SETTINGS_PATH,purpose:"user-settings",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is SettingsData=>Boolean(value&&typeof value==="object"&&(value as SettingsData).users&&typeof(value as SettingsData).users==="object")});
 }
 
 function writeSettings(data: SettingsData) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(data)), cipher.final()]);
-  fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+  writeEncryptedJson(data,{filePath:SETTINGS_PATH,purpose:"user-settings",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is SettingsData=>Boolean(value&&typeof value==="object"&&(value as SettingsData).users&&typeof(value as SettingsData).users==="object")});
 }
 
 function sanitizeHavens(raw: any): HavenMap {
@@ -298,12 +278,12 @@ const sanitizeAppearancePatch = (raw: any): UserSettings["appearance"] | undefin
   return Object.keys(patch).length ? patch : undefined;
 };
 
-async function fetchGlobalSettings(username: string): Promise<GlobalSettingsResult> {
+async function fetchGlobalSettings(username: string, requestCookie = ""): Promise<GlobalSettingsResult> {
   if (!hasGlobalSync) return { status: "missing" };
   try {
     const res = await fetch(
       `${AUTH_SERVICE_BASE}/api/service/user-settings?username=${encodeURIComponent(username)}`,
-      { headers: { Authorization: `Bearer ${AUTH_SERVICE_KEY}` } },
+      { headers: { Authorization: `Bearer ${AUTH_SERVICE_KEY}`, cookie: requestCookie } },
     );
     if (res.status === 404) return { status: "not_found" };
     if (!res.ok) {
@@ -322,7 +302,7 @@ async function fetchGlobalSettings(username: string): Promise<GlobalSettingsResu
   }
 }
 
-async function pushGlobalSettings(username: string, settings: UserSettings) {
+async function pushGlobalSettings(username: string, settings: UserSettings, requestCookie = "") {
   if (!hasGlobalSync) return { status: "missing" as const };
   try {
     const res = await fetch(`${AUTH_SERVICE_BASE}/api/service/user-settings`, {
@@ -330,6 +310,7 @@ async function pushGlobalSettings(username: string, settings: UserSettings) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${AUTH_SERVICE_KEY}`,
+        cookie: requestCookie,
       },
       body: JSON.stringify({ username, settings }),
     });
@@ -347,12 +328,10 @@ async function pushGlobalSettings(username: string, settings: UserSettings) {
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const session = readSessionFromRequest(req);
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  const me = session?.user?.username || payload?.username;
-  if (!me) return res.status(401).json({ error: "Unauthorized" });
-  const isCentralAccount = Boolean(session?.user?.username);
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const me = user.username;
+  const isCentralAccount = user.authProvider !== "legacy";
   const canUseGlobalSync = isCentralAccount && hasGlobalSync;
 
   const data = readSettings();
@@ -360,7 +339,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (req.method === "GET") {
     if (canUseGlobalSync) {
-      const remote = await fetchGlobalSettings(me);
+      const remote = await fetchGlobalSettings(me, req.headers.cookie || "");
       if (remote.status === "ok") {
         const remoteSettings = remote.settings || {};
         const appearancePatch = sanitizeAppearancePatch((remoteSettings as any).appearance);
@@ -482,7 +461,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         delete (patch as any).lastSeenUpdateVersion;
       }
     }
-    const remote = canUseGlobalSync ? await fetchGlobalSettings(me) : { status: "missing" as const };
+    const remote = canUseGlobalSync ? await fetchGlobalSettings(me, req.headers.cookie || "") : { status: "missing" as const };
     const base = remote.status === "ok" ? remote.settings || {} : current;
     const merged: UserSettings = {
       ...base,
@@ -501,10 +480,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
     };
 
-    if (remote.status === "ok") {
-      const pushResult = await pushGlobalSettings(me, merged);
+    // Keep a durable local fallback even when cloud sync is enabled or temporarily unavailable.
+    data.users[me] = merged;
+    writeSettings(data);
+
+    if (canUseGlobalSync && (remote.status === "ok" || remote.status === "not_found")) {
+      const pushResult = await pushGlobalSettings(me, merged, req.headers.cookie || "");
       if (pushResult.status !== "ok") {
-        return res.status(502).json({ error: "Failed to sync settings with ChitterSync auth." });
+        return res.status(200).json({
+          success: true,
+          legacy: false,
+          settings: merged,
+          syncedAt: null,
+          syncError: "Settings saved in ChitterHaven, but cloud sync is temporarily unavailable.",
+        });
       }
       return res.status(200).json({
         success: true,
@@ -514,14 +503,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    data.users[me] = merged;
-    writeSettings(data);
     const response: Record<string, unknown> = {
       success: true,
-      legacy: true,
+      legacy: !isCentralAccount,
       settings: merged,
       syncedAt: null,
     };
+    if (canUseGlobalSync && remote.status === "error") {
+      response.syncError = "Settings saved in ChitterHaven, but cloud sync is temporarily unavailable.";
+    }
     return res.status(200).json(response);
   }
 

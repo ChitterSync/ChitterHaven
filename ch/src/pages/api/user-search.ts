@@ -1,18 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { verifyJWT } from "@/server/api-lib/jwt";
 import { readUsers } from "@/server/api-lib/usersStore";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
+import { requireUser } from "@/server/api-lib/auth";
 
 // --- handler (the main event).
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  const me = payload?.username;
-  if (!me) return res.status(401).json({ error: "Unauthorized" });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const me = user.username;
 
   const q = String((req.query.q || "")).trim().toLowerCase();
   const listAll = String(req.query.all || "").toLowerCase() === 'true';

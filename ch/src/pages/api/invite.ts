@@ -4,6 +4,8 @@ import path from "path";
 import crypto from "crypto";
 import { requireUser } from "@/server/api-lib/auth";
 import { prisma } from "@/server/api-lib/prismaClient";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 type Invite = {
   code: string;
@@ -18,65 +20,19 @@ type Invite = {
 const INVITE_PATH = path.join(process.cwd(), "src/pages/api/invites.json");
 const HISTORY_PATH = path.join(process.cwd(), "src/pages/api/history.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
-const IV_LENGTH = 16;
+const isInviteStore = (value: unknown): value is { invites: Invite[] } => !!value && typeof value === "object" && Array.isArray((value as { invites?: unknown }).invites);
+const isHistory = (value: unknown): value is Record<string, Array<{ user: string }>> => !!value && typeof value === "object" && !Array.isArray(value);
 
 function decryptInvites(): Invite[] {
-  if (!fs.existsSync(INVITE_PATH)) return [];
-  const buf = fs.readFileSync(INVITE_PATH);
-  if (buf.length <= IV_LENGTH) return [];
-  const iv = buf.slice(0, IV_LENGTH);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([
-      decipher.update(buf.slice(IV_LENGTH)),
-      decipher.final(),
-    ]).toString();
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed.invites) ? parsed.invites : [];
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      const invites = Array.isArray(parsed.invites) ? parsed.invites : [];
-      encryptInvites(invites);
-      return invites;
-    } catch {
-      return [];
-    }
-  }
+  return readEncryptedJson({ filePath: INVITE_PATH, purpose: "invites", ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({ invites: [] }), validate: isInviteStore }).invites;
 }
 
 function encryptInvites(invites: Invite[]) {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const body = Buffer.concat([
-    cipher.update(JSON.stringify({ invites })),
-    cipher.final(),
-  ]);
-  fs.writeFileSync(INVITE_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
+  writeEncryptedJson({ invites }, { filePath: INVITE_PATH, purpose: "invites", ring: getStoreKeyRing(), legacySecret: SECRET, validate: isInviteStore });
 }
 
 function decryptHistory(): Record<string, Array<{ user: string }>> {
-  if (!fs.existsSync(HISTORY_PATH)) return {};
-  const encrypted = fs.readFileSync(HISTORY_PATH);
-  if (encrypted.length <= IV_LENGTH) return {};
-  const iv = encrypted.slice(0, IV_LENGTH);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted.slice(IV_LENGTH)),
-      decipher.final(),
-    ]).toString();
-    return JSON.parse(decrypted);
-  } catch {
-    try {
-      const plaintext = encrypted.toString("utf8");
-      return JSON.parse(plaintext);
-    } catch {
-      return {};
-    }
-  }
+  return readEncryptedJson({ filePath: HISTORY_PATH, purpose: "history", ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({}), validate: isHistory });
 }
 
 function isExpired(inv: Invite, now: number) {

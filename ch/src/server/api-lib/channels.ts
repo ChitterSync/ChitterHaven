@@ -30,7 +30,7 @@ async function getAllChannels(): Promise<Record<string, Channel>> {
       stream.on("error", reject);
     });
     return JSON.parse(json);
-  } catch (e) {
+  } catch {
     return {};
   }
 }

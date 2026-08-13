@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useLayoutEffect } from "react";
+import React, { useImperativeHandle, useLayoutEffect, useRef } from "react";
 
 type TextBarElement = HTMLInputElement | HTMLTextAreaElement;
 
@@ -43,9 +43,12 @@ export default function TextBar({
   className,
   ariaLabel,
 }: TextBarProps) {
+  const elementRef = useRef<TextBarElement>(null);
+  useImperativeHandle<TextBarElement | null, TextBarElement | null>(inputRef, () => elementRef.current);
+
   useLayoutEffect(() => {
     if (!multiline || !autoResize) return;
-    const el = inputRef?.current;
+    const el = elementRef.current;
     if (!el || !(el instanceof HTMLTextAreaElement)) return;
     el.style.height = "auto";
     const nextHeight = el.scrollHeight;
@@ -56,7 +59,7 @@ export default function TextBar({
     }
     el.style.height = `${Math.max(nextHeight, minHeight || 0)}px`;
     el.style.overflowY = "hidden";
-  }, [autoResize, inputRef, maxHeight, minHeight, multiline, value]);
+  }, [autoResize, maxHeight, minHeight, multiline, value]);
 
   const sharedProps = {
     value,
@@ -70,22 +73,22 @@ export default function TextBar({
       onValueChange(e.target.value, cursor);
     },
     onKeyDown,
-    style,
+    style: { width: "100%", minWidth: 0, boxSizing: "border-box" as const, ...style },
   };
 
   return (
-    <div style={{ display: "grid", gap: 6, width: "100%" }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", width: "100%" }}>
+    <div style={{ display: "grid", gap: 6, flex: "1 1 auto", minWidth: 0, maxWidth: "100%" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", width: "100%", minWidth: 0 }}>
         {multiline ? (
           <textarea
             {...sharedProps}
-            ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+            ref={elementRef as React.RefObject<HTMLTextAreaElement>}
             rows={rows}
           />
         ) : (
           <input
             {...sharedProps}
-            ref={inputRef as React.RefObject<HTMLInputElement>}
+            ref={elementRef as React.RefObject<HTMLInputElement>}
             type="text"
           />
         )}

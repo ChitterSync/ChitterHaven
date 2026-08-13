@@ -3,7 +3,14 @@
 // --- imports (yes, it's a lot).
 import type React from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import io, { Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
+import { getRealtimeManager } from "@/lib/realtime/manager";
+import { messageStore, useMessageStore, type StoredMessage } from "@/lib/stores/messageStore";
+import { conversationStore, useConversationStore, type StoredConversation } from "@/lib/stores/conversationStore";
+import { friendStore, useFriendStore } from "@/lib/stores/friendStore";
+import { presenceStore, usePresenceStore } from "@/lib/stores/presenceStore";
+import { userStore, useUserStore } from "@/lib/stores/userStore";
+import { useRealtimeStatusStore } from "@/lib/stores/realtimeStatusStore";
 import ReactMarkdown from "react-markdown";
 import dynamic from "next/dynamic";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -70,6 +77,7 @@ import Oneko from "./components/Oneko";
 import ChoiceSlider from "./components/ChoiceSlider";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
 import TextBar from "./components/TextBar";
+import NavigationGuide from "./NavigationGuide";
 import DateTimeField from "./components/DateTimeField";
 import Switch from "./components/Switch";
 import NumberField from "./components/NumberField";
@@ -106,7 +114,6 @@ const CALL_REJOIN_KEY = "ch_last_call";
 const MEMBERS_SIDEBAR_WIDTH = 260;
 const MAX_RENDER_MESSAGES = 150;
 const MAX_STORE_MESSAGES = 400;
-const MAX_PROFILE_CACHE = 800;
 const MAX_PRESENCE_CACHE = 800;
 const MAX_STATUS_CACHE = 600;
 const MAX_RICH_PRESENCE_CACHE = 600;
@@ -693,6 +700,8 @@ type Message = {
   attachments?: Attachment[];
   editHistory?: { text: string; timestamp: number }[];
   poll?: PollData;
+  clientMutationId?: string;
+  deliveryState?: "sending" | "sent" | "failed" | "delivered" | "read";
 };
 
 type RichPresence = { type: "game" | "music" | "custom"; title: string; details?: string };
@@ -780,7 +789,6 @@ export default function Main({ username }: { username: string }) {
   const last = loadLastLocation();
   const [selectedHaven, setSelectedHaven] = useState<string>(last.haven || "__dms__");
   const [selectedChannel, setSelectedChannel] = useState<string>(last.channel || "");
-  const [dms, setDMs] = useState<DMThread[]>([]);
   const [selectedDM, setSelectedDM] = useState<string | null>(last.dm);
   const lastSelectedDMRef = useRef<string | null>(last.dm);
   const havensSyncInitialized = useRef(false);
@@ -790,7 +798,25 @@ export default function Main({ username }: { username: string }) {
   const applyRemoteHavens = (incoming: any) => {
     setHavens(sanitizeHavens(incoming));
   };
-  const [messages, setMessages] = useState<Message[]>([]);
+  const conversationState = useConversationStore();
+  const dms = conversationState.order.map((id) => conversationState.byId[id]).filter(Boolean) as DMThread[];
+  const setDMs = (value: DMThread[] | ((current: DMThread[]) => DMThread[])) => {
+    const next = typeof value === "function" ? value(conversationStore.selectAll() as DMThread[]) : value;
+    const keep = new Set(next.map((dm) => dm.id));
+    conversationStore.selectAll().forEach((dm) => { if (!keep.has(dm.id)) conversationStore.remove(dm.id); });
+    next.forEach((dm) => conversationStore.upsert(dm as StoredConversation));
+  };
+  const messageState = useMessageStore();
+  const selectedRoomId = selectedDM || (selectedHaven !== "__dms__" && selectedChannel ? `${selectedHaven}__${selectedChannel}` : null);
+  const messages = selectedRoomId ? (messageState.idsByRoom[selectedRoomId] || []).map((id) => messageState.byId[id]).filter(Boolean) as Message[] : [];
+  const setMessages = (value: Message[] | ((current: Message[]) => Message[])) => {
+    if (!selectedRoomId) return;
+    const current = messageStore.selectRoom(selectedRoomId) as Message[];
+    const next = typeof value === "function" ? value(current) : value;
+    const keep = new Set(next.map((message) => message.id));
+    current.forEach((message) => { if (!keep.has(message.id)) messageStore.deleteMessage(selectedRoomId, message.id); });
+    next.forEach((message) => messageStore.upsertMessage(selectedRoomId, message as StoredMessage));
+  };
   const [input, setInput] = useState("");
   const [showPollComposer, setShowPollComposer] = useState(false);
   const [pollTypeDraft, setPollTypeDraft] = useState<PollData["type"]>("choice");
@@ -819,6 +845,10 @@ export default function Main({ username }: { username: string }) {
   const [newHavenType, setNewHavenType] = useState<'standard'|'community'>('standard');
   const [havenAction, setHavenAction] = useState<'create'|'join'>('join');
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const typingExpiryTimersRef = useRef<Record<string, number>>({});
+  const lastTypingEmitRef = useRef(0);
+  const typingStopTimerRef = useRef<number | null>(null);
+  const typingRoomRef = useRef<string | null>(null);
   const resetPollComposer = useCallback(() => {
     setPollTypeDraft("choice");
     setPollQuestionDraft("");
@@ -846,10 +876,25 @@ export default function Main({ username }: { username: string }) {
   const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadItems, setUploadItems] = useState<{ id: string; name: string; type: string; size: number; progress: number; status: 'uploading'|'done'|'error'; url?: string; localUrl?: string }[]>([]);
-  const [isOnline, setIsOnline] = useState(true);
-  const [presenceMap, setPresenceMap] = useState<Record<string, string>>({});
-  const [statusMessageMap, setStatusMessageMap] = useState<Record<string, string>>({});
-  const [richPresenceMap, setRichPresenceMap] = useState<Record<string, RichPresence>>({});
+  const realtimeStatus = useRealtimeStatusStore();
+  const isOnline = realtimeStatus.connectionState === "connected";
+  const setIsOnline = (_online: boolean) => {};
+  const presenceState = usePresenceStore();
+  const presenceMap = presenceStore.statusMap();
+  const statusMessageMap = presenceStore.statusMessageMap();
+  const richPresenceMap = presenceStore.richPresenceMap() as Record<string, RichPresence>;
+  const setPresenceMap = (value: Record<string, string> | ((current: Record<string, string>) => Record<string, string>)) => {
+    const next = typeof value === "function" ? value(presenceStore.statusMap()) : value;
+    presenceStore.mergeHttp({ statuses: next }, Date.now());
+  };
+  const setStatusMessageMap = (value: Record<string, string> | ((current: Record<string, string>) => Record<string, string>)) => {
+    const next = typeof value === "function" ? value(presenceStore.statusMessageMap()) : value;
+    presenceStore.mergeHttp({ statusMessages: next }, Date.now());
+  };
+  const setRichPresenceMap = (value: Record<string, RichPresence> | ((current: Record<string, RichPresence>) => Record<string, RichPresence>)) => {
+    const next = typeof value === "function" ? value(presenceStore.richPresenceMap() as Record<string, RichPresence>) : value;
+    presenceStore.mergeHttp({ richPresence: next }, Date.now());
+  };
   const [profileUser, setProfileUser] = useState<string | null>(null);
   const [profileContext, setProfileContext] = useState<string | undefined>(undefined);
   const [profileLauncherHover, setProfileLauncherHover] = useState(false);
@@ -863,15 +908,9 @@ export default function Main({ username }: { username: string }) {
   };
   const applyUserStatusPayload = (payload: any) => {
     if (!payload || typeof payload !== "object") return;
-    if (payload.statuses) {
-      setPresenceMap((prev) => mergeRecordWithLimit(prev, payload.statuses, MAX_PRESENCE_CACHE));
-    }
-    if (payload.statusMessages) {
-      setStatusMessageMap((prev) => mergeRecordWithLimit(prev, payload.statusMessages, MAX_STATUS_CACHE));
-    }
-    if (payload.richPresence) {
-      setRichPresenceMap((prev) => mergeRecordWithLimit(prev, payload.richPresence, MAX_RICH_PRESENCE_CACHE));
-    }
+    // Legacy status endpoints have no revision or timestamp. Treat them as an
+    // unversioned baseline so they cannot overwrite subsequent realtime data.
+    presenceStore.mergeHttp(payload, 0);
   };
   const [showPinned, setShowPinned] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -930,7 +969,7 @@ export default function Main({ username }: { username: string }) {
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useState(false);
   type Toast = { id: string; title: string; body?: string; type?: 'info'|'success'|'warn'|'error' };
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [onlineCount, setOnlineCount] = useState<number>(1);
+  const onlineCount = presenceState.onlineCount;
   const dialingAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringAudioRef = useRef<HTMLAudioElement | null>(null);
   const notify = (t: Omit<Toast,'id'>) => {
@@ -1108,16 +1147,40 @@ export default function Main({ username }: { username: string }) {
     }
   }, []);
 
-  const setupPeer = () => {
+  const peerRoomRef = useRef<string | null>(null);
+  const callSignalRef = useRef<Record<string, { callId: string; sequence: number }>>({});
+  const signalPayload = (room: string, payload: Record<string, unknown>) => {
+    const current = callSignalRef.current[room] || { callId: crypto.randomUUID(), sequence: 0 };
+    current.sequence += 1;
+    callSignalRef.current[room] = current;
+    return { ...payload, room, callId: current.callId, eventId: crypto.randomUUID(), issuedAt: Date.now(), sequence: current.sequence };
+  };
+  const turnCredentialsRef = useRef<RTCIceServer | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/turn-credentials', { credentials: 'same-origin', cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : null)
+      .then((result) => {
+        if (active && result?.iceServer) turnCredentialsRef.current = result.iceServer;
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const setupPeer = (room: string) => {
     if (pcRef.current) return pcRef.current;
+    peerRoomRef.current = room;
+    const iceServers: RTCIceServer[] = [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    ];
+    if (turnCredentialsRef.current) iceServers.push(turnCredentialsRef.current);
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      iceServers,
+      iceCandidatePoolSize: 8,
     });
     iceRestartAttemptedRef.current = false;
     pc.onicecandidate = (ev) => {
-      const room = activeCallDM || selectedDM;
       if (ev.candidate && socketRef.current && room) {
-        socketRef.current.emit('ice-candidate', { room, candidate: ev.candidate, from: username });
+        socketRef.current.emit('ice-candidate', signalPayload(room, { candidate: ev.candidate }));
       }
     };
     pc.ontrack = (ev) => {
@@ -1160,6 +1223,10 @@ export default function Main({ username }: { username: string }) {
     };
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
+      if (state === 'connected') {
+        setCallState('in-call');
+        setCallError(null);
+      }
       if (state === 'failed' && !iceRestartAttemptedRef.current) {
         iceRestartAttemptedRef.current = true;
         try {
@@ -1323,8 +1390,10 @@ export default function Main({ username }: { username: string }) {
     try {
       const stream = await requestCameraStream();
       cameraStreamRef.current = stream;
-      screenShareError && setScreenShareError(null);
-      const pc = setupPeer();
+      if (screenShareError) setScreenShareError(null);
+      const room = activeCallDM || selectedDM;
+      if (!room) throw new Error('No active call room.');
+      const pc = setupPeer(room);
       cameraSendersRef.current.forEach((sender) => {
         try {
           pc.removeTrack(sender);
@@ -1363,7 +1432,9 @@ export default function Main({ username }: { username: string }) {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
       screenShareStreamRef.current = stream;
-      const pc = setupPeer();
+      const room = activeCallDM || selectedDM;
+      if (!room) throw new Error('No active call room.');
+      const pc = setupPeer(room);
       screenShareSendersRef.current.forEach((sender) => {
         try {
           pc.removeTrack(sender);
@@ -1395,7 +1466,7 @@ export default function Main({ username }: { username: string }) {
     if (!desc) return;
     const dm = dms.find(d => d.id === selectedDM);
     const targets = dm ? dm.users.filter(u => u !== username) : [];
-    socketRef.current?.emit('call-offer', { room: selectedDM, offer: desc, from: username, targets });
+    socketRef.current?.emit('call-offer', signalPayload(selectedDM, { offer: desc, targets }));
   };
 
   const clearCallRejoin = useCallback(() => {
@@ -1416,7 +1487,7 @@ export default function Main({ username }: { username: string }) {
     } catch {}
     ringAudioRef.current = null;
     pendingOfferRef.current = null;
-    socketRef.current?.emit('call-decline', { room: target, from: username });
+    socketRef.current?.emit('call-decline', signalPayload(target, {}));
     if (incomingCall?.room === target) setIncomingCall(null);
     if (!hasJoinedCallRef.current) {
       if (activeCallDM === target) {
@@ -1435,7 +1506,7 @@ export default function Main({ username }: { username: string }) {
     clearCallRejoin();
     clearOfferRetry();
     if (endedRoom) {
-      socketRef.current?.emit('call-ended', { room: endedRoom, from: username, startedAt, endedAt: Date.now(), participants: callParticipantsRef.current });
+      socketRef.current?.emit('call-ended', signalPayload(endedRoom, { startedAt, endedAt: Date.now(), participants: callParticipantsRef.current }));
       try { fetch('/api/audit-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'call-end', message: `Call ended in ${endedRoom}`, meta: { room: endedRoom } }) }); } catch {}
     }
     setCallState('idle');
@@ -1447,6 +1518,7 @@ export default function Main({ username }: { username: string }) {
     setCallSummarySent(false);
     setCallElapsed(0);
     setCallParticipants([]);
+    pendingIceCandidatesRef.current = {};
     markJoined(false);
     if (dialingAudioRef.current) {
       try {
@@ -1542,16 +1614,25 @@ export default function Main({ username }: { username: string }) {
       if (localAudioRef.current) {
         localAudioRef.current.srcObject = stream;
       }
-      const pc = setupPeer();
+      const pc = setupPeer(selectedDM);
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const targetDm = dm;
       const targets = targetDm ? targetDm.users.filter(u => u !== username) : [];
       pendingOfferRef.current = null;
-      socketRef.current?.emit('call-offer', { room: selectedDM, offer, from: username, targets });
+      socketRef.current?.emit('call-offer', signalPayload(selectedDM, { offer, targets }), (result: { ok?: boolean; error?: string; onlineTargets?: number; callId?: string }) => {
+        if (!result?.ok) {
+          setCallError(result?.error || 'The call server rejected the offer.');
+          return;
+        }
+        if (result.callId) callSignalRef.current[selectedDM] = { callId: result.callId, sequence: callSignalRef.current[selectedDM]?.sequence || 0 };
+        if (result.onlineTargets === 0) {
+          setCallError('The other user is not connected to call signaling yet.');
+        }
+      });
       scheduleOfferRetry(selectedDM, targets);
-      socketRef.current?.emit('call-state', { room: selectedDM, state: 'calling', from: username, participants: syncedRoster });
+      socketRef.current?.emit('call-state', signalPayload(selectedDM, { state: 'calling', participants: syncedRoster }));
       await postCallSystemMessage(selectedDM, {
         text: `Voice call started by ${displayNameFor(username)}  -  ${formatElapsedClock(0)} elapsed`,
         systemType: 'call-start',
@@ -1574,7 +1655,13 @@ export default function Main({ username }: { username: string }) {
   };
 
   // Friends home state for DMs root
-  const [friendsState, setFriendsState] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
+  const friendStateSnapshot = useFriendStore();
+  const friendsState = { friends: friendStateSnapshot.friends, incoming: friendStateSnapshot.incoming, outgoing: friendStateSnapshot.outgoing };
+  const setFriendsState = (value: typeof friendsState | ((current: typeof friendsState) => typeof friendsState)) => {
+    const current = friendStore.getState();
+    const next = typeof value === "function" ? value(current) : value;
+    friendStore.applyRealtime(next);
+  };
   const [friendsTab, setFriendsTab] = useState<'all'|'online'|'pending'>('all');
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [addFriendName, setAddFriendName] = useState("");
@@ -1677,7 +1764,12 @@ export default function Main({ username }: { username: string }) {
     return match ? match.id : null;
   }, [havens]);
   const showTipsBanner = userSettings.showTips !== false;
-  const callsEnabled = (userSettings as any).callsEnabled !== false;
+  const [secureCallContext, setSecureCallContext] = useState(false);
+  useEffect(() => {
+    setSecureCallContext(window.isSecureContext === true && window.location.protocol === 'https:');
+  }, []);
+  const callsPreferenceEnabled = (userSettings as any).callsEnabled !== false;
+  const callsEnabled = callsPreferenceEnabled && secureCallContext;
   const callRingSound = (userSettings as any).callRingSound !== false;
   const callRingtoneKey = typeof (userSettings as any).callRingtone === 'string' && hasRingtone((userSettings as any).callRingtone)
     ? (userSettings as any).callRingtone
@@ -1860,6 +1952,7 @@ export default function Main({ username }: { username: string }) {
   const [callParticipants, setCallParticipants] = useState<CallParticipant[]>([]);
   const callParticipantsRef = useRef<CallParticipant[]>([]);
   const callRosterDirtyRef = useRef(false);
+  const callRevisionRef = useRef<Record<string, number>>({});
   const [hasJoinedCall, setHasJoinedCall] = useState(false);
   const hasJoinedCallRef = useRef(false);
   const markJoined = (joined: boolean) => {
@@ -1876,6 +1969,7 @@ export default function Main({ username }: { username: string }) {
   const ringFallbackTimerRef = useRef<number | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pendingIceCandidatesRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
   const iceRestartAttemptedRef = useRef(false);
   const iceRestartingRef = useRef(false);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -1890,6 +1984,13 @@ export default function Main({ username }: { username: string }) {
   const screenShareStreamRef = useRef<MediaStream | null>(null);
   const cameraSendersRef = useRef<RTCRtpSender[]>([]);
   const screenShareSendersRef = useRef<RTCRtpSender[]>([]);
+  const flushPendingIceCandidates = useCallback(async (room: string, pc: RTCPeerConnection) => {
+    const candidates = pendingIceCandidatesRef.current[room] || [];
+    delete pendingIceCandidatesRef.current[room];
+    for (const candidate of candidates) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+    }
+  }, []);
   const [pipSize, setPipSize] = useState<{ width: number; height: number }>({
     width: DEFAULT_PIP_WIDTH,
     height: DEFAULT_PIP_HEIGHT,
@@ -1911,12 +2012,20 @@ export default function Main({ username }: { username: string }) {
   const [isDeafened, setIsDeafened] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  useEffect(() => {
+    const desired = new Set<string>();
+    if (selectedRoomId) desired.add(selectedRoomId);
+    if (activeCallDM) desired.add(activeCallDM);
+    if (incomingCall?.room) desired.add(incomingCall.room);
+    getRealtimeManager().setDesiredRooms(desired);
+  }, [selectedRoomId, activeCallDM, incomingCall?.room]);
   const isScreenSharingRef = useRef(isScreenSharing);
   const [showFullscreenCall, setShowFullscreenCall] = useState(false);
   const [remoteVideoAvailable, setRemoteVideoAvailable] = useState(false);
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
   const renegotiationLockRef = useRef(false);
-  const [userProfileCache, setUserProfileCache] = useState<Record<string, { displayName: string; avatarUrl: string }>>({});
+  const userProfileState = useUserStore();
+  const userProfileCache = userProfileState.byId;
   const [streamerRevealKey, setStreamerRevealKey] = useState<string | null>(null);
   const beginStreamerReveal = useCallback((key: string) => {
     setStreamerRevealKey((prev) => (prev === key ? prev : key));
@@ -2278,10 +2387,10 @@ export default function Main({ username }: { username: string }) {
           const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
           navigator.sendBeacon('/api/call-sync', blob);
         } catch {
-          socketRef.current?.emit('call-state', payload);
+          socketRef.current?.emit('call-state', signalPayload(payload.room, payload));
         }
       } else {
-        socketRef.current?.emit('call-state', payload);
+        socketRef.current?.emit('call-state', signalPayload(payload.room, payload));
       }
     } catch {}
     callRosterDirtyRef.current = false;
@@ -2366,15 +2475,15 @@ export default function Main({ username }: { username: string }) {
       if (localAudioRef.current) {
         localAudioRef.current.srcObject = stream;
       }
-      const pc = setupPeer();
+      const pc = setupPeer(room);
       stream.getTracks().forEach(t => pc.addTrack(t, stream));
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const targets = dm.users.filter(u => u !== username);
       pendingOfferRef.current = null;
-      socketRef.current?.emit('call-offer', { room, offer, from: username, targets });
+      socketRef.current?.emit('call-offer', signalPayload(room, { offer, targets }));
       scheduleOfferRetry(room, targets);
-      socketRef.current?.emit('call-state', { room, state: 'calling', from: username, participants: syncedRoster });
+      socketRef.current?.emit('call-state', signalPayload(room, { state: 'calling', participants: syncedRoster }));
       updateSelfParticipant({ muted: isMuted, deafened: isDeafened, status: 'connected', videoEnabled: isCameraOn, screenSharing: isScreenSharing });
     } catch (e: any) {
       setCallState('idle');
@@ -2469,7 +2578,7 @@ export default function Main({ username }: { username: string }) {
       const offer = await pc.createOffer(opts?.iceRestart ? { iceRestart: true } : undefined);
       if ((pc as any).signalingState === 'closed' || (pc as any).connectionState === 'closed') return;
       await pc.setLocalDescription(offer);
-      socketRef.current?.emit('call-renegotiate', { room, offer, from: username });
+      socketRef.current?.emit('call-renegotiate', signalPayload(room, { offer }));
     } catch (err) {
       console.warn('Renegotiation failed', err);
     } finally {
@@ -2480,6 +2589,7 @@ export default function Main({ username }: { username: string }) {
     requestRenegotiationRef.current = requestRenegotiation;
   }, [requestRenegotiation]);
   const pendingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
+  const seenCallOfferIdsRef = useRef<Set<string>>(new Set());
   const normalizedCallParticipants = callParticipants.filter((p): p is CallParticipant => !!p && !!p.user);
   const callParticipantUsers = normalizedCallParticipants.map((p) => p.user);
   const isUserInActiveCall = (user?: string | null) => !!user && callState !== 'idle' && callParticipantUsers.includes(user);
@@ -2583,17 +2693,7 @@ export default function Main({ username }: { username: string }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data) return;
-        setUserProfileCache((prev) =>
-          setRecordEntryWithLimit(
-            prev,
-            user,
-            {
-              displayName: data.displayName || user,
-              avatarUrl: data.avatarUrl || "",
-            },
-            MAX_PROFILE_CACHE
-          )
-        );
+        userStore.upsert(user, { displayName: data.displayName || user, avatarUrl: data.avatarUrl || "" });
       })
       .catch(() => {})
       .finally(() => {
@@ -2709,19 +2809,21 @@ export default function Main({ username }: { username: string }) {
   // Load DMs from server and persist locally for quick access
   useEffect(() => {
     let ignore = false;
+    const requestStartedAt = Date.now();
+    const requestEpoch = conversationStore.beginRequest();
     fetch('/api/dms')
       .then(r => r.json())
       .then(d => {
         if (ignore) return;
         if (Array.isArray(d.dms)) {
-          setDMs(d.dms);
+          conversationStore.mergeSnapshot(d.dms, requestEpoch, requestStartedAt);
           try { localStorage.setItem('dms', JSON.stringify(d.dms)); } catch {}
         }
         setDmsLoaded(true);
       })
       .catch(() => {
         // fallback to localStorage if server unavailable
-        try { const s = localStorage.getItem('dms'); if (s) setDMs(JSON.parse(s)); } catch {}
+        try { const s = localStorage.getItem('dms'); if (s) conversationStore.mergeSnapshot(JSON.parse(s), requestEpoch, 0); } catch {}
         setDmsLoaded(true);
       });
     return () => { ignore = true; };
@@ -3012,15 +3114,17 @@ export default function Main({ username }: { username: string }) {
 
   // Load friends lists for DMs home
   const reloadFriends = async () => {
+    const requestStartedAt = Date.now();
+    const requestEpoch = friendStore.beginRequest();
     try {
-      const res = await fetch('/api/friends');
+      const res = await fetch('/api/friends', { cache: 'no-store' });
       const data = await res.json();
       const fs = {
         friends: Array.isArray(data.friends) ? data.friends : [],
         incoming: Array.isArray(data.incoming) ? data.incoming : [],
         outgoing: Array.isArray(data.outgoing) ? data.outgoing : [],
       };
-      setFriendsState(fs);
+      friendStore.applySnapshot(fs, requestEpoch, requestStartedAt);
       // fetch presence for all listed users (best-effort)
       const all = [...fs.friends, ...fs.incoming, ...fs.outgoing];
       if (all.length > 0) {
@@ -3034,10 +3138,29 @@ export default function Main({ username }: { username: string }) {
   };
   useEffect(() => { reloadFriends(); }, []);
 
+  useEffect(() => {
+    const manager = getRealtimeManager();
+    manager.setIdentity(username);
+    socketRef.current = manager.getSocket();
+  }, [username]);
+
   const friendAction = async (action: 'request'|'accept'|'decline'|'cancel'|'remove', target: string) => {
     try {
-      await fetch('/api/friends', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, target }) });
+      const response = await fetch('/api/friends', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, target }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        notify({ title: 'Friend action failed', body: result?.error || 'Please try again.', type: 'error' });
+        return;
+      }
       await reloadFriends();
+      const localMessages = {
+        request: { title: 'Friend request sent', body: `Request sent to ${target}.`, type: 'success' as const },
+        accept: { title: 'Friend request accepted', body: `${target} is now your friend.`, type: 'success' as const },
+        decline: { title: 'Friend request denied', body: `You denied ${target}'s request.`, type: 'info' as const },
+        cancel: { title: 'Friend request cancelled', body: `Request to ${target} was cancelled.`, type: 'info' as const },
+        remove: { title: 'Friend removed', body: `${target} was removed from your friends list.`, type: 'warn' as const },
+      };
+      notify(localMessages[action]);
       if (action === 'accept') {
         // refresh DMs after accept to include ensured DM
         const r = await fetch('/api/dms');
@@ -3046,6 +3169,42 @@ export default function Main({ username }: { username: string }) {
       }
     } catch {}
   };
+
+  useEffect(() => {
+    const manager = getRealtimeManager();
+    manager.setIdentity(username);
+    const unregister = manager.registerReconciler(async () => {
+      const requestStartedAt = Date.now();
+      const friendEpoch = friendStore.beginRequest();
+      const conversationEpoch = conversationStore.beginRequest();
+      const [friendsResponse, dmsResponse] = await Promise.all([
+        fetch('/api/friends', { cache: 'no-store' }),
+        fetch('/api/dms', { cache: 'no-store' }),
+      ]);
+      const [friendData, dmData] = await Promise.all([
+        friendsResponse.ok ? friendsResponse.json() : Promise.reject(new Error('Friend reconciliation failed')),
+        dmsResponse.ok ? dmsResponse.json() : Promise.reject(new Error('DM reconciliation failed')),
+      ]);
+      friendStore.applySnapshot({
+        friends: Array.isArray(friendData.friends) ? friendData.friends : [],
+        incoming: Array.isArray(friendData.incoming) ? friendData.incoming : [],
+        outgoing: Array.isArray(friendData.outgoing) ? friendData.outgoing : [],
+      }, friendEpoch, requestStartedAt);
+      if (Array.isArray(dmData.dms)) conversationStore.mergeSnapshot(dmData.dms, conversationEpoch, requestStartedAt);
+      const relevantUsers = Array.from(new Set([
+        ...(Array.isArray(friendData.friends) ? friendData.friends : []),
+        ...(Array.isArray(friendData.incoming) ? friendData.incoming : []),
+        ...(Array.isArray(friendData.outgoing) ? friendData.outgoing : []),
+        ...((Array.isArray(dmData.dms) ? dmData.dms : []).flatMap((dm: DMThread) => dm.users || [])),
+      ])).filter((user) => user && user !== username);
+      if (relevantUsers.length) {
+        const statusResponse = await fetch(`/api/user-status?users=${encodeURIComponent(relevantUsers.join(','))}`, { cache: 'no-store' });
+        if (statusResponse.ok) applyUserStatusPayload(await statusResponse.json());
+      }
+    });
+    void manager.reconcile('initial');
+    return unregister;
+  }, [username]);
 
   const resetGroupDMModal = useCallback(() => {
     setGroupDMName("");
@@ -3306,96 +3465,45 @@ export default function Main({ username }: { username: string }) {
   // Load messages for selected channel or DM
   useEffect(() => {
     let ignore = false;
+    let unregisterMessageReconciler: (() => void) | null = null;
     if (!socketRef.current) {
-      socketRef.current = io({ path: "/api/socketio" });
+      getRealtimeManager().setIdentity(username);
+      socketRef.current = getRealtimeManager().getSocket();
     }
-    const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
-    socketRef.current.emit("join-room", room);
-    // Fetch all messages for the room
-    fetch(`/api/history?room=${encodeURIComponent(room)}`)
-      .then(res => res.json())
-      .then(data => {
-        if (ignore) return;
-        const list: Message[] = Array.isArray(data.messages) ? data.messages : [];
-        const seen = new Set<string>();
-          const unique = list.filter(m => m && typeof m.id === 'string' && !seen.has(m.id) && seen.add(m.id));
-          setMessages(trimMessageList(unique));
+    const room = selectedDM || (selectedHaven !== '__dms__' && selectedChannel
+      ? `${selectedHaven}__${selectedChannel}`
+      : null);
+    if (room) {
+      const requestStartedAt = Date.now();
+      const requestEpoch = messageStore.beginHistoryRequest(room);
+      fetch(`/api/history?room=${encodeURIComponent(room)}`, { cache: 'no-store' })
+        .then(res => res.json())
+        .then(data => {
+          if (ignore) return;
+          const list: Message[] = Array.isArray(data.messages) ? data.messages : [];
+          messageStore.mergeHistory(room, trimMessageList(list) as StoredMessage[], requestEpoch, { serverTimestamp: requestStartedAt });
+          const lastMessageId = list[list.length - 1]?.id;
+          void fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, action: 'mark_read', messageId: lastMessageId }) })
+            .then((response) => { if (response.ok) { conversationStore.markRead(room, lastMessageId); socketRef.current?.emit('read', { room, messageId: lastMessageId }); } })
+            .catch(() => {});
+        });
+      const manager = getRealtimeManager();
+      unregisterMessageReconciler = manager.registerReconciler(async () => {
+        const reconcileStartedAt = Date.now();
+        const reconcileEpoch = messageStore.beginHistoryRequest(room);
+        const response = await fetch(`/api/history?room=${encodeURIComponent(room)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Message reconciliation failed');
+        const data = await response.json();
+        const authoritative = Array.isArray(data.messages) ? data.messages as Message[] : [];
+        messageStore.mergeHistory(room, authoritative as StoredMessage[], reconcileEpoch, { serverTimestamp: reconcileStartedAt });
+        const lastMessageId = authoritative[authoritative.length - 1]?.id;
+        const readResponse = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, action: 'mark_read', messageId: lastMessageId }) });
+        if (readResponse.ok) { conversationStore.markRead(room, lastMessageId); socketRef.current?.emit('read', { room, messageId: lastMessageId }); }
       });
-
-    // Handler to add new messages only if they are not already present
-    const handleSocketMessage = (msg: Message) => {
-      setMessages((prev) => {
-        // Prevent duplicates (by id)
-        if (prev.some((m) => m.id === msg.id)) return prev;
-        return trimMessageList([...prev, msg]);
-      });
-      if (msg.user !== username) {
-        const isMention = (msg.text || '').includes(`@${username}`);
-        notify({ title: isMention ? 'Mention' : 'New message', body: `${msg.user}: ${(msg.text || '').slice(0, 80)}`, type: isMention ? 'success' : 'info' });
-        maybeNotifyDesktop({ room, sender: msg.user, text: msg.text || '' });
-      }
-    };
-    const handleReact = (payload: { message: Message }) => setMessages(prev => prev.map(m => m.id === payload.message.id ? payload.message : m));
-    const handlePin = (payload: { message: Message }) => {
-      setMessages(prev => prev.map(m => m.id === payload.message.id ? payload.message : m));
-      try {
-        if (payload.message?.pinned && userSettings?.notifications?.pins) {
-          const preview = (payload.message.text || '').slice(0, 64);
-          notify({ title: 'Message pinned', body: preview, type: 'info' });
-        }
-      } catch {}
-    };
-    const handleEditEvent = (payload: { message: Message }) => setMessages(prev => prev.map(m => m.id === payload.message.id ? payload.message : m));
-    const handleDeleteEvent = (payload: { messageId: string }) => setMessages(prev => prev.filter(m => m.id !== payload.messageId));
-    const dmAddedHandler = (payload: { dm: DMThread }) => {
-      const dm = payload?.dm;
-      if (!dm || !Array.isArray(dm.users) || !dm.users.includes(username)) return;
-      setDMs((prev) => {
-        const exists = prev.some((existing) => existing.id === dm.id);
-        if (exists) {
-          return prev.map((existing) => (existing.id === dm.id ? dm : existing));
-        }
-        return [...prev, dm];
-      });
-    };
-    const dmUpdatedHandler = (payload: { dm: DMThread }) => {
-      const dm = payload?.dm;
-      if (!dm || typeof dm.id !== 'string') return;
-      setDMs((prev) => {
-        const includesSelf = Array.isArray(dm.users) && dm.users.includes(username);
-        if (!includesSelf) {
-          const filtered = prev.filter((entry) => entry.id !== dm.id);
-          if (filtered.length !== prev.length && selectedDM === dm.id) {
-            setSelectedDM(null);
-          }
-          if (groupSettingsTarget === dm.id) {
-            closeGroupSettingsModal();
-          }
-          return filtered;
-        }
-        const exists = prev.some((entry) => entry.id === dm.id);
-        if (exists) {
-          return prev.map((entry) => (entry.id === dm.id ? dm : entry));
-        }
-        return [...prev, dm];
-      });
-    };
-    socketRef.current.on("message", handleSocketMessage);
-    socketRef.current.on("dm-added", dmAddedHandler);
-    socketRef.current.on("dm-updated", dmUpdatedHandler);
-    socketRef.current.on("react", handleReact);
-    socketRef.current.on("pin", handlePin);
-    socketRef.current.on("edit", handleEditEvent);
-    socketRef.current.on("delete", handleDeleteEvent);
+    }
     return () => {
       ignore = true;
-      socketRef.current?.off("message", handleSocketMessage);
-      socketRef.current?.off("dm-added", dmAddedHandler);
-      socketRef.current?.off("dm-updated", dmUpdatedHandler);
-      socketRef.current?.off("react", handleReact);
-      socketRef.current?.off("pin", handlePin);
-      socketRef.current?.off("edit", handleEditEvent);
-      socketRef.current?.off("delete", handleDeleteEvent);
+      unregisterMessageReconciler?.();
     };
   }, [selectedHaven, selectedChannel, selectedDM, username, groupSettingsTarget, closeGroupSettingsModal]);
 
@@ -3585,14 +3693,30 @@ export default function Main({ username }: { username: string }) {
   // Global presence listener
   useEffect(() => {
     if (!socketRef.current) {
-      socketRef.current = io({ path: "/api/socketio" });
+      getRealtimeManager().setIdentity(username);
+      socketRef.current = getRealtimeManager().getSocket();
     }
-    const handler = (data: { user: string; status: string }) => setPresenceMap((prev) => setRecordEntryWithLimit(prev, data.user, data.status, MAX_PRESENCE_CACHE));
-    const countHandler = (data: { count: number }) => { if (typeof data?.count === 'number') setOnlineCount(data.count); };
-    socketRef.current.on('presence', handler);
-    socketRef.current.on('online-count', countHandler);
-  const offerHandler = async (data: { room: string; offer: RTCSessionDescriptionInit; from: string }) => {
-    if (!callsEnabled) return;
+  const offerHandler = async (data: { room: string; offer: RTCSessionDescriptionInit; from: string; callId?: string; offerId?: string }) => {
+    if (!callsPreferenceEnabled) return;
+    if (data.offerId) {
+      if (seenCallOfferIdsRef.current.has(data.offerId)) return;
+      seenCallOfferIdsRef.current.add(data.offerId);
+      if (seenCallOfferIdsRef.current.size > 100) {
+        seenCallOfferIdsRef.current = new Set(Array.from(seenCallOfferIdsRef.current).slice(-50));
+      }
+    }
+    if (data.callId) callSignalRef.current[data.room] = { callId: data.callId, sequence: callSignalRef.current[data.room]?.sequence || 0 };
+    // If both users dial at once, discard this client's competing offer and join
+    // the single call session selected by the signaling server.
+    if (callStateRef.current === 'calling' && activeCallDM === data.room && data.from !== username) {
+      clearOfferRetry();
+      pcRef.current?.close();
+      pcRef.current = null;
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+      markJoined(false);
+      setCallState('idle');
+    }
     pendingOfferRef.current = data.offer;
     setActiveCallDM(data.room);
     setCallInitiator(data.from || null);
@@ -3605,6 +3729,27 @@ export default function Main({ username }: { username: string }) {
       // If we're already in this DM, auto-accept the call
       // Show an incoming call popup and start ringtone if enabled
       setIncomingCall({ room: data.room, from: data.from });
+      notify({
+        title: 'Incoming call',
+        body: secureCallContext
+          ? `${data.from} is calling you.`
+          : `${data.from} is calling. Open ChitterHaven over HTTPS or localhost to answer.`,
+        type: secureCallContext ? 'info' : 'warn',
+      });
+      if (!secureCallContext) {
+        setCallError('Calls require HTTPS or localhost for microphone access.');
+      }
+      if (desktopNotificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted' && !document.hasFocus()) {
+        try {
+          const notification = new Notification(`Incoming call from ${data.from}`, {
+            body: 'Open ChitterHaven to answer.',
+            icon: '/favicon.ico',
+            tag: `ch-call-${data.callId || data.room}`,
+            requireInteraction: true,
+          });
+          notification.onclick = () => { window.focus(); notification.close(); };
+        } catch {}
+      }
       try {
         if (ringAudioRef.current) {
           ringAudioRef.current.pause();
@@ -3617,7 +3762,9 @@ export default function Main({ username }: { username: string }) {
           const ring = new Audio(callRingtoneSrc);
           ring.loop = true;
           ring.volume = Math.max(0, Math.min(1, userSettings?.notifications?.volume ?? 0.6));
-          ring.play().catch(() => {});
+          ring.play().catch(() => {
+            // Browser autoplay policies may block audio, but the persistent call UI remains visible.
+          });
           ringAudioRef.current = ring;
         } catch {}
       }
@@ -3630,6 +3777,7 @@ export default function Main({ username }: { username: string }) {
         clearOfferRetry();
         if (!activeCallDM) setActiveCallDM(room);
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await flushPendingIceCandidates(room, pcRef.current);
         setCallState('in-call');
         const startedAt = Date.now();
         setCallStartedAt(startedAt);
@@ -3647,7 +3795,7 @@ export default function Main({ username }: { username: string }) {
           ...(dm ? dm.users.map(user => ({ user, status: 'ringing' as const })) : []),
         ]);
         if (!callInitiator) setCallInitiator(username);
-        socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, startedAt, participants: updatedRoster });
+        socketRef.current?.emit('call-state', signalPayload(room, { state: 'in-call', startedAt, participants: updatedRoster }));
         if (dialingAudioRef.current) {
           try {
             dialingAudioRef.current.pause();
@@ -3668,15 +3816,23 @@ export default function Main({ username }: { username: string }) {
       }
     };
     const iceHandler = async (data: { room: string; candidate: RTCIceCandidateInit; from: string }) => {
-      if (!(data.room === activeCallDM || data.room === selectedDM || (!activeCallDM && !selectedDM))) return;
-      if (!pcRef.current) return;
+      if (!(data.room === peerRoomRef.current || data.room === activeCallDM || data.room === selectedDM || (!activeCallDM && !selectedDM))) return;
+      if (!pcRef.current || !pcRef.current.remoteDescription) {
+        pendingIceCandidatesRef.current[data.room] = [...(pendingIceCandidatesRef.current[data.room] || []), data.candidate].slice(-128);
+        return;
+      }
       try {
         await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
       } catch {}
     };
     const callStateHandler = (data: any) => {
-      const { room, state, startedAt, from, participants } = data || {};
+      const { room, state, startedAt, from, participants, revision } = data || {};
       if (!room) return;
+      if (typeof revision === 'number') {
+        const previousRevision = callRevisionRef.current[room] || 0;
+        if (revision <= previousRevision) return;
+        callRevisionRef.current[room] = revision;
+      }
       const isTrackedRoom =
         room === activeCallDM ||
         room === selectedDM ||
@@ -3769,9 +3925,10 @@ export default function Main({ username }: { username: string }) {
       if (!relevant || !pcRef.current) return;
       try {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+        await flushPendingIceCandidates(room, pcRef.current);
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
-        socketRef.current?.emit('call-renegotiate-answer', { room, answer, from: username });
+        socketRef.current?.emit('call-renegotiate-answer', signalPayload(room, { answer }));
       } catch (e) {
         console.warn('Failed to handle renegotiation offer', e);
       }
@@ -3786,29 +3943,24 @@ export default function Main({ username }: { username: string }) {
       if (!relevant || !pcRef.current) return;
       try {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+        await flushPendingIceCandidates(room, pcRef.current);
       } catch (e) {
         console.warn('Failed to apply renegotiation answer', e);
       }
     };
-    socketRef.current.on('call-offer', offerHandler);
-    socketRef.current.on('call-answer', answerHandler);
-    socketRef.current.on('ice-candidate', iceHandler);
-    socketRef.current.on('call-state', callStateHandler);
-    socketRef.current.on('call-decline', callDeclineHandler);
-    socketRef.current.on('call-ended', callEndedHandler);
-    socketRef.current.on('call-renegotiate', renegotiateOfferHandler);
-    socketRef.current.on('call-renegotiate-answer', renegotiateAnswerHandler);
+    const manager = getRealtimeManager();
+    const unsubscribe = manager.subscribeCallEvents({
+      onOffer: offerHandler,
+      onAnswer: answerHandler,
+      onIceCandidate: iceHandler,
+      onState: callStateHandler,
+      onDecline: callDeclineHandler,
+      onEnded: callEndedHandler,
+      onRenegotiate: renegotiateOfferHandler,
+      onRenegotiateAnswer: renegotiateAnswerHandler,
+    });
     return () => {
-      socketRef.current?.off('presence', handler);
-      socketRef.current?.off('online-count', countHandler);
-      socketRef.current?.off('call-offer', offerHandler);
-      socketRef.current?.off('call-answer', answerHandler);
-      socketRef.current?.off('ice-candidate', iceHandler);
-      socketRef.current?.off('call-state', callStateHandler);
-      socketRef.current?.off('call-decline', callDeclineHandler);
-      socketRef.current?.off('call-ended', callEndedHandler);
-      socketRef.current?.off('call-renegotiate', renegotiateOfferHandler);
-      socketRef.current?.off('call-renegotiate-answer', renegotiateAnswerHandler);
+      unsubscribe();
     };
   }, [selectedDM, username, activeCallDM, callState, callStartedAt, dms, incomingCall, callInitiator, notify, isMuted, isDeafened, isCameraOn, isScreenSharing]);
 
@@ -4002,12 +4154,10 @@ export default function Main({ username }: { username: string }) {
       if (!pc || !pc.localDescription || !currentRoom) return;
       if (offerRetryCountRef.current >= 3) return;
       offerRetryCountRef.current += 1;
-      socketRef.current?.emit('call-offer', {
-        room: currentRoom,
+      socketRef.current?.emit('call-offer', signalPayload(currentRoom, {
         offer: pc.localDescription,
-        from: username,
         targets: offerRetryTargetsRef.current,
-      });
+      }));
       offerRetryTimerRef.current = window.setTimeout(attempt, offerRetryCountRef.current === 1 ? 4000 : 6000);
     };
     offerRetryTimerRef.current = window.setTimeout(attempt, 4000);
@@ -4163,6 +4313,10 @@ export default function Main({ username }: { username: string }) {
     if (x + menuW + pad > vw) x = Math.max(pad, vw - menuW - pad);
     if (y + menuH + pad > vh) y = Math.max(pad, vh - menuH - pad);
     setCtxMenuPos({ x, y });
+    requestAnimationFrame(() => {
+      const firstAction = menuEl?.querySelector<HTMLButtonElement>('button:not(:disabled)');
+      firstAction?.focus({ preventScroll: true });
+    });
   }, [ctxMenu?.open, ctxMenu?.x, ctxMenu?.y]);
 
   const ctxMenuStyles = {
@@ -4230,9 +4384,12 @@ export default function Main({ username }: { username: string }) {
   };
 
   // Quick Switcher (Ctrl/Cmd + K)
-  type QuickItem = { id: string; label: string; type: 'haven'|'channel'|'dm'|'dmhome'; haven?: string; channel?: string; dmId?: string };
+  type QuickItem = { id: string; label: string; type: 'haven'|'channel'|'dm'|'dmhome'|'action'; haven?: string; channel?: string; dmId?: string; action?: 'settings'|'profile'|'guide' };
   const getQuickItems = (): QuickItem[] => {
     const items: QuickItem[] = [];
+    items.push({ id: 'a:settings', label: 'Action  -  Open user settings', type: 'action', action: 'settings' });
+    items.push({ id: 'a:profile', label: 'Action  -  View your profile', type: 'action', action: 'profile' });
+    items.push({ id: 'a:guide', label: 'Action  -  Restart navigation guide', type: 'action', action: 'guide' });
     items.push({ id: 'd:home', label: 'Friends  -  Direct Messages', type: 'dmhome' });
     Object.keys(havens).forEach(h => {
       const havenName = getHavenName(h);
@@ -4252,7 +4409,14 @@ export default function Main({ username }: { username: string }) {
   };
   const selectQuickItem = (it: QuickItem) => {
     setQuickOpen(false);
-    if (it.type === 'dmhome') {
+    if (it.type === 'action') {
+      if (it.action === 'settings') setShowUserSettings(true);
+      if (it.action === 'profile') {
+        setProfileContext("Your Profile");
+        setProfileUser(username);
+      }
+      if (it.action === 'guide') window.dispatchEvent(new Event('ch_restart_navigation_guide'));
+    } else if (it.type === 'dmhome') {
       setSelectedHaven('__dms__');
       setSelectedDM(null);
       setSelectedChannel('');
@@ -4312,44 +4476,71 @@ export default function Main({ username }: { username: string }) {
 
   useEffect(() => {
     const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
-    const handleTyping = (data: { user: string; room: string }) => {
+    const handleTypingStart = (data: { user: string; room: string }) => {
       if (data.room !== room || data.user === username) return;
       setTypingUsers((prev) => {
         if (!prev.includes(data.user)) return [...prev, data.user];
         return prev;
       });
-      setTimeout(() => {
+      if (typingExpiryTimersRef.current[data.user]) window.clearTimeout(typingExpiryTimersRef.current[data.user]);
+      typingExpiryTimersRef.current[data.user] = window.setTimeout(() => {
         setTypingUsers((prev) => prev.filter((u) => u !== data.user));
-      }, 2500);
+        delete typingExpiryTimersRef.current[data.user];
+      }, 4000);
     };
-    socketRef.current?.on("typing", handleTyping);
+    const handleTypingStop = (data: { user: string; room: string }) => {
+      if (data.room !== room) return;
+      if (typingExpiryTimersRef.current[data.user]) window.clearTimeout(typingExpiryTimersRef.current[data.user]);
+      delete typingExpiryTimersRef.current[data.user];
+      setTypingUsers((prev) => prev.filter((user) => user !== data.user));
+    };
+    const manager = getRealtimeManager();
+    const unsubscribe = manager.subscribeTypingEvents({ onStart: handleTypingStart, onStop: handleTypingStop, onReset: () => setTypingUsers([]) });
     return () => {
-      socketRef.current?.off("typing", handleTyping);
+      unsubscribe();
+      Object.values(typingExpiryTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      typingExpiryTimersRef.current = {};
+      setTypingUsers([]);
     };
   }, [selectedHaven, selectedChannel, selectedDM, username]);
 
-    const sendMessage = () => {
+  const sendMessage = () => {
       if (!isOnline) {
         notify({ title: "Offline", body: "Messages are blocked while offline.", type: "warn" });
         return;
       }
       if (input.trim()) {
         const room = `${selectedDM || `${selectedHaven}__${selectedChannel}`}`;
-        const msg: any = { user: username, text: input };
+        const clientMutationId = crypto.randomUUID();
+        const msg: any = { user: username, text: input, clientMutationId };
       if (replyTo?.id) msg.replyToId = replyTo.id;
       if (pendingFiles.length > 0) msg.attachments = pendingFiles;
+      const optimisticMessage: Message = {
+        ...msg,
+        id: `pending:${clientMutationId}`,
+        timestamp: Date.now(),
+        deliveryState: 'sending',
+      };
+      setMessages((prev) => trimMessageList([...prev, optimisticMessage]));
       fetch("/api/history", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ room, msg })
       })
-        .then(res => res.json())
-        .then(data => {
-          if (data.message) {
+        .then(async (res) => ({ ok: res.ok, data: await res.json().catch(() => ({})) }))
+        .then(({ ok, data }) => {
+          if (ok && data.message) {
             socketRef.current?.emit("message", { room, msg: data.message });
-            setMessages((prev) => trimMessageList([...prev, data.message]));
+            setMessages((prev) => trimMessageList(prev.map((message) =>
+              message.clientMutationId === clientMutationId
+                ? { ...data.message, deliveryState: 'sent' }
+                : message,
+            )));
+          } else {
+            setMessages((prev) => prev.map((message) => message.clientMutationId === clientMutationId ? { ...message, deliveryState: 'failed' } : message));
           }
-        });
+        })
+        .catch(() => setMessages((prev) => prev.map((message) => message.clientMutationId === clientMutationId ? { ...message, deliveryState: 'failed' } : message)));
       setInput("");
       setReplyTo(null);
       setPendingFiles([]);
@@ -4968,7 +5159,38 @@ export default function Main({ username }: { username: string }) {
     }
     const room = roomKey();
     try { localStorage.setItem(`draft:${room}` , nextValue); } catch {}
-    socketRef.current?.emit("typing", { user: username, room });
+    typingRoomRef.current = room;
+    const now = Date.now();
+    if (now - lastTypingEmitRef.current >= 1500) {
+      socketRef.current?.emit("typing-start", { user: username, room });
+      lastTypingEmitRef.current = now;
+    }
+    if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = window.setTimeout(() => {
+      if (typingRoomRef.current) socketRef.current?.emit("typing-stop", { user: username, room: typingRoomRef.current });
+      typingRoomRef.current = null;
+      typingStopTimerRef.current = null;
+    }, 2500);
+  };
+
+  const retryMessage = (failedMessage: Message) => {
+    const room = selectedRoomId;
+    const clientMutationId = failedMessage.clientMutationId;
+    if (!room || !clientMutationId || !isOnline) return;
+    const msg = { ...failedMessage, id: undefined, timestamp: undefined, deliveryState: undefined };
+    setMessages((previous) => previous.map((message) => message.clientMutationId === clientMutationId ? { ...message, deliveryState: 'sending' } : message));
+    fetch('/api/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room, msg }),
+    })
+      .then(async (response) => ({ ok: response.ok, data: await response.json().catch(() => ({})) }))
+      .then(({ ok, data }) => {
+        if (!ok || !data.message) throw new Error('Retry failed');
+        socketRef.current?.emit('message', { room, msg: data.message });
+        setMessages((previous) => trimMessageList(previous.map((message) => message.clientMutationId === clientMutationId ? { ...data.message, deliveryState: 'sent' } : message)));
+      })
+      .catch(() => setMessages((previous) => previous.map((message) => message.clientMutationId === clientMutationId ? { ...message, deliveryState: 'failed' } : message)));
   };
 
   // Load draft on room change
@@ -5015,7 +5237,8 @@ export default function Main({ username }: { username: string }) {
       const xhr = new XMLHttpRequest(); xhr.open('POST', '/api/upload'); xhr.setRequestHeader('Content-Type', 'application/json');
       xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) { const pct = Math.min(100, Math.round((ev.loaded / ev.total) * 100)); setUploadItems(prev => prev.map(u => u.id === id ? { ...u, progress: pct } : u)); } };
       xhr.onreadystatechange = () => { if (xhr.readyState === 4) { try { const json = JSON.parse(xhr.responseText || '{}'); if (xhr.status >= 200 && xhr.status < 300) { setPendingFiles(prev => [...prev, { url: json.url, name: json.name, type: json.type, size: json.size }]); setUploadItems(prev => prev.filter(u => u.id !== id)); } else { setUploadItems(prev => prev.map(u => u.id === id ? { ...u, status: 'error' } : u)); } } catch { setUploadItems(prev => prev.map(u => u.id === id ? { ...u, status: 'error' } : u)); } resolveUp(); } };
-      xhr.send(JSON.stringify({ name, data: dataUrl, type }));
+      const room = selectedDM || (selectedHaven && selectedChannel ? `${selectedHaven}__${selectedChannel}` : null);
+      xhr.send(JSON.stringify({ name, data: dataUrl, type, room }));
     });
   };
 
@@ -5128,10 +5351,10 @@ export default function Main({ username }: { username: string }) {
   const profileLauncher = (
     <div
       style={{
-        position: 'fixed',
-        top: 16,
+        position: 'absolute',
+        bottom: 16,
         left: 16,
-        zIndex: 131,
+        zIndex: 40,
         display: 'flex',
         alignItems: 'center',
         gap: 0,
@@ -5211,9 +5434,13 @@ export default function Main({ username }: { username: string }) {
           style={{
             display: "flex",
             height: "100dvh",
+            maxHeight: "100dvh",
             width: "100%",
             maxWidth: "100%",
             minWidth: 0,
+            minHeight: 0,
+            overflow: "hidden",
+            boxSizing: "border-box",
             margin: 0,
             border: BORDER,
             borderRadius: 0,
@@ -5275,7 +5502,6 @@ export default function Main({ username }: { username: string }) {
             onUploadFiles={handleUploadFiles}
           />
         </div>
-        {!isMobile && profileLauncher}
         {streamerBadge}
         {privacyOverlay}
       </>
@@ -5336,23 +5562,28 @@ export default function Main({ username }: { username: string }) {
         className="ch-shell"
         style={{
           display: "flex",
-          height: fillScreen ? "100vh" : (isMobile ? "calc(100vh - 1rem)" : "70vh"),
+          height: "100dvh",
+          maxHeight: "100dvh",
           width: "100%",
-          maxWidth: fillScreen ? "100%" : (isMobile ? "100%" : 1100),
-          minWidth: 320,
-          margin: fillScreen ? "0" : (isMobile ? "0.5rem auto" : "2rem auto"),
-          border: fillScreen ? "none" : BORDER,
-          borderRadius: fillScreen ? 0 : (isMobile ? 10 : 14),
+          maxWidth: "100%",
+          minWidth: 0,
+          minHeight: 0,
+          margin: "0 auto",
+          overflow: "hidden",
+          boxSizing: "border-box",
+          border: "none",
+          borderRadius: 0,
           background: "var(--ch-shell-bg)",
           backgroundSize: "var(--ch-shell-bg-size, cover)",
           backgroundPosition: "var(--ch-shell-bg-position, center)",
           backgroundRepeat: "var(--ch-shell-bg-repeat, no-repeat)",
-          boxShadow: fillScreen ? "none" : (isMobile ? "0 8px 24px rgba(0,0,0,0.4)" : "0 12px 40px rgba(0,0,0,0.35)"),
+          boxShadow: "none",
           filter: shellFilter,
           pointerEvents: shellPointerEvents,
           transition: 'filter 220ms ease'
         }}
       >
+      {profileLauncher}
       <NavController
         activeNav={activeNav}
         setActiveNav={setActiveNav}
@@ -5372,7 +5603,7 @@ export default function Main({ username }: { username: string }) {
         setFriendsTab={typeof setFriendsTab !== 'undefined' ? (setFriendsTab as any) : undefined}
       />
       {/* Havens sidebar */}
-      <aside style={{ width: resolvedNavSidebarWidth, background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+      <aside style={{ width: resolvedNavSidebarWidth, maxWidth: '35vw', minWidth: 0, minHeight: 0, flex: '0 1 auto', overflow: 'hidden', background: COLOR_PANEL, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><FontAwesomeIcon icon={faServer} /> {labelHavens}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -5624,7 +5855,7 @@ export default function Main({ username }: { username: string }) {
         </div>
       )}
       {/* Channels / DMs sidebar */}
-      <aside style={{ width: resolvedChannelSidebarWidth, background: COLOR_PANEL_ALT, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
+      <aside style={{ width: resolvedChannelSidebarWidth, maxWidth: '42vw', minWidth: 0, minHeight: 0, flex: '0 1 auto', overflow: 'hidden', background: COLOR_PANEL_ALT, borderRight: BORDER, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 12, borderBottom: BORDER, color: COLOR_TEXT, fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={selectedHaven === "__dms__" ? faEnvelope : faHashtag} />
@@ -5927,7 +6158,7 @@ export default function Main({ username }: { username: string }) {
         }}
       />
       {/* Main chat area */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", position: 'relative', paddingRight: membersSidebarOffset }}>
+      <div style={{ flex: '1 1 0%', minWidth: 0, minHeight: 0, overflow: 'hidden', display: "flex", flexDirection: "column", position: 'relative', paddingRight: membersSidebarOffset, boxSizing: 'border-box' }}>
         <div style={{ padding: 16, borderBottom: "1px solid #333", color: "#fff", fontWeight: 600, fontSize: 18, display: 'flex', alignItems: 'center', gap: 8 }}>
           {isMobile && (
             <button className="btn-ghost" onClick={() => setShowMobileNav(true)} title="Open navigation" style={{ padding: '6px 8px' }}>
@@ -6113,14 +6344,15 @@ export default function Main({ username }: { username: string }) {
                         <FontAwesomeIcon icon={faUserPlus} />
                       </button>
                     )}
-                    {callsEnabled && (
+                    {callsPreferenceEnabled && (
                       <button
                         className="btn-ghost"
                         onClick={startCall}
-                        title={callState === 'in-call' ? 'Already in call' : 'Start voice call'}
-                        style={{ padding: '6px 8px', color: callState === 'in-call' ? '#22c55e' : undefined }}
+                        disabled={!secureCallContext}
+                        title={!secureCallContext ? 'Voice calls require HTTPS' : callState === 'in-call' ? 'Already in call' : 'Start voice call'}
+                        style={{ padding: '6px 8px', color: !secureCallContext ? '#64748b' : callState === 'in-call' ? '#22c55e' : undefined, cursor: secureCallContext ? 'pointer' : 'not-allowed' }}
                       >
-                        <FontAwesomeIcon icon={faPhone} />
+                        <FontAwesomeIcon icon={secureCallContext ? faPhone : faLock} />
                       </button>
                     )}
                     {userSettings.showOnlineCount !== false && dm && (() => {
@@ -7294,6 +7526,14 @@ export default function Main({ username }: { username: string }) {
                           </ReactMarkdown>
                         );
                       })()}
+                      {msg.user === username && msg.deliveryState && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: msg.deliveryState === 'failed' ? '#f87171' : COLOR_TEXT_MUTED, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {msg.deliveryState === 'sending' ? 'Sending...' : msg.deliveryState === 'failed' ? 'Failed to send' : msg.deliveryState}
+                          {msg.deliveryState === 'failed' && msg.clientMutationId && (
+                            <button type="button" className="btn-ghost" onClick={() => retryMessage(msg)} style={{ padding: '1px 6px', fontSize: 10 }} disabled={!isOnline}>Retry</button>
+                          )}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -7599,6 +7839,11 @@ export default function Main({ username }: { username: string }) {
             <TextBar
               inputRef={inputRef as React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>}
               value={input}
+              multiline
+              rows={1}
+              autoResize
+              minHeight={44}
+              maxHeight={160}
               onValueChange={handleInputChange}
               onKeyDown={(e) => {
                 if (!permState.canSend) return;
@@ -7646,6 +7891,12 @@ export default function Main({ username }: { username: string }) {
               clearable
               style={{
                 flex: 1,
+                width: "100%",
+                minWidth: 0,
+                minHeight: 44,
+                maxHeight: 160,
+                resize: "none",
+                lineHeight: 1.5,
                 background: "#18181b",
                 color: permState.canSend ? "#fff" : "#6b7280",
                 border: "1px solid #333",
@@ -7667,7 +7918,8 @@ export default function Main({ username }: { username: string }) {
           </div>
         </form>
         )}
-        {showPollComposer && (
+      <NavigationGuide />
+      {showPollComposer && (
           <div
             style={{
               position: "fixed",
@@ -8023,12 +8275,21 @@ export default function Main({ username }: { username: string }) {
                         if (localAudioRef.current) {
                           localAudioRef.current.srcObject = stream;
                         }
-                        const pc = setupPeer();
+                        const pc = setupPeer(room);
                         stream.getTracks().forEach(t => pc.addTrack(t, stream));
                         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                        await flushPendingIceCandidates(room, pc);
                         const answer = await pc.createAnswer();
                         await pc.setLocalDescription(answer);
-                        socketRef.current?.emit('call-answer', { room, answer, from: username });
+                        socketRef.current?.emit('call-answer', signalPayload(room, { answer }), (result: { ok?: boolean; error?: string }) => {
+                          if (result?.ok) return;
+                          setCallError(result?.error || 'The call server rejected the answer.');
+                          pc.close();
+                          if (pcRef.current === pc) pcRef.current = null;
+                          stream.getTracks().forEach((track) => track.stop());
+                          markJoined(false);
+                          setCallState('idle');
+                        });
                         setCallState('in-call');
                         const startedAt = Date.now();
                         setCallStartedAt(startedAt);
@@ -8043,7 +8304,7 @@ export default function Main({ username }: { username: string }) {
                           },
                           { user: caller, status: 'connected' },
                         ]);
-                        socketRef.current?.emit('call-state', { room, state: 'in-call', from: username, startedAt, participants: roster });
+                        socketRef.current?.emit('call-state', signalPayload(room, { state: 'in-call', startedAt, participants: roster }));
                       } catch (e: any) {
                         setCallError(e?.message || 'Could not join call');
                         setCallState('idle');
@@ -9049,8 +9310,35 @@ export default function Main({ username }: { username: string }) {
         </div>
       )}
       {ctxMenu?.open && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setCtxMenu(null)}>
-          <div ref={ctxMenuRef} style={ctxMenuStyles.shell} onClick={(e) => e.stopPropagation()}>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setCtxMenu(null)} onContextMenu={(event) => { event.preventDefault(); setCtxMenu(null); }}>
+          <div
+            ref={ctxMenuRef}
+            role="menu"
+            aria-label="Actions"
+            tabIndex={-1}
+            style={ctxMenuStyles.shell}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setCtxMenu(null);
+                return;
+              }
+              if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+              if (!buttons.length) return;
+              const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              const nextIndex = event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? buttons.length - 1
+                  : event.key === 'ArrowDown'
+                    ? (current + 1 + buttons.length) % buttons.length
+                    : (current - 1 + buttons.length) % buttons.length;
+              buttons[nextIndex]?.focus();
+            }}
+          >
             {ctxMenu.target.type === 'message' && (
               <>
                 <button className="btn-ghost" onClick={() => handleCtxAction('reply')} style={ctxMenuStyles.item}>
@@ -9571,13 +9859,17 @@ export default function Main({ username }: { username: string }) {
         </>
       )}
       </div>
-      {profileLauncher}
       {streamerBadge}
       {privacyOverlay}
       {userSettings?.enableOneko && <Oneko />}
       <style jsx global>{`
         .ch-shell {
           position: relative;
+          min-width: 0;
+          min-height: 0;
+          max-width: 100vw;
+          overflow: hidden;
+          box-sizing: border-box;
         }
         .ch-loading-border {
           position: absolute;

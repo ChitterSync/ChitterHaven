@@ -1,25 +1,6 @@
-import jwt, { SignOptions } from "jsonwebtoken";
-
-// --- tiny JWT wrapper so we don't copy/paste options everywhere.
-const isProduction = process.env.NODE_ENV === "production";
-const SECRET = (process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret") as string;
-const ISSUER = process.env.CHITTERHAVEN_JWT_ISSUER || "chitterhaven";
-const AUDIENCE = process.env.CHITTERHAVEN_JWT_AUDIENCE || "chitterhaven";
-const ALGORITHM: jwt.Algorithm = "HS512";
-
-if (isProduction && SECRET === "chitterhaven_secret") {
-  throw new Error("CHITTERHAVEN_SECRET must be set in production.");
-}
-
-export function signJWT(payload: object, expiresIn: SignOptions["expiresIn"] = "7d") {
-  const options: SignOptions = { expiresIn, issuer: ISSUER, audience: AUDIENCE, algorithm: ALGORITHM };
-  return jwt.sign(payload, SECRET, options);
-}
-
-export function verifyJWT(token: string) {
-  try {
-    return jwt.verify(token, SECRET, { issuer: ISSUER, audience: AUDIENCE, algorithms: [ALGORITHM] });
-  } catch {
-    return null;
-  }
-}
+import crypto from "node:crypto";import jwt,{type SignOptions}from"jsonwebtoken";
+const issuer=process.env.CHITTERHAVEN_JWT_ISSUER||"chitterhaven",audience=process.env.CHITTERHAVEN_JWT_AUDIENCE||"chitterhaven",algorithm="HS512" as const;
+const decode=(value:string,name:string)=>{if(!/^[A-Za-z0-9+/]+={0,2}$/.test(value)||value.length%4)throw new Error(`${name} must be base64.`);const key=Buffer.from(value,"base64");if(key.length<64)throw new Error(`${name} must decode to at least 64 bytes.`);return key;};
+const keys=()=>{const activeId=process.env.CHITTERHAVEN_JWT_KEY_ID||"dev-1";let active=process.env.CHITTERHAVEN_JWT_KEY_ACTIVE;if(!active){if(process.env.NODE_ENV==="production")throw new Error("CHITTERHAVEN_JWT_KEY_ACTIVE is required.");active=crypto.createHash("sha512").update("DEVELOPMENT ONLY Haven JWT").digest("base64");}const map=new Map([[activeId,decode(active,"active JWT key")]]);if(process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS||process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS_ID){if(!process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS||!process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS_ID)throw new Error("Previous JWT key and ID must be paired.");map.set(process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS_ID,decode(process.env.CHITTERHAVEN_JWT_KEY_PREVIOUS,"previous JWT key"));}return{activeId,map};};
+export function signJWT(payload:object,expiresIn:SignOptions["expiresIn"]="7d"){const{activeId,map}=keys();return jwt.sign(payload,map.get(activeId)!,{expiresIn,issuer,audience,algorithm,keyid:activeId,jwtid:crypto.randomUUID(),notBefore:0});}
+export function verifyJWT(token:string){try{const decoded=jwt.decode(token,{complete:true});if(!decoded||decoded.header.alg!==algorithm)return null;const{map}=keys();const kid=decoded.header.kid;let key=kid?map.get(kid):undefined;if(!key&&!kid&&process.env.CHITTERHAVEN_JWT_LEGACY_SECRET)key=Buffer.from(process.env.CHITTERHAVEN_JWT_LEGACY_SECRET);if(!key)return null;return jwt.verify(token,key,{issuer,audience,algorithms:[algorithm]});}catch{return null;}}

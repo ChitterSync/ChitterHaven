@@ -15,6 +15,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       res.status(400).json({ error: "At least two members required" });
       return;
     }
+    if (!members.includes(me)) return res.status(403).json({ error: "You must be a member of the channel you create" });
     // If this is a haven channel operation, require manage_channels
     if (haven) {
       const setting = await prisma.serverSetting.findUnique({ where: { key: String(haven) } });
@@ -26,18 +27,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const allowed = memberRoles.some(r => (rolesMap[r] || []).includes('*') || (rolesMap[r] || []).includes('manage_channels')) || everyone.includes('manage_channels') || everyone.includes('*');
       if (!allowed) return res.status(403).json({ error: 'Forbidden' });
     }
-    const channel = createChannel(name || "DM", members, !!isGroup);
+    const channel = await createChannel(String(name || "DM").trim().slice(0, 80), Array.from(new Set(members.filter((entry): entry is string => typeof entry === "string"))).slice(0, 25), !!isGroup);
     res.status(200).json({ channel });
     return;
   }
   if (req.method === "GET") {
     const { userId, channelId } = req.query;
     if (channelId) {
-      const channel = getChannel(channelId as string);
+      const channel = await getChannel(channelId as string);
       if (!channel) {
         res.status(404).json({ error: "Channel not found" });
         return;
       }
+      if (!channel.members.includes(me)) return res.status(403).json({ error: "Forbidden" });
       res.status(200).json({ channel });
       return;
     }
@@ -46,7 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      const channels = listUserChannels(userId as string);
+      const channels = await listUserChannels(userId as string);
       res.status(200).json({ channels });
       return;
     }

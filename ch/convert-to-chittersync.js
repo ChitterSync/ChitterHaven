@@ -50,7 +50,6 @@ async function doFetch(url, options) {
       ? globalAny.fetch
       : (() => {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
             return require("node-fetch");
           } catch {
             console.error("[convert] fetch is not available; install node-fetch or run manually with curl.");
@@ -121,4 +120,3 @@ main().catch((e) => {
   console.error("Fatal error:", e);
   process.exit(1);
 });
-

@@ -674,7 +674,7 @@ export default function MobileApp(props: Props) {
                   <button className="btn-ghost" onClick={() => setChannelMenuOpen(true)} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <FontAwesomeIcon icon={faHashtag} /> Channels
                   </button>
-                  <button className="btn-ghost" onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel && setSelectedChannel(''); }} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button className="btn-ghost" onClick={() => { setSelectedHaven('__dms__'); setSelectedChannel?.(''); }} style={{ padding: '6px 10px', borderRadius: 999, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <FontAwesomeIcon icon={faEnvelope} /> DMs
                   </button>
                   {setShowServerSettings && (
@@ -687,7 +687,7 @@ export default function MobileApp(props: Props) {
             )}
             {Object.keys(havens).length === 0 && <div style={{ color: 'COLOR_TEXT_MUTED' }}>No havens yet.</div>}
             {Object.keys(havens).map(h => (
-              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(orderedChannelsFor(h)[0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8 }}>
+              <div key={h} onClick={() => { setSelectedHaven(h); setSelectedChannel?.(orderedChannelsFor(h)[0] || ''); setActiveNav('channels'); }} style={{ padding: 12, borderRadius: 12, background: selectedHaven === h ? COLOR_PANEL_ALT : COLOR_CARD, marginBottom: 8 }}>
                 <div style={{ fontWeight: 700 }}>{havens[h]?.name || h}</div>
                 <div style={{ color: COLOR_TEXT_MUTED, fontSize: 13 }}>{(havens[h]?.channels || []).slice(0,3).map(c => `#${c}`).join('  -  ')}</div>
               </div>
@@ -808,7 +808,7 @@ export default function MobileApp(props: Props) {
                       key={dm.id}
                       onClick={() => {
                         setSelectedHaven('__dms__');
-                        setSelectedChannel && setSelectedChannel('');
+                        setSelectedChannel?.('');
                         setSelectedDM(dm.id);
                         setActiveNav('activity');
                       }}
@@ -1965,7 +1965,7 @@ export default function MobileApp(props: Props) {
                       {/* emoji picker inline */}
                       {openEmojiFor === m.id && (
                         <div style={{ marginTop: 8, padding: 8, background: COLOR_CARD_ALT, borderRadius: 10, border: `1px solid ${COLOR_PANEL_ALT}` }}>
-                          <EmojiPicker onPick={(char) => { toggleReaction && toggleReaction(m.id, char); setOpenEmojiFor(null); }} onClose={() => setOpenEmojiFor(null)} />
+                          <EmojiPicker onPick={(char) => { toggleReaction?.(m.id, char); setOpenEmojiFor(null); }} onClose={() => setOpenEmojiFor(null)} />
                         </div>
                       )}
                       {m.replyToId && (() => {
@@ -2139,7 +2139,7 @@ export default function MobileApp(props: Props) {
                   onClick={() => {
                     setSelectedHaven(h);
                     const firstChannel = orderedChannelsFor(h)[0] || '';
-                    setSelectedChannel && setSelectedChannel(firstChannel);
+                    setSelectedChannel?.(firstChannel);
                   }}
                   style={{
                     width: '100%',
@@ -2164,7 +2164,7 @@ export default function MobileApp(props: Props) {
                   key={channel}
                   className="btn-ghost"
                   onClick={() => {
-                    setSelectedChannel && setSelectedChannel(channel);
+                    setSelectedChannel?.(channel);
                     setChannelMenuOpen(false);
                     setShowMobileNav(false);
                     setActiveNav('channels');
@@ -2212,7 +2212,7 @@ export default function MobileApp(props: Props) {
                 <button
                   key={h}
                   className="btn-ghost"
-                  onClick={() => { setSelectedHaven(h); setSelectedChannel && setSelectedChannel(orderedChannelsFor(h)[0] || ''); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }}
+                  onClick={() => { setSelectedHaven(h); setSelectedChannel?.(orderedChannelsFor(h)[0] || ''); setSelectedDM?.(null); setShowMobileNav(false); setActiveNav('channels'); }}
                   style={{ width: '100%', textAlign: 'left', padding: '12px 10px', borderRadius: 10, marginBottom: 6, background: selectedHaven === h ? COLOR_CARD : 'transparent', color: selectedHaven === h ? '#93c5fd' : COLOR_TEXT, minHeight: 48 }}
                 >
                   {havens[h]?.name || h}
@@ -2225,7 +2225,7 @@ export default function MobileApp(props: Props) {
                 <button
                   key={ch}
                   className="btn-ghost"
-                  onClick={() => { setSelectedChannel && setSelectedChannel(ch); setSelectedDM && setSelectedDM(null); setShowMobileNav(false); setActiveNav('channels'); }}
+                  onClick={() => { setSelectedChannel?.(ch); setSelectedDM?.(null); setShowMobileNav(false); setActiveNav('channels'); }}
                   style={{ width: '100%', textAlign: 'left', padding: '12px 10px', borderRadius: 10, marginBottom: 6, background: selectedChannel === ch ? COLOR_CARD : 'transparent', color: selectedChannel === ch ? '#93c5fd' : COLOR_TEXT, minHeight: 48 }}
                 >
                   #{ch}

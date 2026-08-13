@@ -14,40 +14,47 @@ const AUTH_SERVICE_BASE = AUTH_SERVICE_BASE_RAW ? AUTH_SERVICE_BASE_RAW.replace(
 
 export interface AuthPayload {
   username: string;
+  authProvider?: "chittersync" | "chittersync-cache" | "legacy";
   [key: string]: any;
 }
 
-const fetchAuthServiceUser = async (req: NextApiRequest): Promise<AuthPayload | null> => {
-  if (!AUTH_SERVICE_BASE) return null;
+type CentralAuthResult =
+  | { status: "authenticated"; user: AuthPayload }
+  | { status: "unauthenticated" }
+  | { status: "unavailable" };
+
+const fetchAuthServiceUser = async (req: NextApiRequest): Promise<CentralAuthResult> => {
+  if (!AUTH_SERVICE_BASE) return { status: "unavailable" };
   try {
     const authRes = await fetch(`${AUTH_SERVICE_BASE}/api/auth/me`, {
       headers: {
         cookie: req.headers.cookie || "",
       },
     });
-    if (!authRes.ok) return null;
+    if (!authRes.ok) return { status: "unavailable" };
     const data = await authRes.json();
     if (data?.authenticated && data.user?.username) {
-      return { ...data.user, username: data.user.username };
+      return { status: "authenticated", user: { ...data.user, username: data.user.username, authProvider: "chittersync" } };
     }
+    return { status: "unauthenticated" };
   } catch {
-    // ignore auth service failures, fall back to legacy
+    return { status: "unavailable" };
   }
-  return null;
 };
 
 // Local-only auth helper: trusts the legacy auth cookie JWT.
 // This keeps all existing API routes working while we iterate on the new auth service.
 export async function requireUser(req: NextApiRequest, res: NextApiResponse): Promise<AuthPayload | null> {
   try {
-    const session = readSessionFromRequest(req);
-    if (session?.user?.username) {
-      return { ...session.user, username: session.user.username };
+    const centralAuth = await fetchAuthServiceUser(req);
+    if (centralAuth.status === "authenticated") {
+      return centralAuth.user;
     }
-
-    const serviceUser = await fetchAuthServiceUser(req);
-    if (serviceUser) {
-      return serviceUser;
+    if (centralAuth.status === "unavailable") {
+      const session = readSessionFromRequest(req);
+      if (session?.user?.username) {
+        return { ...session.user, username: session.user.username, authProvider: "chittersync-cache" };
+      }
     }
 
     const token = getAuthCookie(req);
@@ -60,7 +67,7 @@ export async function requireUser(req: NextApiRequest, res: NextApiResponse): Pr
       res.status(401).json({ error: "Invalid or expired token" });
       return null;
     }
-    return payload as AuthPayload;
+    return { ...payload, authProvider: "legacy" } as AuthPayload;
   } catch {
     res.status(401).json({ error: "Not authenticated" });
     return null;

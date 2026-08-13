@@ -1,48 +1,21 @@
-import fs from "fs";
 import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
-import crypto from "crypto";
 import { prisma } from "@/server/api-lib/prismaClient";
 import { requireUser } from "@/server/api-lib/auth";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/server-settings.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
-const IV_LENGTH = 16;
+const isSettings = (value: unknown): value is Record<string, any> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
 
 function decryptSettings() {
-  if (!fs.existsSync(SETTINGS_PATH)) return {};
-  const encrypted = fs.readFileSync(SETTINGS_PATH);
-  if (encrypted.length <= IV_LENGTH) return {};
-  const iv = encrypted.slice(0, IV_LENGTH);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted.slice(IV_LENGTH)),
-      decipher.final()
-    ]).toString();
-    return JSON.parse(decrypted);
-  } catch {
-    // Fallback: file might be plaintext JSON or encrypted with an old key.
-    try {
-      const plaintext = encrypted.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      encryptSettings(parsed);
-      return parsed;
-    } catch {
-      return {};
-    }
-  }
+  return readEncryptedJson({ filePath: SETTINGS_PATH, purpose: "server-settings", ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({}), validate: isSettings });
 }
 
 function encryptSettings(data: Record<string, any>) {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(data)),
-    cipher.final()
-  ]);
-  fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, encrypted]), { mode: 0o600 });
+  writeEncryptedJson(data, { filePath: SETTINGS_PATH, purpose: "server-settings", ring: getStoreKeyRing(), legacySecret: SECRET, validate: isSettings });
 }
 
 // --- handler (the main event).

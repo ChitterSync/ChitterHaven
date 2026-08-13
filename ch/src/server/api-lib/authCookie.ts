@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import cookie from "cookie";
+import * as cookie from "cookie";
 
 const isProduction = process.env.NODE_ENV === "production";
 export const AUTH_COOKIE_NAME = isProduction ? "__Host-chitter_token" : "chitter_token";

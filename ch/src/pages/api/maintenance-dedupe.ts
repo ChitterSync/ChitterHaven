@@ -1,35 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { readEncryptedJson, writeEncryptedJson } from '@/lib/security/encryptedJsonFile';
+import { getStoreKeyRing } from '@/lib/security/keyRings';
 
 const HISTORY_PATH = path.join(process.cwd(), 'src/pages/api/history.json');
 const SECRET = process.env.CHITTERHAVEN_SECRET || 'chitterhaven_secret';
-const KEY = crypto.createHash('sha256').update(SECRET).digest();
+const isHistory = (value: unknown): value is Record<string, any[]> => !!value && typeof value === 'object' && !Array.isArray(value);
 
 function decryptHistory() {
-  if (!fs.existsSync(HISTORY_PATH)) return {};
-  const encrypted = fs.readFileSync(HISTORY_PATH);
-  if (encrypted.length <= 16) return {};
-  const iv = encrypted.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
-    const decrypted = Buffer.concat([ decipher.update(encrypted.slice(16)), decipher.final() ]).toString();
-    return JSON.parse(decrypted);
-  } catch {
-    try {
-      const plaintext = encrypted.toString('utf8');
-      return JSON.parse(plaintext);
-    } catch {
-      return {};
-    }
-  }
+  return readEncryptedJson({ filePath: HISTORY_PATH, purpose: 'history', ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({}), validate: isHistory });
 }
 function encryptHistory(data: any) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', KEY, iv);
-  const encrypted = Buffer.concat([ cipher.update(JSON.stringify(data)), cipher.final() ]);
-  fs.writeFileSync(HISTORY_PATH, Buffer.concat([iv, encrypted]), { mode: 0o600 });
+  writeEncryptedJson(data, { filePath: HISTORY_PATH, purpose: 'history', ring: getStoreKeyRing(), legacySecret: SECRET, validate: isHistory });
 }
 
 // --- handler (the main event).
@@ -37,6 +20,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
     return res.status(405).end('Method Not Allowed');
+  }
+  const maintenanceToken = process.env.MAINTENANCE_TOKEN || '';
+  const suppliedToken = typeof req.headers['x-maintenance-token'] === 'string' ? req.headers['x-maintenance-token'] : '';
+  if (!maintenanceToken || !suppliedToken) return res.status(404).json({ error: 'Not found' });
+  const expected = Buffer.from(maintenanceToken);
+  const supplied = Buffer.from(suppliedToken);
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
   const data = decryptHistory() as Record<string, any[]>;
   let rooms = 0; let removed = 0; let total = 0;

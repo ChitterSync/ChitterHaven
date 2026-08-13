@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type DropdownOption = {
   value: string;
@@ -42,7 +42,13 @@ export default function Dropdown({
 }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
+  const [placement, setPlacement] = useState<"up" | "down">("down");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const typeaheadRef = useRef("");
+  const typeaheadTimerRef = useRef<number | null>(null);
+  const dropdownId = useId();
+  const menuId = `${dropdownId}-menu`;
 
   const normalizedOptions = useMemo(() => options ?? [], [options]);
   const selected = useMemo(
@@ -60,6 +66,33 @@ export default function Dropdown({
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
+
+  useEffect(() => () => {
+    if (typeaheadTimerRef.current) window.clearTimeout(typeaheadTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const selectedIndex = normalizedOptions.findIndex((option) => option.value === selected?.value);
+    setHighlight(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [open, normalizedOptions, selected?.value]);
+
+  useLayoutEffect(() => {
+    if (!open || !containerRef.current) return;
+    const updatePlacement = () => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setPlacement(spaceBelow < 300 && rect.top > spaceBelow ? "up" : "down");
+    };
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    return () => window.removeEventListener("resize", updatePlacement);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) optionRefs.current[highlight]?.scrollIntoView({ block: "nearest" });
+  }, [highlight, open]);
 
   const moveHighlight = (delta: number) => {
     setHighlight((prev) => {
@@ -116,6 +149,18 @@ export default function Dropdown({
     } else if (ev.key === "Escape") {
       ev.preventDefault();
       setOpen(false);
+    } else if (ev.key === "Home") {
+      ev.preventDefault();
+      setHighlight(0);
+    } else if (ev.key === "End") {
+      ev.preventDefault();
+      setHighlight(Math.max(0, normalizedOptions.length - 1));
+    } else if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      typeaheadRef.current += ev.key.toLowerCase();
+      if (typeaheadTimerRef.current) window.clearTimeout(typeaheadTimerRef.current);
+      typeaheadTimerRef.current = window.setTimeout(() => { typeaheadRef.current = ""; }, 650);
+      const matchIndex = normalizedOptions.findIndex((option) => option.label.toLowerCase().startsWith(typeaheadRef.current));
+      if (matchIndex >= 0) setHighlight(matchIndex);
     }
   };
 
@@ -123,6 +168,7 @@ export default function Dropdown({
     <div
       className={`ch-dropdown ${className}`}
       data-open={open ? "true" : "false"}
+      data-placement={placement}
       data-disabled={disabled ? "true" : "false"}
       ref={containerRef}
     >
@@ -133,9 +179,12 @@ export default function Dropdown({
       )}
       <button
         type="button"
+        role="combobox"
         className="ch-dropdown__control"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={menuId}
+        aria-activedescendant={open && normalizedOptions[highlight] ? `${dropdownId}-option-${highlight}` : undefined}
         aria-disabled={disabled}
         onClick={() => !disabled && setOpen((v) => !v)}
         onKeyDown={handleKeyDown}
@@ -159,13 +208,15 @@ export default function Dropdown({
         </span>
       </button>
       {open && normalizedOptions.length > 0 && (
-        <div className="ch-dropdown__menu" role="listbox">
+        <div id={menuId} className="ch-dropdown__menu" role="listbox" aria-label={label || placeholder}>
           {normalizedOptions.map((opt, idx) => {
             const isActive = selected?.value === opt.value;
             const isHighlighted = idx === highlight;
             return (
               <div
                 key={opt.value}
+                id={`${dropdownId}-option-${idx}`}
+                ref={(element) => { optionRefs.current[idx] = element; }}
                 role="option"
                 aria-selected={isActive}
                 tabIndex={-1}
@@ -223,7 +274,7 @@ export default function Dropdown({
           gap: 4px;
           color: #e5e7eb;
           width: 100%;
-          max-width: 280px;
+          max-width: 100%;
         }
         .ch-dropdown[data-disabled="true"] {
           opacity: 0.55;
@@ -330,6 +381,13 @@ export default function Dropdown({
           z-index: 30;
           transform-origin: top center;
           animation: ch-dropdown-enter 170ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          overscroll-behavior: contain;
+          scrollbar-gutter: stable;
+        }
+        .ch-dropdown[data-placement="up"] .ch-dropdown__menu {
+          top: auto;
+          bottom: calc(100% + 4px);
+          transform-origin: bottom center;
         }
         .ch-dropdown__option {
           width: 100%;

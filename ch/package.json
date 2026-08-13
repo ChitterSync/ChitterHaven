@@ -3,13 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start",
+    "dev": "tsx server.ts",
+    "build": "node --max-old-space-size=4096 ./node_modules/next/dist/bin/next build",
+    "start": "tsx server.ts --production",
     "lint": "eslint .",
     "test:a11y": "node ./scripts/check_dropdown_a11y.js",
     "test:call-summary": "node ./scripts/test_history_call_summary.js",
     "test:auth": "tsx --test tests/auth-*.test.ts",
+    "test:security": "tsx --test tests/security-*.test.ts",
+    "test:realtime": "tsx --test tests/realtime-*.test.ts",
     "hash-users": "node ./scripts/hash_existing_users.js"
   },
   "dependencies": {
@@ -27,7 +29,8 @@
     "react-markdown": "^10.1.0",
     "scrypt-js": "^3.0.1",
     "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1"
+    "socket.io-client": "^4.8.1",
+    "tsx": "^4.20.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -40,7 +43,6 @@
     "prettier": "^3.6.2",
     "prisma": "^6.11.1",
     "tailwindcss": "^4",
-    "tsx": "^4.20.5",
     "typescript": "5.8.3"
   },
   "overrides": {

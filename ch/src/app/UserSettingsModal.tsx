@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
 import ChoiceSlider, { type ChoiceSliderOption } from "./components/ChoiceSlider";
 import Switch from "./components/Switch";
@@ -128,11 +127,14 @@ const RINGTONE_OPTIONS = ["Drive", "Bandwidth", "Drift", "Progress", "Spooky"];
 const CustomDropdown = ({ label, items, emptyLabel }: { label: string; items: string[]; emptyLabel: string }) => {
   const [open, setOpen] = useState(false);
   const safeItems = Array.isArray(items) ? items : [];
+  const panelId = `settings-list-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
   return (
     <div style={{ border: '1px solid #1f2937', borderRadius: 10, background: '#020617' }}>
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        aria-controls={panelId}
         style={{
           width: '100%',
           display: 'flex',
@@ -146,10 +148,10 @@ const CustomDropdown = ({ label, items, emptyLabel }: { label: string; items: st
         }}
       >
         <span style={{ fontWeight: 600 }}>{label}</span>
-        <span style={{ fontSize: 12, color: '#9ca3af' }}>{safeItems.length}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#9ca3af' }}><span>{safeItems.length}</span><span aria-hidden style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 160ms ease' }}>▾</span></span>
       </button>
       {open && (
-        <div style={{ padding: '8px 10px', borderTop: '1px solid #1f2937', display: 'grid', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+        <div id={panelId} style={{ padding: '8px 10px', borderTop: '1px solid #1f2937', display: 'grid', gap: 6, maxHeight: 220, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarGutter: 'stable' }}>
           {safeItems.length === 0 ? (
             <div style={{ fontSize: 12, color: '#6b7280' }}>{emptyLabel}</div>
           ) : (
@@ -532,7 +534,6 @@ const normalizeSettings = (raw?: Settings | null): Settings => {
 };
 
 export default function UserSettingsModal({ isOpen, onClose, username, onStatusChangeAction, onSavedAction }: Props) {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => normalizeSettings({}));
   const [appearanceProfiles, setAppearanceProfiles] = useState<AppearanceProfile[]>([]);
@@ -571,6 +572,13 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
   const [accountFriends, setAccountFriends] = useState<{ friends: string[]; incoming: string[]; outgoing: string[] }>({ friends: [], incoming: [], outgoing: [] });
   const [blockInput, setBlockInput] = useState("");
   const [confirmBlockRemoval, setConfirmBlockRemoval] = useState<string | null>(null);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  useEffect(() => {
+    if (isOpen) return;
+    setConfirmLogout(false);
+    setLoggingOut(false);
+  }, [isOpen]);
   const [syncProfilesEnabled, setSyncProfilesEnabled] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(false);
   const lastSavedThemeRef = useRef<ThemePreviewFields | null>(null);
@@ -662,6 +670,11 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     try {
       const r = await fetch('/api/settings');
       const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setSyncWarning((d?.error as string) || 'Failed to load settings.');
+        setLoading(false);
+        return;
+      }
       const incoming = (d && typeof d === 'object' && 'settings' in d) ? (d.settings as Settings) : d;
       const normalized = normalizeSettings(incoming as Settings);
         setSettings(normalized);
@@ -770,8 +783,10 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
           credentials: "include",
         });
       } catch {}
-      window.location.href = `${trimmed}/signin?loggedOut=true`;
+      window.location.replace(`${trimmed}/signin?loggedOut=true`);
+      return;
     }
+    window.location.reload();
   };
   useEffect(() => {
     if (!isOpen || tab !== 'about' || aboutUser || aboutLoading) return;
@@ -1126,7 +1141,6 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
     revertThemePreview();
     onClose();
   }, [revertThemePreview, onClose]);
-  if (!isOpen) return null;
   const accent = settings.accentHex || '#60a5fa';
   const appearance = settings.appearance || normalizeAppearanceSettings(undefined, true);
   const blockedUsers = Array.isArray(settings.blockedUsers) ? settings.blockedUsers : [];
@@ -1161,6 +1175,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
       setTab(filteredTabs[0].id as typeof tab);
     }
   }, [settingsSearch, filteredTabs, tab]);
+  if (!isOpen) return null;
   const messageStyle = appearance.messageStyle || settings.chatStyle || "sleek";
   const previewAccent = settings.accentHex || '#60a5fa';
   const previewMention = settings.mentionColorHex || '#f97316';
@@ -1261,25 +1276,8 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
               minWidth: 0,
             }}
           >
-          <div style={{ padding: 12, borderBottom: '1px solid #2a3344', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span>Settings</span>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={async () => {
-                try {
-                  await performLogout();
-                } catch {}
-                try {
-                  router.push("/");
-                } catch {
-                  if (typeof window !== "undefined") window.location.href = "/";
-                }
-              }}
-              style={{ padding: "4px 8px", fontSize: 12, borderRadius: 999, border: "1px solid #1f2937", color: "#f97373" }}
-            >
-              Log out
-            </button>
+          <div style={{ padding: 12, borderBottom: '1px solid #2a3344', fontWeight: 600 }}>
+            Settings
           </div>
           <div style={{ padding: 10, borderBottom: isMobileLayout ? '1px solid #2a3344' : 'none' }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2420,7 +2418,7 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                             <li>All apps, including mobile apps, will share the same preferences.</li>
                             <li>You will gain the ability to use the full ChitterSync ecosystem.</li>
                             <li>This migration is irreversible and cannot be undone.</li>
-                            <li>The old auth system will be deprecated February 10th, 2026.</li>
+                            <li>The old auth system will continue to be supported until further notice.</li>
                             <li>Converting your account is not required but is recommended.</li>
                           </ul>
                         </div>
@@ -2639,6 +2637,13 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                         </div>
                       </>
                     )}
+                    <div style={{ marginTop: 4, padding: 12, borderRadius: 10, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(127,29,29,0.12)', display: 'grid', gap: 8 }}>
+                      <div style={{ fontWeight: 600, color: '#fecaca' }}>Sign out</div>
+                      <div style={{ color: '#9ca3af', fontSize: 12 }}>End your current session on this device. Your account and profile data will not be deleted.</div>
+                      <button type="button" className="btn-ghost" onClick={() => setConfirmLogout(true)} style={{ justifySelf: 'start', padding: '8px 12px', color: '#fca5a5', border: '1px solid rgba(248,113,113,0.35)' }}>
+                        Log out
+                      </button>
+                    </div>
                   </div>
                 )}
                 {tab === 'about' && (
@@ -2974,6 +2979,13 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
 
                 {tab === 'guides' && (
                   <div style={{ display: 'grid', gap: 14, fontSize: 13 }}>
+                    <div style={{ padding: 12, borderRadius: 10, border: '1px solid #334155', background: '#020617', display: 'grid', gap: 8 }}>
+                      <div style={{ fontWeight: 600 }}>Interactive navigation walkthrough</div>
+                      <div style={{ color: '#9ca3af', fontSize: 12 }}>Replay the step-by-step guide for Havens, channels, messages, profiles, and settings.</div>
+                      <button type="button" className="btn-primary" style={{ justifySelf: 'start', padding: '8px 12px' }} onClick={() => { window.dispatchEvent(new Event('ch_restart_navigation_guide')); onClose(); }}>
+                        Restart navigation guide
+                      </button>
+                    </div>
                     <div style={{ color: '#9ca3af' }}>
                       Quick tips for using ChitterHaven features. These are read-only; changing them here won't affect your real messages.
                     </div>
@@ -3126,6 +3138,32 @@ export default function UserSettingsModal({ isOpen, onClose, username, onStatusC
                     style={{ padding: '6px 10px', color: '#f87171' }}
                   >
                     Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {confirmLogout && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 96, padding: 16 }} role="alertdialog" aria-modal="true" aria-labelledby="logout-confirm-title">
+              <div style={{ width: 'min(380px, 92vw)', background: '#0b1222', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 12, padding: 16, color: '#e5e7eb', boxShadow: '0 16px 40px rgba(0,0,0,0.45)' }}>
+                <div id="logout-confirm-title" style={{ fontWeight: 700, marginBottom: 6 }}>Log out of ChitterHaven?</div>
+                <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 14, lineHeight: 1.5 }}>You will need to sign in again to access @{username} on this device.</div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button type="button" className="btn-ghost" disabled={loggingOut} onClick={() => setConfirmLogout(false)} style={{ padding: '7px 11px' }}>Stay signed in</button>
+                  <button
+                    type="button"
+                    disabled={loggingOut}
+                    onClick={async () => {
+                      setLoggingOut(true);
+                      try {
+                        await performLogout();
+                      } catch {
+                        if (typeof window !== 'undefined') window.location.reload();
+                      }
+                    }}
+                    style={{ padding: '7px 11px', borderRadius: 8, border: '1px solid #ef4444', background: '#7f1d1d', color: '#fff', cursor: loggingOut ? 'wait' : 'pointer', opacity: loggingOut ? 0.7 : 1 }}
+                  >
+                    {loggingOut ? 'Logging out…' : 'Log out'}
                   </button>
                 </div>
               </div>

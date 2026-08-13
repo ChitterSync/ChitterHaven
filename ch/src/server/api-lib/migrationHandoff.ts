@@ -1,0 +1,5 @@
+import crypto from "node:crypto";
+import { encryptPayload, keyRingFromEnvironment } from "@/lib/security/aead";
+export type MigrationHandoff={username:string;name?:string;pronouns?:string;bio?:string;website?:string;locations?:string[];gender?:string;dob?:string;issuedAt:number;expiresAt:number;payloadId:string};
+const ring=()=>keyRingFromEnvironment({activeId:process.env.CHITTERHAVEN_MIGRATION_KEY_ID||"dev-1",activeKey:process.env.CHITTERHAVEN_MIGRATION_KEY_ACTIVE,previousId:process.env.CHITTERHAVEN_MIGRATION_KEY_PREVIOUS_ID,previousKey:process.env.CHITTERHAVEN_MIGRATION_KEY_PREVIOUS,purpose:"ChitterHaven migration handoff"});
+export function createMigrationHandoff(payload:Omit<MigrationHandoff,"issuedAt"|"expiresAt"|"payloadId">){const issuedAt=Date.now(),expiresAt=issuedAt+10*60_000,payloadId=crypto.randomUUID();const body={...payload,issuedAt,expiresAt,payloadId};const encrypted=encryptPayload(Buffer.from(JSON.stringify(body)),ring(),{service:"chittersync-auth",purpose:"migration-handoff",recordId:payloadId});return Buffer.from(JSON.stringify({formatVersion:1,keyId:encrypted.keyId,payloadId,issuedAt,expiresAt,encrypted})).toString("base64url");}

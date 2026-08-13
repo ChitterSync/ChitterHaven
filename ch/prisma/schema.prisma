@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -14,17 +14,17 @@ model Channel {
   id        String   @id @default(cuid())
   name      String
   isGroup   Boolean
-  members   String   // Comma-separated user IDs
+  members   String // Comma-separated user IDs
   createdAt DateTime @default(now())
 }
 
 model User {
-  id        String   @id @default(cuid())
-  username  String   @unique
-  password  String
-  email     String?
-  roles     String?  // Comma-separated roles
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  email        String?
+  roles        String? // Comma-separated roles
+  createdAt    DateTime @default(now())
 }
 
 model ServerSetting {
@@ -49,5 +49,99 @@ model MessageHistory {
   text      String
   timestamp DateTime
   edited    Boolean? @default(false)
-  readBy    String?  // Comma-separated user IDs
+  readBy    String? // Comma-separated user IDs
+  payload   Json?
+
+  @@index([room, timestamp])
+}
+
+model RealtimeSequence {
+  id        String   @id
+  value     BigInt
+  updatedAt DateTime @updatedAt
+}
+
+model RealtimeEvent {
+  sequence       BigInt   @id
+  eventId        String   @unique
+  type           String
+  entityId       String?
+  conversationId String?
+  actorId        String?
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId, sequence])
+  @@index([createdAt])
+}
+
+model RealtimeCursor {
+  id           String   @id @default(cuid())
+  userId       String
+  clientId     String
+  lastSequence BigInt   @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, clientId])
+  @@index([userId, updatedAt])
+}
+
+model CallSession {
+  room          String            @id
+  state         String
+  initiator     String
+  startedAt     DateTime?
+  revision      Int               @default(1)
+  eventId       String
+  eventSequence BigInt
+  updatedAt     DateTime          @updatedAt
+  members       CallParticipant[]
+}
+
+model CallParticipant {
+  id            String      @id @default(cuid())
+  room          String
+  userId        String
+  status        String?
+  muted         Boolean     @default(false)
+  deafened      Boolean     @default(false)
+  videoEnabled  Boolean     @default(false)
+  screenSharing Boolean     @default(false)
+  call          CallSession @relation(fields: [room], references: [room], onDelete: Cascade)
+
+  @@unique([room, userId])
+  @@index([userId])
+}
+
+model PresenceDeviceSession {
+  socketId      String    @id
+  userId        String
+  status        String
+  connected     Boolean   @default(true)
+  lastHeartbeat DateTime
+  lastSeenAt    DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId, connected, lastHeartbeat])
+}
+
+model RoomReadState {
+  id                String    @id @default(cuid())
+  room              String
+  userId            String
+  lastReadMessageId String?
+  lastReadAt        DateTime?
+  unreadCount       Int       @default(0)
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([room, userId])
+  @@index([userId, unreadCount])
+}
+
+model MessageReadReceipt {
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+
+  @@id([messageId, userId])
+  @@index([userId, readAt])
 }

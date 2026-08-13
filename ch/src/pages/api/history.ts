@@ -3,8 +3,11 @@ import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import { prisma } from "@/server/api-lib/prismaClient";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 import { requireUser } from "@/server/api-lib/auth";
 import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
+import { getDMForMember } from "./dms";
 
 const HISTORY_PATH = path.join(process.cwd(), "src/pages/api/history.json");
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
@@ -12,28 +15,7 @@ const KEY = crypto.createHash("sha256").update(SECRET).digest();
 
 function decryptHistory() {
   if (!fs.existsSync(HISTORY_PATH)) return {};
-  const encrypted = fs.readFileSync(HISTORY_PATH);
-  if (encrypted.length <= 16) return {};
-  const iv = encrypted.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted.slice(16)),
-      decipher.final()
-    ]).toString();
-    return JSON.parse(decrypted);
-  } catch {
-    // Fallback: file might be plaintext JSON or encrypted with an old key.
-    try {
-      const plaintext = encrypted.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      // Re-encrypt to the current key if plaintext was valid.
-      encryptHistory(parsed);
-      return parsed;
-    } catch {
-      return {};
-    }
-  }
+  return readEncryptedJson({filePath:HISTORY_PATH,purpose:"message-history-fallback",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is Record<string,Message[]>=>Boolean(value&&typeof value==="object"&&!Array.isArray(value))});
 }
 
 // Message type for modularity
@@ -49,6 +31,7 @@ export type Message = {
   attachments?: { url: string; name: string; type?: string; size?: number }[];
   editHistory?: { text: string; timestamp: number }[];
   systemType?: string;
+  clientMutationId?: string;
   poll?: {
     type?: "choice" | "dropdown" | "slider" | "text" | "star" | "user_select";
     question: string;
@@ -83,15 +66,94 @@ export type Message = {
   };
 };
 
+const rowToMessage = (row: any): Message => {
+  if (row?.payload && typeof row.payload === "object") return row.payload as Message;
+  return {
+    id: String(row.id),
+    user: String(row.user),
+    text: String(row.text || ""),
+    timestamp: new Date(row.timestamp).getTime(),
+    edited: row.edited === true,
+    reactions: {},
+    pinned: false,
+    attachments: [],
+    editHistory: [],
+  };
+};
+
+const mirrorMessageToDatabase = async (room: string, message: Message) => {
+  await prisma.messageHistory.upsert({
+    where: { id: message.id },
+    update: {
+      room,
+      user: message.user,
+      text: message.text,
+      timestamp: new Date(message.timestamp),
+      edited: message.edited === true,
+      payload: message as any,
+    },
+    create: {
+      id: message.id,
+      room,
+      user: message.user,
+      text: message.text,
+      timestamp: new Date(message.timestamp),
+      edited: message.edited === true,
+      payload: message as any,
+    },
+  });
+};
+
+const recordUnreadMessage = async (room: string, message: Message) => {
+  const dm = getDMForMember(room, message.user);
+  if (!dm) return;
+  await Promise.all(dm.users.filter((member) => member !== message.user).map((member) =>
+    prisma.roomReadState.upsert({
+      where: { room_userId: { room, userId: member } },
+      update: { unreadCount: { increment: 1 } },
+      create: { room, userId: member, unreadCount: 1 },
+    }),
+  ));
+};
+
+const markRoomRead = async (room: string, userId: string, messageId?: string) => {
+  const latest = messageId
+    ? await prisma.messageHistory.findFirst({ where: { id: messageId, room }, select: { id: true } })
+    : await prisma.messageHistory.findFirst({ where: { room }, orderBy: { timestamp: "desc" }, select: { id: true } });
+  const readAt = new Date();
+  const state = await prisma.roomReadState.upsert({
+    where: { room_userId: { room, userId } },
+    update: { unreadCount: 0, lastReadAt: readAt, lastReadMessageId: latest?.id || null },
+    create: { room, userId, unreadCount: 0, lastReadAt: readAt, lastReadMessageId: latest?.id || null },
+  });
+  if (latest?.id) {
+    await prisma.messageReadReceipt.upsert({
+      where: { messageId_userId: { messageId: latest.id, userId } },
+      update: { readAt },
+      create: { messageId: latest.id, userId, readAt },
+    });
+  }
+  return state;
+};
+
+const loadCanonicalHistory = async (room: string): Promise<Message[]> => {
+  const rows = await prisma.messageHistory.findMany({ where: { room }, orderBy: { timestamp: "asc" } });
+  if (rows.length > 0) return rows.map(rowToMessage);
+  const local = getHistory(room);
+  if (local.length > 0) await Promise.all(local.map((message) => mirrorMessageToDatabase(room, message)));
+  return local;
+};
+
+const hydrateLocalRoomFromDatabase = async (room: string) => {
+  const rows = await prisma.messageHistory.findMany({ where: { room }, orderBy: { timestamp: "asc" } });
+  if (rows.length === 0) return;
+  const data = decryptHistory() as Record<string, Message[]>;
+  data[room] = rows.map(rowToMessage);
+  encryptHistory(data);
+};
+
 function encryptHistory(data: Record<string, Message[]>) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(data)),
-    cipher.final()
-  ]);
-  // Write with restrictive permissions (owner read/write only)
-  fs.writeFileSync(HISTORY_PATH, Buffer.concat([iv, encrypted]), { mode: 0o600 });
+  writeEncryptedJson(data,{filePath:HISTORY_PATH,purpose:"message-history-fallback",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is Record<string,Message[]>=>Boolean(value&&typeof value==="object"&&!Array.isArray(value))});
 }
 
 function getHistory(room: string): Message[] {
@@ -121,6 +183,7 @@ function saveMessage(
     attachments?: Message["attachments"];
     systemType?: string;
     poll?: Message["poll"];
+    clientMutationId?: string;
   },
 ) {
   const data: Record<string, Message[]> = decryptHistory();
@@ -132,6 +195,10 @@ function saveMessage(
       // Return existing message instead of adding a duplicate
       return existing;
     }
+  }
+  if (msg.clientMutationId) {
+    const existing = data[room].find((message) => message.user === msg.user && message.clientMutationId === msg.clientMutationId);
+    if (existing) return existing;
   }
   const message: Message = {
     id: crypto.randomUUID(),
@@ -145,6 +212,7 @@ function saveMessage(
     editHistory: [],
     systemType: msg.systemType,
     poll: msg.poll,
+    clientMutationId: msg.clientMutationId,
   };
   data[room].push(message);
   encryptHistory(data);
@@ -443,13 +511,41 @@ function pinMessage(room: string, messageId: string, pin: boolean): Message | nu
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  const loadHavenPermissions = async (havenName: string) => {
+    try {
+      const setting = await prisma.serverSetting.findUnique({ where: { key: havenName } });
+      if (!setting) return null;
+      const value = JSON.parse(setting.value || "{}");
+      return value.permissions || null;
+    } catch {
+      return null;
+    }
+  };
+  const hasHavenPermission = async (username: string, havenName: string, permission: string) => {
+    const perms = await loadHavenPermissions(havenName);
+    if (!perms) return false;
+    const rolesMap: Record<string, string[]> = perms.roles || {};
+    const memberRoles: string[] = perms.members?.[username] || [];
+    const everyone: string[] = perms.defaults?.everyone || [];
+    return everyone.includes("*") || everyone.includes(permission) || memberRoles.some((role) => (rolesMap[role] || []).includes("*") || (rolesMap[role] || []).includes(permission));
+  };
+  const authorizeRoom = async (room: unknown, username: string) => {
+    if (typeof room !== "string" || !room || room.length > 180) return false;
+    if (getDMForMember(room, username)) return true;
+    const separator = room.lastIndexOf("__");
+    if (separator <= 0 || separator >= room.length - 2) return false;
+    return hasHavenPermission(username, room.slice(0, separator), "view_channels");
+  };
   if (req.method === "GET") {
     const payload = await requireUser(req, res);
     if (!payload) return;
     const { room } = req.query;
     const me = payload.username as string;
-    const messages = getHistory(room as string).map((message) => sanitizeMessageForUser(message, me));
-    res.status(200).json({ messages });
+    if (!(await authorizeRoom(room, me))) return res.status(403).json({ error: "Forbidden" });
+    const messages = (await loadCanonicalHistory(room as string)).map((message) => sanitizeMessageForUser(message, me));
+    const readState = await prisma.roomReadState.findUnique({ where: { room_userId: { room: room as string, userId: me } } });
+    res.status(200).json({ messages, readState: readState ? { lastReadMessageId: readState.lastReadMessageId, lastReadAt: readState.lastReadAt?.toISOString() || null, unreadCount: readState.unreadCount } : null });
     return;
   }
   if (req.method === "POST") {
@@ -463,6 +559,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const payload = await requireUser(req, res);
     if (!payload) return;
     const me = payload.username as string;
+    if (!(await authorizeRoom(room, me))) return res.status(403).json({ error: "Forbidden" });
+    await hydrateLocalRoomFromDatabase(room);
+    if (action === "mark_read") {
+      const state = await markRoomRead(room, me, typeof messageId === "string" ? messageId : undefined);
+      return res.status(200).json({ success: true, readState: { lastReadMessageId: state.lastReadMessageId, lastReadAt: state.lastReadAt?.toISOString() || null, unreadCount: state.unreadCount } });
+    }
     if (!isExemptUsername(me)) {
       const ip = getClientIp(req);
       const limit = rateLimit(`history:${me || ip}`, 60, 60_000);
@@ -502,7 +604,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
     const checkPerm = async (username: string, havenName: string, perm: string) => {
       const perms = await ensurePermissions(havenName);
-      if (!perms) return true; // permissive fallback if settings unavailable
+      if (!perms) return false;
       const rolesMap = perms.roles || {};
       const memberRoles: string[] = (perms.members?.[username] || []) as string[];
       const everyone: string[] = (perms.defaults?.everyone || []) as string[];
@@ -523,6 +625,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       }
       const ok = deleteMessage(room, messageId);
+      if (ok) await prisma.messageHistory.deleteMany({ where: { id: messageId, room } });
       res.status(ok ? 200 : 404).json({ success: ok });
       return;
     }
@@ -542,6 +645,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       const edited = editMessage(room, messageId, newText);
       if (edited) {
+        await mirrorMessageToDatabase(room, edited);
         res.status(200).json({ success: true, message: sanitizeMessageForUser(edited, me) });
       } else {
         res.status(404).json({ success: false });
@@ -555,6 +659,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       const updated = reactMessage(room, messageId, emoji, me);
       if (updated) {
+        await mirrorMessageToDatabase(room, updated);
         res.status(200).json({ success: true, message: sanitizeMessageForUser(updated, me) });
       } else {
         res.status(404).json({ success: false });
@@ -568,6 +673,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       const updated = pinMessage(room, messageId, !!pin);
       if (updated) {
+        await mirrorMessageToDatabase(room, updated);
         res.status(200).json({ success: true, message: sanitizeMessageForUser(updated, me) });
       } else {
         res.status(404).json({ success: false });
@@ -591,6 +697,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         text: typeof msg?.text === "string" ? msg.text.slice(0, 500) : "",
         poll,
       });
+      await mirrorMessageToDatabase(room, message);
+      await recordUnreadMessage(room, message);
       return res.status(200).json({ success: true, message: sanitizeMessageForUser(message, me) });
     }
     if (action === "poll_vote") {
@@ -601,10 +709,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!result.message) {
         return res.status(400).json({ success: false, error: result.error || "Vote failed." });
       }
+      await mirrorMessageToDatabase(room, result.message);
       return res.status(200).json({ success: true, message: sanitizeMessageForUser(result.message, me) });
     }
     // Default: add message
-    const message = saveMessage(room, { ...msg, user: me });
+    const clientMutationId = typeof msg?.clientMutationId === "string" ? msg.clientMutationId.trim().slice(0, 100) : undefined;
+    const message = saveMessage(room, { ...msg, user: me, clientMutationId });
+    await mirrorMessageToDatabase(room, message);
+    await recordUnreadMessage(room, message);
     res.status(200).json({ success: true, message: sanitizeMessageForUser(message, me) });
     return;
   }

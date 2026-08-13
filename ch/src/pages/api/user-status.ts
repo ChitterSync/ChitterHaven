@@ -1,13 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import fs from "fs";
 import path from "path";
-import crypto from "crypto";
-import { verifyJWT } from "@/server/api-lib/jwt";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { requireUser } from "@/server/api-lib/auth";
+import { readEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
+import { prisma } from "@/server/api-lib/prismaClient";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/settings.json");
 
 const AUTH_SERVICE_BASE_RAW = process.env.AUTH_SERVICE_URL || process.env.AUTH_BASE_URL || "";
@@ -27,22 +25,7 @@ type UserSettings = {
 type SettingsData = { users: Record<string, UserSettings> };
 
 function readSettings(): SettingsData {
-  if (!fs.existsSync(SETTINGS_PATH)) return { users: {} };
-  const buf = fs.readFileSync(SETTINGS_PATH);
-  if (buf.length <= 16) return { users: {} };
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      return JSON.parse(plaintext);
-    } catch {
-      return { users: {} };
-    }
-  }
+  return readEncryptedJson({ filePath: SETTINGS_PATH, purpose: "user-settings", ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({ users: {} }), validate: (value): value is SettingsData => !!value && typeof value === "object" && !!(value as SettingsData).users && typeof (value as SettingsData).users === "object" });
 }
 
 
@@ -111,10 +94,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
-  const session = readSessionFromRequest(req);
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  if (!payload?.username && !session?.user?.username) return res.status(401).json({ error: "Unauthorized" });
+  const user = await requireUser(req, res);
+  if (!user) return;
 
   const usersParam = String(req.query.users || "").trim();
   const ask = usersParam ? usersParam.split(",").map(s => s.trim()).filter(Boolean) : [];
@@ -122,12 +103,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const map: Record<string, string> = {};
   const statusMessages: Record<string, string> = {};
   const richPresence: Record<string, UserSettings["richPresence"]> = {};
+  const lastSeen: Record<string, string> = {};
+  const sessions = ask.length ? await prisma.presenceDeviceSession.findMany({
+    where: { userId: { in: ask } },
+    orderBy: { lastHeartbeat: "desc" },
+  }) : [];
+  const sessionsByUser = new Map<string, typeof sessions>();
+  sessions.forEach((session) => sessionsByUser.set(session.userId, [...(sessionsByUser.get(session.userId) || []), session]));
+  const activeThreshold = Date.now() - 75_000;
   if (ask.length > 0) {
     for (const u of ask) {
       const localEntry = data.users[u] || {};
       const remoteEntry = await fetchGlobalSettings(u);
       const entry = remoteEntry || localEntry;
-      map[u] = entry.status || "offline";
+      const userSessions = sessionsByUser.get(u) || [];
+      const activeSession = userSessions.find((session) => session.connected && session.lastHeartbeat.getTime() >= activeThreshold);
+      map[u] = activeSession?.status || "offline";
+      const latestSeen = userSessions.map((session) => session.lastSeenAt || session.lastHeartbeat).sort((a, b) => b.getTime() - a.getTime())[0];
+      if (latestSeen) lastSeen[u] = latestSeen.toISOString();
       if (typeof entry.statusMessage === "string" && entry.statusMessage.trim()) {
         statusMessages[u] = entry.statusMessage.trim();
       }
@@ -143,5 +136,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
   }
-  return res.status(200).json({ statuses: map, statusMessages, richPresence });
+  return res.status(200).json({ statuses: map, statusMessages, richPresence, lastSeen });
 }

@@ -1,4 +1,4 @@
-import cookie from "cookie";
+import * as cookie from "cookie";
 
 const isProduction = process.env.NODE_ENV === "production";
 const TEMP_COOKIE_TTL = 10 * 60;

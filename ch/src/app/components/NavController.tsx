@@ -91,7 +91,7 @@ export default function NavController(props: Props) {
           aria-label="Direct messages"
           title="Direct Messages"
           className="btn-ghost"
-          onClick={() => { setActiveNav('activity'); try { setSelectedHaven && setSelectedHaven('__dms__'); setSelectedDM && setSelectedDM(lastSelectedDMRef?.current ?? null); } catch {} setShowMobileNav(false); }}
+          onClick={() => { setActiveNav('activity'); try { setSelectedHaven?.('__dms__'); setSelectedDM?.(lastSelectedDMRef?.current ?? null); } catch {} setShowMobileNav(false); }}
           style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '8px 10px', minWidth: 52, minHeight: 44, color: selectedHaven === '__dms__' && !!selectedDM ? COLOR_ACCENT_TEXT : COLOR_TEXT }}
         >
           <FontAwesomeIcon icon={faEnvelope} />
@@ -103,7 +103,7 @@ export default function NavController(props: Props) {
           aria-label="Activity"
           title="Activity"
           className="btn-ghost"
-          onClick={() => { setActiveNav('activity'); try { setSelectedHaven && setSelectedHaven('__dms__'); setSelectedDM && setSelectedDM(null); setFriendsTab && setFriendsTab('all'); } catch {} setShowMobileNav(false); }}
+          onClick={() => { setActiveNav('activity'); try { setSelectedHaven?.('__dms__'); setSelectedDM?.(null); setFriendsTab?.('all'); } catch {} setShowMobileNav(false); }}
           style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '8px 10px', minWidth: 52, minHeight: 44, color: selectedHaven === '__dms__' && !selectedDM ? COLOR_ACCENT_TEXT : COLOR_TEXT }}
         >
           <FontAwesomeIcon icon={faUsers} />

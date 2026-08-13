@@ -34,7 +34,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   usersData.users.push({ username, passwordHash, passwordSalt, passwordAlgo: "scrypt", profile: { displayName: username }, roles: ["member"] });
   writeUsers(usersData);
   // Create JWT and set as HTTP-only cookie
-  const token = signJWT({ username });
+  const token = signJWT({ username, accountSetup: true }, "1h");
   setAuthCookie(res, token);
   res.status(200).json({ success: true, username });
 }

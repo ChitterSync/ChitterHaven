@@ -1,18 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { verifyJWT } from '@/server/api-lib/jwt';
 import { readUsers, writeUsers } from '@/server/api-lib/usersStore';
-import { getAuthCookie } from '@/server/api-lib/authCookie';
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { requireUser } from '@/server/api-lib/auth';
 import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
 
 // --- handler (the main event).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const session = readSessionFromRequest(req);
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  const username = session?.user?.username || payload?.username;
-  const isCentralAccount = Boolean(session?.user?.username);
-  if (!username) return res.status(401).json({ error: 'Unauthorized' });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const username = user.username;
+  const isCentralAccount = user.authProvider !== 'legacy';
 
   const AUTH_SERVICE_BASE_RAW =
     process.env.AUTH_SERVICE_URL || process.env.AUTH_BASE_URL || process.env.NEXT_PUBLIC_CS_AUTH_URL || "";
@@ -39,7 +35,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       try {
         const authRes = await fetch(
           `${AUTH_SERVICE_BASE}/api/service/profile?username=${encodeURIComponent(queryUser)}`,
-          { headers: { Authorization: `Bearer ${AUTH_SERVICE_KEY}` } },
+          { headers: { Authorization: `Bearer ${AUTH_SERVICE_KEY}`, cookie: req.headers.cookie || "" } },
         );
         if (authRes.ok) {
           profileFromAuth = await authRes.json().catch(() => null);
@@ -80,23 +76,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     writeUsers(usersData);
 
     const syncToChitterSync = req.body?.syncToChitterSync === true;
+    let syncError: string | null = null;
     if (syncToChitterSync && isCentralAccount && hasAuthService) {
       try {
-        await fetch(`${AUTH_SERVICE_BASE}/api/service/profile`, {
+        const authRes = await fetch(`${AUTH_SERVICE_BASE}/api/service/profile`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${AUTH_SERVICE_KEY}`,
+            cookie: req.headers.cookie || "",
           },
           body: JSON.stringify({
             username,
             profile: { displayName, bio, pronouns, website, location },
           }),
         });
-      } catch {}
+        if (!authRes.ok) syncError = "Profile saved in ChitterHaven, but cloud sync is temporarily unavailable.";
+      } catch {
+        syncError = "Profile saved in ChitterHaven, but cloud sync is temporarily unavailable.";
+      }
     }
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, syncError });
   }
 
   res.setHeader('Allow', ['GET', 'POST']);

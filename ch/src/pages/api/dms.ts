@@ -2,10 +2,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "@/server/api-lib/jwt";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { requireUser } from "@/server/api-lib/auth";
 import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
+import { prisma } from "@/server/api-lib/prismaClient";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -22,8 +23,11 @@ export type DM = {
   owner?: string;
   moderators?: string[];
   avatarUrl?: string;
+  unreadCount?: number;
+  lastReadMessageId?: string;
 };
 type DMData = { dms: DM[] };
+let dmCache: { mtimeMs: number; data: DMData } | null = null;
 
 const sortStrings = (list: string[]) => list.slice().sort((a, b) => a.localeCompare(b));
 const arraysEqual = (a: string[] = [], b: string[] = []) => a.length === b.length && a.every((val, idx) => val === b[idx]);
@@ -79,30 +83,20 @@ const isGroupModerator = (dm: DM, username: string) => {
 
 function readDMs(): DMData {
   if (!fs.existsSync(DMS_PATH)) return { dms: [] };
-  const buf = fs.readFileSync(DMS_PATH);
-  if (buf.length <= 16) return { dms: [] };
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      writeDMs(parsed);
-      return parsed;
-    } catch {
-      return { dms: [] };
-    }
-  }
+  const mtimeMs = fs.statSync(DMS_PATH).mtimeMs;
+  if (dmCache && dmCache.mtimeMs === mtimeMs) return dmCache.data;
+  const data=readEncryptedJson({filePath:DMS_PATH,purpose:"dm-metadata",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is DMData=>Boolean(value&&typeof value==="object"&&Array.isArray((value as DMData).dms))});dmCache={mtimeMs:fs.statSync(DMS_PATH).mtimeMs,data};return data;
+}
+
+export function getDMForMember(id: string, username: string): DM | null {
+  if (!id || !username) return null;
+  const dm = readDMs().dms.find((entry) => entry.id === id && Array.isArray(entry.users) && entry.users.includes(username));
+  return dm ? presentDM(dm, username) : null;
 }
 
 function writeDMs(data: DMData) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(data)), cipher.final()]);
-  fs.writeFileSync(DMS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+  writeEncryptedJson(data,{filePath:DMS_PATH,purpose:"dm-metadata",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is DMData=>Boolean(value&&typeof value==="object"&&Array.isArray((value as DMData).dms))});
+  dmCache = { mtimeMs: fs.statSync(DMS_PATH).mtimeMs, data };
 }
 
 export function ensureDMForUsers(a: string, b: string): DM {
@@ -148,18 +142,22 @@ function ensureGroupDM(me: string, others: string[], title?: string, avatarUrl?:
 }
 
 // --- handler (the main event).
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const session = readSessionFromRequest(req);
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  const me = session?.user?.username || payload?.username;
-  if (!me) return res.status(401).json({ error: "Unauthorized" });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const me = user.username;
 
   if (req.method === "GET") {
     const data = readDMs();
+    const readStates = await prisma.roomReadState.findMany({ where: { userId: me }, select: { room: true, unreadCount: true, lastReadMessageId: true } });
+    const readByRoom = new Map(readStates.map((state) => [state.room, state]));
     const mine = data.dms
       .filter(dm => dm.users.includes(me))
-      .map((dm) => presentDM(dm, me));
+      .map((dm) => {
+        const presented = presentDM(dm, me);
+        const read = readByRoom.get(dm.id);
+        return { ...presented, unreadCount: read?.unreadCount || 0, lastReadMessageId: read?.lastReadMessageId || undefined };
+      });
     return res.status(200).json({ dms: mine });
   }
 

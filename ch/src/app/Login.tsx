@@ -3,8 +3,9 @@
 // --- deps (tiny but sharp).
 import { useEffect, useRef, useState } from "react";
 import Dropdown, { type DropdownOption } from "./components/Dropdown";
+import AccountSetupModal from "./AccountSetupModal";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faDesktop, faEye, faEyeSlash, faGear, faMoon, faSun } from "@fortawesome/free-solid-svg-icons";
+import { faCircleInfo, faDesktop, faEye, faEyeSlash, faGear, faMoon, faSun } from "@fortawesome/free-solid-svg-icons";
 
 type LoginProps = {
   onLogin: () => void;
@@ -38,6 +39,7 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
   const [loginAnimationMode, setLoginAnimationMode] = useState<LoginAnimationMode>("full");
   const [loginThemeMode, setLoginThemeMode] = useState<LoginThemeMode>("system");
   const [popupPending, setPopupPending] = useState(false);
+  const [setupUsername, setSetupUsername] = useState<string | null>(null);
   const [authProvider, setAuthProvider] = useState<"local" | "chittersync">(() => {
     const pref = (process.env.NEXT_PUBLIC_AUTH_PREFERENCE || "").toLowerCase();
     if (pref === "local") return "local";
@@ -65,7 +67,7 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
 
   const buildAuthRedirect = (path: "signin" | "register") => {
     if (!authBaseUrl) return null;
-    const returnTo = `${window.location.pathname}${window.location.search}`;
+    const returnTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
     return `${authBaseUrl}/${path}?redirect=${encodeURIComponent(returnTo)}`;
   };
 
@@ -293,7 +295,11 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
     });
     const data = await res.json();
     if (data.success) {
-      onLogin();
+      if (mode === "register") {
+        setSetupUsername(username);
+      } else {
+        onLogin();
+      }
     } else {
       setError(data.error || (mode === "login" ? "Login failed" : "Registration failed"));
     }
@@ -311,6 +317,7 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
     : "none";
 
   return (
+    <>
     <form onSubmit={handleSubmit} className="glass w-full max-w-[360px] mx-auto mt-6 p-6 rounded-2xl">
       <div className="mb-4 flex items-start justify-between gap-3">
         <h2 className="text-xl font-semibold">
@@ -347,28 +354,38 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
           )}
         </div>
       </div>
-      <div className="relative flex items-center gap-2 text-xs mb-4 rounded-full border border-white/15 bg-slate-950/40 p-1">
-        <span
-          aria-hidden
-          className="absolute top-1 bottom-1 left-1 w-[calc(50%-0.25rem)] rounded-full border border-indigo-300/45 bg-indigo-500/20"
-          style={{
-            transform: authProvider === "local" ? "translateX(calc(100% + 0.5rem))" : "translateX(0)",
-            transition: selectorTransition,
-          }}
-        />
+      <div className="mb-4 flex items-center gap-2">
+        <div className="relative flex flex-1 items-center gap-2 rounded-full border border-white/15 bg-slate-950/40 p-1 text-xs">
+          <span
+            aria-hidden
+            className="absolute top-1 bottom-1 left-1 w-[calc(50%-0.25rem)] rounded-full border border-indigo-300/45 bg-indigo-500/20"
+            style={{
+              transform: authProvider === "local" ? "translateX(calc(100% + 0.5rem))" : "translateX(0)",
+              transition: selectorTransition,
+            }}
+          />
+          <button
+            type="button"
+            className={`relative z-[1] flex-1 rounded-full border px-3 py-1 transition-colors ${authProvider === "chittersync" ? "border-indigo-400 text-indigo-100" : "border-white/20 text-gray-400 hover:text-gray-300"}`}
+            onClick={() => { if (authProvider !== "chittersync") setAuthProvider("chittersync"); setError(""); }}
+          >
+            ChitterSync
+          </button>
+          <button
+            type="button"
+            className={`relative z-[1] flex-1 rounded-full border px-3 py-1 transition-colors ${authProvider === "local" ? "border-indigo-400 text-indigo-100" : "border-white/20 text-gray-400 hover:text-gray-300"}`}
+            onClick={() => { if (authProvider !== "local") setAuthProvider("local"); setError(""); }}
+          >
+            Local account
+          </button>
+        </div>
         <button
           type="button"
-          className={`relative z-[1] flex-1 rounded-full border px-3 py-1 transition-colors ${authProvider === "chittersync" ? "border-indigo-400 text-indigo-100" : "border-white/20 text-gray-400 hover:text-gray-300"}`}
-          onClick={() => { if (authProvider !== "chittersync") setAuthProvider("chittersync"); setError(""); }}
+          className="btn-ghost inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/15 text-gray-300 hover:text-indigo-200"
+          aria-label="Why are there two sign-in options?"
+          data-tooltip="ChitterSync lets you use one shared account across ChitterSync apps. Local account signs you in only to this ChitterHaven server."
         >
-          ChitterSync
-        </button>
-        <button
-          type="button"
-          className={`relative z-[1] flex-1 rounded-full border px-3 py-1 transition-colors ${authProvider === "local" ? "border-indigo-400 text-indigo-100" : "border-white/20 text-gray-400 hover:text-gray-300"}`}
-          onClick={() => { if (authProvider !== "local") setAuthProvider("local"); setError(""); }}
-        >
-          Local account
+          <FontAwesomeIcon icon={faCircleInfo} />
         </button>
       </div>
       {authNotice && (
@@ -511,5 +528,19 @@ export default function Login({ onLogin, authNotice }: LoginProps) {
         </div>
       </div>
     </form>
+    {setupUsername && (
+      <AccountSetupModal
+        username={setupUsername}
+        onComplete={onLogin}
+        onCancel={() => {
+          setSetupUsername(null);
+          setUsername("");
+          setPassword("");
+          setMode("login");
+          setError("Account creation was cancelled.");
+        }}
+      />
+    )}
+    </>
   );
 }

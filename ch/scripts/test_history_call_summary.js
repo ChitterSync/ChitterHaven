@@ -1,9 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 
-const HISTORY_PATH = path.join(process.cwd(), 'src/pages/api/history.json');
-const SECRET = process.env.CHITTERHAVEN_SECRET || 'chitterhaven_secret';
+const HISTORY_PATH = path.join(os.tmpdir(), `chitterhaven-call-summary-${process.pid}.bin`);
+const SECRET = 'isolated-call-summary-test-secret';
 const KEY = crypto.createHash('sha256').update(SECRET).digest();
 
 function decryptHistory() {
@@ -66,9 +67,11 @@ const first = saveMessageLocal(ROOM, { user: 'alice', text: 'Call ended • 5m',
 const second = saveMessageLocal(ROOM, { user: 'bob', text: 'Call ended • 6m', systemType: 'call-summary' });
 
 if (first.id === second.id) {
+  try { fs.unlinkSync(HISTORY_PATH); } catch {}
   console.log('PASS - duplicate call-summary prevented (same id returned)');
   process.exit(0);
 } else {
+  try { fs.unlinkSync(HISTORY_PATH); } catch {}
   console.error('FAIL - duplicate call-summary allowed', first, second);
   process.exit(2);
 }

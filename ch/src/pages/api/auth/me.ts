@@ -1,13 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createSessionPayload, readSessionFromRequest, setSessionCookie } from "@/lib/auth/session";
+import { clearSessionCookie, createSessionPayload, readSessionFromRequest, setSessionCookie } from "@/lib/auth/session";
 import { getAuthCookie } from "@/server/api-lib/authCookie";
 import { verifyJWT } from "@/server/api-lib/jwt";
 
-const AUTH_SERVICE_BASE_RAW =
-  process.env.AUTH_BASE_URL ||
-  process.env.AUTH_SERVICE_URL ||
-  process.env.NEXT_PUBLIC_CS_AUTH_URL ||
-  "";
+const AUTH_SERVICE_BASE_RAW = process.env.AUTH_BASE_URL || process.env.AUTH_SERVICE_URL || process.env.NEXT_PUBLIC_CS_AUTH_URL || "";
 const AUTH_SERVICE_BASE = AUTH_SERVICE_BASE_RAW ? AUTH_SERVICE_BASE_RAW.replace(/\/$/, "") : "";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -16,56 +12,45 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const session = readSessionFromRequest(req);
-  if (session) {
-    return res.status(200).json({ authenticated: true, provider: "chittersync", user: session.user });
-  }
-
+  let centralAvailable = false;
   if (AUTH_SERVICE_BASE) {
     try {
-      const authRes = await fetch(`${AUTH_SERVICE_BASE}/api/auth/me`, {
-        headers: {
-          cookie: req.headers.cookie || "",
-        },
-      });
+      const authRes = await fetch(`${AUTH_SERVICE_BASE}/api/auth/me`, { headers: { cookie: req.headers.cookie || "" }, cache: "no-store" });
       if (authRes.ok) {
+        centralAvailable = true;
         const data = await authRes.json();
-        if (data?.authenticated) {
-          if (data.user?.username) {
-            const session = createSessionPayload({
-              id: data.user.id || data.user.username,
-              username: data.user.username,
-              displayName: data.user.displayName || data.user.username,
-              avatar: data.user.avatar || null,
-              email: data.user.email || null,
-              roles: data.user.roles || null,
-            });
-            setSessionCookie(res, session);
-          }
-          return res.status(200).json({
-            ...data,
-            provider: data.provider || "chittersync",
+        if (data?.authenticated && data.user?.username) {
+          const session = createSessionPayload({
+            id: data.user.id || data.user.username,
+            username: data.user.username,
+            displayName: data.user.displayName || data.user.username,
+            avatar: data.user.avatar || null,
+            email: data.user.email || null,
+            roles: data.user.roles || null,
           });
+          setSessionCookie(res, session);
+          res.setHeader("Cache-Control", "no-store");
+          return res.status(200).json({ ...data, provider: data.provider || "chittersync" });
         }
+        // A successful central response is authoritative; discard a stale cached central session.
+        clearSessionCookie(res);
       }
     } catch (error) {
       console.error("[auth/me] auth service check failed:", error);
     }
   }
 
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  if (payload && typeof payload === "object" && payload.username) {
-    return res.status(200).json({
-      authenticated: true,
-      provider: "legacy",
-      user: {
-        id: payload.username,
-        username: payload.username,
-        displayName: payload.username,
-      },
-    });
+  if (!centralAvailable) {
+    const cachedSession = readSessionFromRequest(req);
+    if (cachedSession) return res.status(200).json({ authenticated: true, provider: "chittersync-cache", user: cachedSession.user });
   }
 
+  const token = getAuthCookie(req);
+  const payload: unknown = token ? verifyJWT(token) : null;
+  if (payload && typeof payload === "object" && "username" in payload && typeof payload.username === "string") {
+    return res.status(200).json({ authenticated: true, provider: "legacy", user: { id: payload.username, username: payload.username, displayName: payload.username } });
+  }
+
+  res.setHeader("Cache-Control", "no-store");
   return res.status(200).json({ authenticated: false, provider: null, user: null });
 }

@@ -54,7 +54,7 @@ export default function EmojiPicker({ onPick, initialQuery = "", initialCategory
               onPick(e.char);
               setQuery('');
               setCategory(undefined);
-              onClose && onClose();
+              onClose?.();
             }}
             title={e.name}
             style={{ padding: 8, borderRadius: 8, background: 'transparent', border: '1px solid rgba(255,255,255,0.02)', cursor: 'pointer', fontSize: 18 }}

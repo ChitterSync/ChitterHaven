@@ -1,36 +1,20 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { prisma } from '@/server/api-lib/prismaClient';
 import { requireUser } from '@/server/api-lib/auth';
-import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import { readEncryptedJson, writeEncryptedJson } from '@/lib/security/encryptedJsonFile';
+import { getStoreKeyRing } from '@/lib/security/keyRings';
 
 const SETTINGS_PATH = path.join(process.cwd(), 'src/pages/api/server-settings.json');
 const SECRET = process.env.CHITTERHAVEN_SECRET || 'chitterhaven_secret';
-const KEY = crypto.createHash('sha256').update(SECRET).digest();
+const isSettings = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
 
 function decryptLocal() {
-  if (!fs.existsSync(SETTINGS_PATH)) return {} as any;
-  const buf = fs.readFileSync(SETTINGS_PATH);
-  if (buf.length <= 16) return {} as any;
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString('utf8');
-      const parsed = JSON.parse(plaintext);
-      const iv2 = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv('aes-256-cbc', KEY, iv2);
-      const enc = Buffer.concat([cipher.update(JSON.stringify(parsed)), cipher.final()]);
-      fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv2, enc]), { mode: 0o600 });
-      return parsed;
-    } catch {
-      return {} as any;
-    }
-  }
+  return readEncryptedJson({ filePath: SETTINGS_PATH, purpose: 'server-settings', ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({}), validate: isSettings });
+}
+
+function encryptLocal(data: Record<string, any>) {
+  writeEncryptedJson(data, { filePath: SETTINGS_PATH, purpose: 'server-settings', ring: getStoreKeyRing(), legacySecret: SECRET, validate: isSettings });
 }
 
 // --- handler (the main event).
@@ -78,10 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const local = decryptLocal();
         if (local && (local as any)[haven]) {
           delete (local as any)[haven];
-          const iv = crypto.randomBytes(16);
-          const cipher = crypto.createCipheriv('aes-256-cbc', KEY, iv);
-          const enc = Buffer.concat([cipher.update(JSON.stringify(local)), cipher.final()]);
-          fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+          encryptLocal(local);
         }
       } catch {}
     }

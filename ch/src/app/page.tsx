@@ -38,10 +38,15 @@ function HomeContent() {
     return () => window.removeEventListener("ch_fill_screen", handler as EventListener);
   }, []);
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6">
-      <h1 className="hidden md:block text-3xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-cyan-300">
-        ChitterHaven Community
-      </h1>
+    <div className={authenticated || fillScreenActive
+      ? "h-[100dvh] w-full overflow-hidden flex flex-col items-center justify-center"
+      : "min-h-[100dvh] w-full overflow-x-hidden flex flex-col items-center justify-center p-4 sm:p-6"
+    }>
+      {!authenticated && (
+        <h1 className="hidden md:block text-3xl font-bold mb-6 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-cyan-300">
+          ChitterHaven Community
+        </h1>
+      )}
       {loading ? (
         <div className="text-gray-400">Loading...</div>
       ) : authenticated && user ? (
@@ -49,7 +54,7 @@ function HomeContent() {
       ) : (
         <Login onLogin={refresh} authNotice={authError} />
       )}
-      {!fillScreenActive && (
+      {!authenticated && !fillScreenActive && (
         <footer className="mt-10 text-center text-xs text-gray-400 max-w-3xl">
           <p>ChitterSync Ac {new Date().getFullYear()}</p>
           <p className="hidden md:block opacity-80">This is a Beta version of ChitterHaven. Accounts and messages may be purged at any time during testing.</p>

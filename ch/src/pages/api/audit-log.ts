@@ -1,12 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/api-lib/prismaClient";
-import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { requireUser } from "@/server/api-lib/auth";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getAuditKeyRing, getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const LOG_PATH = path.join(process.cwd(), "src/pages/api/audit-log.json");
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/server-settings.json");
 
@@ -19,58 +18,21 @@ type AuditEntry = {
 };
 
 function readLog(): AuditEntry[] {
-  if (!fs.existsSync(LOG_PATH)) return [];
-  const buf = fs.readFileSync(LOG_PATH);
-  if (buf.length <= 16) return [];
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      if (Array.isArray(parsed)) {
-        writeLog(parsed);
-        return parsed;
-      }
-    } catch {}
-    return [];
-  }
+  return readEncryptedJson({ filePath: LOG_PATH, purpose: "audit-log", ring: getAuditKeyRing(), legacySecret: SECRET, defaultValue: () => [], validate: (value): value is AuditEntry[] => Array.isArray(value) });
 }
 
 function writeLog(entries: AuditEntry[]) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(entries)), cipher.final()]);
-  fs.writeFileSync(LOG_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+  writeEncryptedJson(entries, { filePath: LOG_PATH, purpose: "audit-log", ring: getAuditKeyRing(), legacySecret: SECRET, validate: (value): value is AuditEntry[] => Array.isArray(value) });
 }
 
 const SECRET2 = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY2 = crypto.createHash("sha256").update(SECRET2).digest();
+const isSettings = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 function decryptLocal() {
-  if (!fs.existsSync(SETTINGS_PATH)) return {} as any;
-  const buf = fs.readFileSync(SETTINGS_PATH);
-  if (buf.length <= 16) return {} as any;
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY2, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      const iv2 = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv("aes-256-cbc", KEY2, iv2);
-      const enc = Buffer.concat([cipher.update(JSON.stringify(parsed)), cipher.final()]);
-      fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv2, enc]), { mode: 0o600 });
-      return parsed;
-    } catch {
-      return {} as any;
-    }
-  }
+  return readEncryptedJson({ filePath: SETTINGS_PATH, purpose: "server-settings", ring: getStoreKeyRing(), legacySecret: SECRET2, defaultValue: () => ({}), validate: isSettings });
+}
+
+function encryptLocal(data: Record<string, any>) {
+  writeEncryptedJson(data, { filePath: SETTINGS_PATH, purpose: "server-settings", ring: getStoreKeyRing(), legacySecret: SECRET2, validate: isSettings });
 }
 
 async function loadPermissions(haven: string) {
@@ -140,10 +102,7 @@ async function loadPermissions(haven: string) {
       };
       if (haven === "ChitterHaven") value.permissions.members["speed_devil50"] = ["Owner"];
       (local as any)[haven] = value;
-      const iv = crypto.randomBytes(16);
-      const cipher = crypto.createCipheriv("aes-256-cbc", KEY2, iv);
-      const enc = Buffer.concat([cipher.update(JSON.stringify(local)), cipher.final()]);
-      fs.writeFileSync(SETTINGS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+      encryptLocal(local);
     }
     return value;
   }

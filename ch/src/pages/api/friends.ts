@@ -2,11 +2,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { verifyJWT } from "@/server/api-lib/jwt";
 import { ensureDMForUsers } from "./dms";
-import { getAuthCookie } from "@/server/api-lib/authCookie";
-import { readSessionFromRequest } from "@/lib/auth/session";
+import { requireUser } from "@/server/api-lib/auth";
 import { getClientIp, isExemptUsername, rateLimit } from "@/server/api-lib/rateLimit";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
 const KEY = crypto.createHash("sha256").update(SECRET).digest();
@@ -14,33 +14,15 @@ const FRIENDS_PATH = path.join(process.cwd(), "src/pages/api/friends.json");
 
 type FriendState = { friends: string[]; incoming: string[]; outgoing: string[] };
 type FriendsData = { users: Record<string, FriendState> };
+type FriendEventType = "received" | "accepted" | "denied" | "cancelled" | "removed";
 
 function readFriends(): FriendsData {
   if (!fs.existsSync(FRIENDS_PATH)) return { users: {} };
-  const buf = fs.readFileSync(FRIENDS_PATH);
-  if (buf.length <= 16) return { users: {} };
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      writeFriends(parsed);
-      return parsed;
-    } catch {
-      return { users: {} };
-    }
-  }
+  return readEncryptedJson({filePath:FRIENDS_PATH,purpose:"friend-relationships",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is FriendsData=>Boolean(value&&typeof value==="object"&&(value as FriendsData).users&&typeof(value as FriendsData).users==="object")});
 }
 
 function writeFriends(data: FriendsData) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(data)), cipher.final()]);
-  fs.writeFileSync(FRIENDS_PATH, Buffer.concat([iv, enc]), { mode: 0o600 });
+  writeEncryptedJson(data,{filePath:FRIENDS_PATH,purpose:"friend-relationships",ring:getStoreKeyRing(),legacySecret:SECRET,validate:(value):value is FriendsData=>Boolean(value&&typeof value==="object"&&(value as FriendsData).users&&typeof(value as FriendsData).users==="object")});
 }
 
 function ensureUser(data: FriendsData, u: string) {
@@ -48,12 +30,11 @@ function ensureUser(data: FriendsData, u: string) {
 }
 
 // --- handler (the main event).
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const session = readSessionFromRequest(req);
-  const token = getAuthCookie(req);
-  const payload: any = token ? verifyJWT(token) : null;
-  const me = session?.user?.username || payload?.username;
-  if (!me) return res.status(401).json({ error: "Unauthorized" });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const me = user.username;
 
   const data = readFriends();
   ensureUser(data, me);
@@ -64,6 +45,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   }
 
   if (req.method === "POST") {
+    const emitFriendState = (recipient: string, type: FriendEventType, actor: string) => {
+      const io = (res.socket as any)?.server?.io;
+      if (!io || !data.users[recipient]) return;
+      io.to(`user:${recipient}`).emit("friend-state", {
+        type,
+        actor,
+        state: data.users[recipient],
+        occurredAt: Date.now(),
+        _event: {
+          eventId: crypto.randomUUID(),
+          type: `friend.${type}`,
+          entityId: [actor, recipient].sort().join(":"),
+          actorId: actor,
+          serverTimestamp: new Date().toISOString(),
+        },
+      });
+    };
     if (!isExemptUsername(me)) {
       const ip = getClientIp(req);
       const limit = rateLimit(`friends:${me || ip}`, 30, 60_000);
@@ -83,6 +81,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       if (!A.outgoing.includes(target)) A.outgoing.push(target);
       if (!B.incoming.includes(me)) B.incoming.push(me);
       writeFriends(data);
+      emitFriendState(target, "received", me);
       return res.status(200).json({ success: true });
     }
 
@@ -98,6 +97,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       writeFriends(data);
       // Ensure a DM exists between the two users
       try { ensureDMForUsers(me, target); } catch {}
+      emitFriendState(target, "accepted", me);
       return res.status(200).json({ success: true });
     }
 
@@ -109,6 +109,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       A.incoming = A.incoming.filter((u) => u !== target);
       B.outgoing = B.outgoing.filter((u) => u !== me);
       writeFriends(data);
+      emitFriendState(target, "denied", me);
       return res.status(200).json({ success: true });
     }
 
@@ -120,6 +121,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       A.outgoing = A.outgoing.filter((u) => u !== target);
       B.incoming = B.incoming.filter((u) => u !== me);
       writeFriends(data);
+      emitFriendState(target, "cancelled", me);
       return res.status(200).json({ success: true });
     }
 
@@ -131,6 +133,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       A.friends = A.friends.filter((u) => u !== target);
       B.friends = B.friends.filter((u) => u !== me);
       writeFriends(data);
+      emitFriendState(target, "removed", me);
       return res.status(200).json({ success: true });
     }
 

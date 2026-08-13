@@ -1,13 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { requireUser } from "@/server/api-lib/auth";
+import { readEncryptedJson, writeEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const REPORTS_PATH = path.join(process.cwd(), "src/pages/api/reports.json");
-const IV_LENGTH = 16;
 
 type ReportEntry = {
   ts: number;
@@ -20,39 +18,26 @@ type ReportEntry = {
 };
 
 function readReports(): ReportEntry[] {
-  if (!fs.existsSync(REPORTS_PATH)) return [];
-  const buf = fs.readFileSync(REPORTS_PATH);
-  if (buf.length <= IV_LENGTH) return [];
-  const iv = buf.slice(0, IV_LENGTH);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([
-      decipher.update(buf.slice(IV_LENGTH)),
-      decipher.final(),
-    ]).toString();
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed.reports) ? parsed.reports : [];
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      const parsed = JSON.parse(plaintext);
-      const reports = Array.isArray(parsed.reports) ? parsed.reports : [];
-      writeReports(reports);
-      return reports;
-    } catch {
-      return [];
-    }
-  }
+  return readEncryptedJson({
+    filePath: REPORTS_PATH,
+    purpose: "reports",
+    ring: getStoreKeyRing(),
+    legacySecret: SECRET,
+    defaultValue: () => ({ reports: [] }),
+    validate: (value): value is { reports: ReportEntry[] } =>
+      !!value && typeof value === "object" && Array.isArray((value as { reports?: unknown }).reports),
+  }).reports;
 }
 
 function writeReports(reports: ReportEntry[]) {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
-  const body = Buffer.concat([
-    cipher.update(JSON.stringify({ reports })),
-    cipher.final(),
-  ]);
-  fs.writeFileSync(REPORTS_PATH, Buffer.concat([iv, body]), { mode: 0o600 });
+  writeEncryptedJson({ reports }, {
+    filePath: REPORTS_PATH,
+    purpose: "reports",
+    ring: getStoreKeyRing(),
+    legacySecret: SECRET,
+    validate: (value): value is { reports: ReportEntry[] } =>
+      !!value && typeof value === "object" && Array.isArray((value as { reports?: unknown }).reports),
+  });
 }
 
 // --- handler (the main event).

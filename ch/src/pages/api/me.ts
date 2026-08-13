@@ -1,33 +1,17 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { requireUser } from "@/server/api-lib/auth";
-import fs from "fs";
 import path from "path";
-import crypto from "crypto";
+import { readEncryptedJson } from "@/lib/security/encryptedJsonFile";
+import { getStoreKeyRing } from "@/lib/security/keyRings";
 
 const SECRET = process.env.CHITTERHAVEN_SECRET || "chitterhaven_secret";
-const KEY = crypto.createHash("sha256").update(SECRET).digest();
 const SETTINGS_PATH = path.join(process.cwd(), "src/pages/api/settings.json");
 
 type UserSettings = Record<string, any>;
 type SettingsData = { users: Record<string, UserSettings> };
 
 function readSettings(): SettingsData {
-  if (!fs.existsSync(SETTINGS_PATH)) return { users: {} };
-  const buf = fs.readFileSync(SETTINGS_PATH);
-  if (buf.length <= 16) return { users: {} };
-  const iv = buf.slice(0, 16);
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-cbc", KEY, iv);
-    const json = Buffer.concat([decipher.update(buf.slice(16)), decipher.final()]).toString();
-    return JSON.parse(json);
-  } catch {
-    try {
-      const plaintext = buf.toString("utf8");
-      return JSON.parse(plaintext);
-    } catch {
-      return { users: {} };
-    }
-  }
+  return readEncryptedJson({ filePath: SETTINGS_PATH, purpose: "user-settings", ring: getStoreKeyRing(), legacySecret: SECRET, defaultValue: () => ({ users: {} }), validate: (value): value is SettingsData => !!value && typeof value === "object" && !!(value as SettingsData).users && typeof (value as SettingsData).users === "object" });
 }
 
 // --- handler (the main event).

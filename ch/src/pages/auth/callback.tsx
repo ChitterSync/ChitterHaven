@@ -1,4 +1,5 @@
 import type { GetServerSideProps } from "next";
+import Link from "next/link";
 import { clearOidcCookies, readOidcCookies } from "@/lib/auth/oidcCookies";
 import { isValidState } from "@/lib/auth/state";
 import { exchangeCodeForTokens } from "@/lib/auth/oidc";
@@ -105,9 +106,9 @@ export default function CallbackPage({ error }: CallbackProps) {
         {error ? (
           <>
             <p className="text-sm text-red-300 mb-4">{error}</p>
-            <a className="text-indigo-300 hover:text-indigo-200 text-sm" href="/">
+            <Link className="text-indigo-300 hover:text-indigo-200 text-sm" href="/">
               Back to login
-            </a>
+            </Link>
           </>
         ) : (
           <p className="text-sm text-gray-300">Finishing sign-in...</p>

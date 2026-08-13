@@ -177,6 +177,14 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
     window.addEventListener("resize", updateLayout);
     return () => window.removeEventListener("resize", updateLayout);
   }, []);
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !confirmAction) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [confirmAction, isOpen, onClose]);
   const markAvatarLoaded = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
     event.currentTarget.dataset.loaded = "true";
   }, []);
@@ -204,10 +212,29 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
   };
   const closeConfirm = () => setConfirmAction(null);
 
+  const beginEditing = () => {
+    setDraft({
+      displayName: profile?.displayName || username,
+      avatarUrl: profile?.avatarUrl || '',
+      bannerUrl: profile?.bannerUrl || '',
+      bio: profile?.bio || '',
+      pronouns: profile?.pronouns || '',
+      website: profile?.website || '',
+      location: profile?.location || '',
+    });
+    setProfileNotice("");
+    setEditMode(true);
+  };
+
   const dotColor = status === 'online' ? '#22c55e' : status === 'idle' ? '#f59e0b' : status === 'dnd' ? '#ef4444' : '#6b7280';
+  const profileFields = [profile?.displayName, profile?.avatarUrl, profile?.bannerUrl, profile?.bio, profile?.pronouns, profile?.website, profile?.location];
+  const profileCompletion = Math.round((profileFields.filter((value) => typeof value === 'string' && value.trim().length > 0).length / profileFields.length) * 100);
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${profile?.displayName || username}'s profile`}
       style={{
         position: 'fixed',
         inset: 0,
@@ -234,6 +261,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
         {/* Banner + avatar layer */}
         <div style={{ position: 'relative', zIndex: 0 }}>
           <div style={{ height: isMobileLayout ? 120 : 140, background: profile?.bannerUrl ? `url(${profile.bannerUrl}) center/cover no-repeat` : 'linear-gradient(90deg,#1f2937,#0f172a)' }} />
+          <button type="button" className="btn-ghost" onClick={onClose} aria-label="Close profile" style={{ position: 'absolute', right: 12, top: 12, width: 36, height: 36, borderRadius: 999, padding: 0, background: 'rgba(2,6,23,0.72)', zIndex: 5 }}><FontAwesomeIcon icon={faXmark} /></button>
           <img
             src={profile?.avatarUrl || '/favicon.ico'}
             alt={profile?.displayName || username}
@@ -269,8 +297,13 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
                 )}
               </div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>@{username}{profile?.pronouns ? ` - ${profile.pronouns}`: ''}</div>
+              {isSelf && (
+                <div style={{ marginTop: 8, width: 'min(240px, 70vw)' }} title={`${profileCompletion}% profile completion`}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', fontSize: 10, marginBottom: 4 }}><span>Profile completion</span><span>{profileCompletion}%</span></div>
+                  <div style={{ height: 5, overflow: 'hidden', borderRadius: 999, background: '#1f2937' }}><div style={{ width: `${profileCompletion}%`, height: '100%', borderRadius: 999, background: 'linear-gradient(90deg,#818cf8,#22d3ee)', transition: 'width 240ms ease' }} /></div>
+                </div>
+              )}
             </div>
-            <button className="btn-ghost" onClick={onClose} style={{ marginLeft: isMobileLayout ? 0 : 'auto', padding: '6px 10px' }}><FontAwesomeIcon icon={faXmark} /></button>
           </div>
           {statusMessage && (
             <div
@@ -371,8 +404,15 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
               </div>
             </div>
           )}
-          {profile?.bio && (
-            <div style={{ marginTop: 12, color: '#e5e7eb', whiteSpace: 'pre-wrap' }}>{profile.bio}</div>
+          {(profile?.bio || isSelf) && (
+            <section style={{ marginTop: 16, border: '1px solid #1f2937', background: 'rgba(2,6,23,0.35)', borderRadius: 12, padding: 12 }}>
+              <div style={{ color: '#93c5fd', fontSize: 11, fontWeight: 700, letterSpacing: 0.7, textTransform: 'uppercase', marginBottom: 6 }}>About</div>
+              {profile?.bio ? (
+                <div style={{ color: '#e5e7eb', whiteSpace: 'pre-wrap', lineHeight: 1.55, overflowWrap: 'anywhere' }}>{profile.bio}</div>
+              ) : (
+                <button type="button" onClick={beginEditing} style={{ border: 0, background: 'transparent', padding: 0, color: '#9ca3af', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}>Add a short bio so people can get to know you.</button>
+              )}
+            </section>
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
             {profile?.website && (
@@ -385,36 +425,36 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
           {username === me && (
             <div style={{ marginTop: 12 }}>
               {!editMode ? (
-                <button className="btn-ghost" onClick={() => { setDraft({
-                  displayName: profile?.displayName || '',
-                  avatarUrl: profile?.avatarUrl || '',
-                  bannerUrl: profile?.bannerUrl || '',
-                  bio: profile?.bio || '',
-                  pronouns: profile?.pronouns || '',
-                  website: profile?.website || '',
-                  location: profile?.location || ''
-                }); setEditMode(true); }} style={{ padding: '6px 10px' }}><FontAwesomeIcon icon={faEdit} /> Edit Profile</button>
+                <button className="btn-primary" onClick={beginEditing} style={{ padding: '8px 12px' }}><FontAwesomeIcon icon={faEdit} /> Edit Profile</button>
               ) : (
-                <div style={{ border: '1px solid #1f2937', background: '#0b1222', borderRadius: 10, padding: 12, display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'grid', gap: 6 }}>
-                    <label style={{ color: '#9ca3af', fontSize: 12 }}>Display Name</label>
-                    <input value={draft.displayName} onChange={(e)=> setDraft((d:any)=>({ ...d, displayName: e.target.value }))} className="input-dark" style={{ padding: 8 }} />
+                <div style={{ border: '1px solid #334155', background: '#0b1222', borderRadius: 14, padding: isMobileLayout ? 12 : 16, display: 'grid', gap: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 12, borderBottom: '1px solid #1f2937' }}>
+                    <img src={draft.avatarUrl || '/favicon.ico'} alt="Profile preview" {...avatarLoadProps} style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', border: '2px solid #334155' }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: '#f8fafc', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{draft.displayName || username}</div>
+                      <div style={{ color: '#94a3b8', fontSize: 12 }}>@{username}{draft.pronouns ? ` · ${draft.pronouns}` : ''}</div>
+                      <div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>Live profile preview</div>
+                    </div>
                   </div>
                   <div style={{ display: 'grid', gap: 6 }}>
-                    <label style={{ color: '#9ca3af', fontSize: 12 }}>Pronouns</label>
-                    <input value={draft.pronouns} onChange={(e)=> setDraft((d:any)=>({ ...d, pronouns: e.target.value }))} className="input-dark" style={{ padding: 8 }} />
+                    <label style={{ color: '#cbd5e1', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}><span>Display name</span><span style={{ color: '#64748b' }}>{String(draft.displayName || '').length}/50</span></label>
+                    <input value={draft.displayName} maxLength={50} placeholder={username} onChange={(e)=> setDraft((d:any)=>({ ...d, displayName: e.target.value }))} className="input-dark" style={{ padding: 10 }} />
                   </div>
                   <div style={{ display: 'grid', gap: 6 }}>
-                    <label style={{ color: '#9ca3af', fontSize: 12 }}>Bio</label>
-                    <textarea value={draft.bio} onChange={(e)=> setDraft((d:any)=>({ ...d, bio: e.target.value }))} className="input-dark" style={{ padding: 8, minHeight: 80 }} />
+                    <label style={{ color: '#cbd5e1', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}><span>Pronouns <span style={{ color: '#64748b' }}>(optional)</span></span><span style={{ color: '#64748b' }}>{String(draft.pronouns || '').length}/40</span></label>
+                    <input value={draft.pronouns} maxLength={40} placeholder="e.g. they/them" onChange={(e)=> setDraft((d:any)=>({ ...d, pronouns: e.target.value }))} className="input-dark" style={{ padding: 10 }} />
+                  </div>
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <label style={{ color: '#cbd5e1', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}><span>Bio <span style={{ color: '#64748b' }}>(optional)</span></span><span style={{ color: '#64748b' }}>{String(draft.bio || '').length}/280</span></label>
+                    <textarea value={draft.bio} maxLength={280} placeholder="Share a little about yourself" onChange={(e)=> setDraft((d:any)=>({ ...d, bio: e.target.value }))} className="input-dark" style={{ padding: 10, minHeight: 96, resize: 'vertical' }} />
                   </div>
                   <div style={{ display: 'grid', gap: 6 }}>
                     <label style={{ color: '#9ca3af', fontSize: 12 }}>Website (https://…)</label>
-                    <input value={draft.website} onChange={(e)=> setDraft((d:any)=>({ ...d, website: e.target.value }))} className="input-dark" style={{ padding: 8 }} />
+                    <input value={draft.website} maxLength={200} type="url" placeholder="https://example.com" onChange={(e)=> setDraft((d:any)=>({ ...d, website: e.target.value }))} className="input-dark" style={{ padding: 10 }} />
                   </div>
                   <div style={{ display: 'grid', gap: 6 }}>
-                    <label style={{ color: '#9ca3af', fontSize: 12 }}>Location</label>
-                    <input value={draft.location} onChange={(e)=> setDraft((d:any)=>({ ...d, location: e.target.value }))} className="input-dark" style={{ padding: 8 }} />
+                    <label style={{ color: '#cbd5e1', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}><span>Location <span style={{ color: '#64748b' }}>(optional)</span></span><span style={{ color: '#64748b' }}>{String(draft.location || '').length}/80</span></label>
+                    <input value={draft.location} maxLength={80} placeholder="City, country, or somewhere in between" onChange={(e)=> setDraft((d:any)=>({ ...d, location: e.target.value }))} className="input-dark" style={{ padding: 10 }} />
                   </div>
                   <div style={{ display: 'grid', gap: 6 }}>
                     <label style={{ color: '#9ca3af', fontSize: 12 }}>Avatar</label>
@@ -466,7 +506,7 @@ export default function ProfileModal({ isOpen, onClose, username, me, contextLab
           )}
           {/* Actions */}
           {username !== me && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
               {!isFriend && !hasOutgoing && !hasIncoming && (
                 <button className="btn-primary" onClick={()=>sendAction('request')} style={{ padding: '6px 10px' }}><FontAwesomeIcon icon={faUserPlus} /> Add Friend</button>
               )}
